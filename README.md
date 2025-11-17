@@ -34,11 +34,23 @@ python manage.py createsuperuser
 
 ## Démarrage
 
+### Pour développement local (simulateur/émulateur)
 ```bash
 python manage.py runserver
 ```
 
-L'API sera disponible sur `http://localhost:8000/api/`
+### Pour Expo Go sur appareil physique
+Pour que l'API soit accessible depuis votre téléphone via Expo Go, lancez le serveur sur toutes les interfaces :
+
+```bash
+python manage.py runserver 0.0.0.0:8000
+```
+
+L'API sera disponible sur :
+- `http://localhost:8000/api/` (depuis votre ordinateur)
+- `http://VOTRE_IP_LOCALE:8000/api/` (depuis votre téléphone)
+
+**Important** : Assurez-vous que votre téléphone et votre ordinateur sont sur le même réseau WiFi.
 
 ## Endpoints
 

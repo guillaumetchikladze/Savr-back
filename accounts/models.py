@@ -65,6 +65,9 @@ class Notification(models.Model):
         ('recipe_shared', 'Recette partagée'),
         ('achievement', 'Nouveau succès'),
         ('meal_invitation', 'Invitation à un repas'),
+        ('photo_during_cooking', 'Photo pendant la cuisine'),
+        ('photo_after_cooking', 'Photo après la cuisine'),
+        ('photo_at_meal_time', 'Photo à l\'heure du repas'),
     ]
     
     user = models.ForeignKey(
