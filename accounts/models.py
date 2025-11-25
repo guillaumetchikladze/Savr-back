@@ -14,6 +14,17 @@ class User(AbstractUser):
     level = models.IntegerField(default=1)
     experience_points = models.IntegerField(default=0)
     
+    # Shopping list preferences
+    default_shopping_list_days = models.IntegerField(default=7, help_text="Nombre de jours par défaut pour la liste de courses")
+    
+    # Favorite recipes
+    favorite_recipes = models.ManyToManyField(
+        'recipes.Recipe',
+        related_name='favorited_by',
+        blank=True,
+        help_text="Recettes favorites de l'utilisateur"
+    )
+    
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
     

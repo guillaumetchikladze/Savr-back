@@ -5,6 +5,7 @@ Django settings for savr_back project.
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
+import boto3
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -136,7 +137,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_PAGINATION_CLASS': 'recipes.pagination.CustomPageNumberPagination',
     'PAGE_SIZE': 20,
     # Éviter le coût du Browsable API par défaut
     'DEFAULT_RENDERER_CLASSES': (
@@ -201,6 +202,17 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_BUCKET:
     AWS_S3_FILE_OVERWRITE = False
     AWS_S3_VERIFY = True
 
+# Celery configuration
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+CELERY_TASK_DEFAULT_QUEUE = 'savr_default'
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 60 * 10  # 10 minutes
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+    
+
 
 def build_s3_url(image_path):
     """
@@ -233,4 +245,47 @@ def build_s3_url(image_path):
     else:
         # Format AWS standard
         return f"https://{AWS_BUCKET}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/{clean_path}"
+
+
+_S3_CLIENT = None
+
+
+def build_s3_client():
+    """Créer un client S3/MinIO partagé."""
+    global _S3_CLIENT
+    if _S3_CLIENT is not None:
+        return _S3_CLIENT
+
+    config_kwargs = {
+        'aws_access_key_id': AWS_ACCESS_KEY_ID,
+        'aws_secret_access_key': AWS_SECRET_ACCESS_KEY,
+        'region_name': AWS_S3_REGION_NAME,
+    }
+    if AWS_ENDPOINT:
+        config_kwargs['endpoint_url'] = AWS_ENDPOINT
+        if AWS_ENDPOINT.startswith('http://'):
+            config_kwargs['use_ssl'] = False
+    _S3_CLIENT = boto3.client('s3', **config_kwargs)
+    return _S3_CLIENT
+
+
+def build_presigned_get_url(image_path, expires_in=3600):
+    """Générer une URL pré-signée pour télécharger une image."""
+    if not image_path:
+        return None
+
+    clean_path = image_path.replace('s3:/', '').lstrip('/')
+
+    if not AWS_BUCKET or not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
+        return build_s3_url(clean_path)
+
+    try:
+        client = build_s3_client()
+        return client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': AWS_BUCKET, 'Key': clean_path},
+            ExpiresIn=expires_in
+        )
+    except Exception:
+        return build_s3_url(clean_path)
 

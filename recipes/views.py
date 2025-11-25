@@ -2,44 +2,42 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q
+from django.db.models import Q, Count
 from datetime import datetime, date
 from time import perf_counter
 from django.conf import settings
 from django.db import connection
+from django.shortcuts import get_object_or_404
 from urllib.parse import urlparse
+from pgvector.django import CosineDistance
+from pydantic_ai.exceptions import UserError as PydanticAIUserError
 import uuid
-import boto3
-from .models import Recipe, Step, Ingredient, RecipeIngredient, StepIngredient, MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie
-def build_s3_client():
-    """Créer un client S3 configuré selon l'environnement (AWS ou MinIO)."""
-    config = {
-        'aws_access_key_id': settings.AWS_ACCESS_KEY_ID,
-        'aws_secret_access_key': settings.AWS_SECRET_ACCESS_KEY,
-        'region_name': settings.AWS_S3_REGION_NAME,
-    }
-    if settings.AWS_ENDPOINT:
-        config['endpoint_url'] = settings.AWS_ENDPOINT
-        if settings.AWS_ENDPOINT.startswith('http://'):
-            config['use_ssl'] = False
-    return boto3.client('s3', **config)
-
-
-# Les fonctions build_public_image_url et extract_storage_key ont été supprimées
-# On utilise maintenant build_s3_url depuis settings.py pour construire les URLs
-
-
+import logging
+from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
+from .services.ingredient_matcher import get_batch_embeddings
+from .models import (
+    Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
+    MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie,
+    ShoppingList, ShoppingListItem, Collection, CollectionRecipe, CollectionMember,
+    RecipeImportRequest
+)
+from accounts.models import Follow
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 from .serializers import (
     RecipeSerializer, RecipeCreateSerializer, RecipeLightSerializer,
-    StepSerializer, IngredientSerializer,
+    StepSerializer, IngredientSerializer, CategorySerializer,
     MealPlanSerializer, MealInvitationSerializer,
     MealPlanListSerializer, MealPlanRangeListSerializer, MealPlanByDateSerializer,
     CookingProgressSerializer, CookingProgressCreateUpdateSerializer,
     TimerSerializer, TimerCreateSerializer,
-    PostSerializer, PostCreateUpdateSerializer, PostPhotoSerializer
+    PostSerializer, PostCreateUpdateSerializer, PostPhotoSerializer,
+    ShoppingListSerializer, ShoppingListItemSerializer,
+    CollectionSerializer, CollectionCreateSerializer, CollectionUpdateSerializer,
+    CollectionRecipeSerializer, CollectionMemberSerializer,
+    RecipeFormalizeSerializer, RecipeImportRequestSerializer
 )
+from .tasks import process_recipe_import
 
 
 class RecipeViewSet(viewsets.ModelViewSet):
@@ -56,7 +54,18 @@ class RecipeViewSet(viewsets.ModelViewSet):
         return RecipeSerializer
     
     def get_queryset(self):
-        queryset = Recipe.objects.all()
+        """Filtrer selon is_public et user, puis appliquer les autres filtres"""
+        user = self.request.user
+        
+        # Si l'utilisateur est connecté, voir ses recettes privées + toutes les publiques
+        if user.is_authenticated:
+            queryset = Recipe.objects.filter(
+                Q(is_public=True) | Q(created_by=user)
+            )
+        else:
+            # Sinon, seulement les publiques
+            queryset = Recipe.objects.filter(is_public=True)
+        
         meal_type = self.request.query_params.get('meal_type', None)
         difficulty = self.request.query_params.get('difficulty', None)
         search = self.request.query_params.get('search', None)
@@ -136,6 +145,287 @@ class RecipeViewSet(viewsets.ModelViewSet):
         recipes = Recipe.objects.filter(created_by=request.user)
         serializer = self.get_serializer(recipes, many=True)
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['post', 'delete'])
+    def favorite(self, request, pk=None):
+        """Ajouter ou retirer une recette des favoris"""
+        recipe = self.get_object()
+        user = request.user
+        
+        if request.method == 'POST':
+            # Ajouter aux favoris
+            if not user.favorite_recipes.filter(id=recipe.id).exists():
+                user.favorite_recipes.add(recipe)
+                return Response({'status': 'added', 'is_favorited': True}, status=status.HTTP_200_OK)
+            return Response({'status': 'already_favorited', 'is_favorited': True}, status=status.HTTP_200_OK)
+        elif request.method == 'DELETE':
+            # Retirer des favoris
+            user.favorite_recipes.remove(recipe)
+            return Response({'status': 'removed', 'is_favorited': False}, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['get'])
+    def my_imports(self, request):
+        """Récupérer les recettes de l'utilisateur (créées + importées)"""
+        recipes = Recipe.objects.filter(
+            created_by=request.user
+        ).filter(
+            Q(source_type='user_created') | Q(source_type='imported')
+        )
+        serializer = self.get_serializer(recipes, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def my_favorites(self, request):
+        """Récupérer les recettes favorites de l'utilisateur"""
+        recipes = request.user.favorite_recipes.all()
+        serializer = self.get_serializer(recipes, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def formalize(self, request):
+        """
+        Endpoint pour formaliser une recette brute avec l'IA et la créer en DB
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        process_start = perf_counter()
+        logger.info(
+            "[RecipeFormalize] Appel entrant user=%s payload_keys=%s",
+            request.user.id,
+            list(request.data.keys())
+        )
+
+        serializer = RecipeFormalizeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        logger.info(
+            "[RecipeFormalize] Requête reçue user=%s title='%s' len_ing=%d len_steps=%d",
+            request.user.id,
+            data.get('title'),
+            len(data.get('ingredients_text', '')),
+            len(data.get('instructions_text', ''))
+        )
+
+        try:
+            import_request = RecipeImportRequest.objects.create(
+                user=request.user,
+                payload=data,
+                status=RecipeImportRequest.STATUS_PENDING,
+            )
+            process_recipe_import.delay(str(import_request.id))
+
+            logger.info(
+                "[RecipeFormalize] Requête %s en file d'attente (%.2fs)",
+                import_request.id,
+                perf_counter() - process_start
+            )
+
+            response_serializer = RecipeImportRequestSerializer(import_request, context={'request': request})
+            return Response(response_serializer.data, status=status.HTTP_202_ACCEPTED)
+        
+        except PydanticAIUserError as e:
+            logger.warning("[RecipeFormalize] Erreur PydanticAI: %s", e)
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except ValueError as e:
+            # Erreur de configuration (ex: AI_API_KEY manquant ou modèle non supporté)
+            logger.warning("[RecipeFormalize] Erreur de configuration: %s", e)
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except (BrokenPipeError, ConnectionResetError) as e:
+            logger.warning("[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s", e)
+            return Response(
+                {'error': 'Client disconnected during processing.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except (BrokenPipeError, ConnectionResetError) as e:
+            logger.warning("[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s", e)
+            return Response(
+                {'error': 'Client disconnected during processing.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"Erreur lors de la formalisation de la recette: {e}", exc_info=True)
+            return Response(
+                {'error': f'Erreur lors de la formalisation: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], url_path='formalize/status/(?P<request_id>[0-9a-f-]+)')
+    def formalize_status(self, request, request_id=None):
+        import_request = get_object_or_404(
+            RecipeImportRequest,
+            id=request_id,
+            user=request.user
+        )
+        serializer = RecipeImportRequestSerializer(import_request, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='formalize/requests')
+    def formalize_requests(self, request):
+        qs = RecipeImportRequest.objects.filter(user=request.user).order_by('-created_at')[:20]
+        serializer = RecipeImportRequestSerializer(qs, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='import_from_url')
+    def import_from_url(self, request):
+        """
+        Importe une recette depuis une URL externe (Bergamot, Marmiton, etc.)
+        L'extraction et la formalisation sont faites de manière asynchrone via Celery
+        """
+        logger = logging.getLogger(__name__)
+        url = request.data.get('url', '').strip()
+        if not url:
+            return Response(
+                {'error': 'URL requise'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Créer une demande d'import avec l'URL (l'extraction sera faite par Celery)
+            from .models import RecipeImportRequest
+            import_request = RecipeImportRequest.objects.create(
+                user=request.user,
+                payload={
+                    'url': url,
+                    'source_type': 'imported',
+                },
+                status=RecipeImportRequest.STATUS_PENDING
+            )
+            
+            # Lancer la tâche Celery qui fait l'extraction + formalisation
+            from .tasks import process_recipe_import_from_url
+            task = process_recipe_import_from_url.delay(str(import_request.id))
+            import_request.task_id = task.id
+            import_request.save(update_fields=['task_id'])
+            
+            logger.info(
+                "[RecipeImportURL] Import depuis %s - request_id=%s",
+                url,
+                import_request.id
+            )
+            
+            return Response(
+                {
+                    'request_id': import_request.id,
+                    'status': import_request.status,
+                },
+                status=status.HTTP_202_ACCEPTED
+            )
+            
+        except Exception as e:
+            logger.error(f"Erreur lors de la soumission de l'import depuis URL: {e}", exc_info=True)
+            return Response(
+                {'error': f'Erreur lors de la soumission: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], url_path='search_semantic')
+    def search_semantic(self, request):
+        query = request.query_params.get('q', '').strip()
+        page = int(request.query_params.get('page', 1))
+        page_size = min(int(request.query_params.get('page_size', 20)), 50)
+
+        if not query:
+            return Response({'error': 'Paramètre q requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        embeddings = get_batch_embeddings([query])
+        vector = embeddings[0] if embeddings else None
+        if not vector:
+            return self.get_paginated_response([])
+
+        queryset = (
+            Recipe.objects.exclude(embedding__isnull=True)
+            .annotate(distance=CosineDistance('embedding', vector))
+            .order_by('distance')
+        )
+        
+        # Appliquer la pagination
+        paginated_queryset = self.paginate_queryset(queryset)
+        if paginated_queryset is not None:
+            serializer = RecipeLightSerializer(paginated_queryset, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        
+        # Fallback si pas de pagination
+        serializer = RecipeLightSerializer(queryset[:page_size], many=True, context={'request': request})
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def get_recipe_image_presigned_url(self, request):
+        """Générer une URL pré-signée pour uploader une image de recette directement vers S3"""
+        try:
+            logger = logging.getLogger(__name__)
+            logger.info(
+                "[RecipeImages] Demande de presigned URL user=%s payload=%s",
+                request.user.id,
+                request.data
+            )
+            s3_client = build_s3_client()
+            bucket_name = settings.AWS_BUCKET
+            
+            if not bucket_name:
+                return Response(
+                    {'error': 'S3 bucket non configuré'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Générer un nom de fichier unique pour l'image de recette
+            unique_id = str(uuid.uuid4()).replace('-', '')
+            file_name = f"recipes/{request.user.id}/{unique_id}.jpg"
+            
+            # Générer l'URL pré-signée pour l'upload (valide 5 minutes)
+            try:
+                presigned_url = s3_client.generate_presigned_url(
+                    'put_object',
+                    Params={
+                        'Bucket': bucket_name,
+                        'Key': file_name,
+                        'ContentType': 'image/jpeg',
+                    },
+                    ExpiresIn=300  # 5 minutes
+                )
+            except Exception as url_error:
+                logger.error(f"Erreur lors de la génération de l'URL pré-signée: {url_error}")
+                # Essayer sans ContentType si ça échoue
+                presigned_url = s3_client.generate_presigned_url(
+                    'put_object',
+                    Params={
+                        'Bucket': bucket_name,
+                        'Key': file_name,
+                    },
+                    ExpiresIn=300
+                )
+            
+            # Construire l'URL de consultation (pré-signée si possible)
+            image_url = build_presigned_get_url(file_name)
+            
+            return Response({
+                'presigned_url': presigned_url,
+                'file_name': file_name,
+                'image_path': file_name,  # Chemin relatif à stocker en base
+                'image_url': image_url,  # URL complète pour l'affichage
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Erreur lors de la génération de l'URL pré-signée pour l'image de recette: {e}", exc_info=True)
+            return Response(
+                {'error': f'Erreur lors de la génération de l\'URL: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet pour les catégories d'ingrédients"""
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+    permission_classes = [IsAuthenticated]
 
 
 class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
@@ -174,6 +464,8 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         - Filtrer côté DB avec date__gte/date__lte si fournis
         - Éviter les N+1 queries via select_related/prefetch_related
         """
+        from django.db.models import Case, When, IntegerField
+        
         qs = MealPlan.objects.filter(user=self.request.user)
         
         # Filtres de date (format YYYY-MM-DD)
@@ -184,6 +476,16 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if date_lte:
             qs = qs.filter(date__lte=date_lte)
         
+        # Exclure les meal plans déjà dans une shopping list non archivée
+        exclude_in_shopping_list = self.request.query_params.get('exclude_in_shopping_list')
+        if exclude_in_shopping_list == 'true':
+            qs = qs.exclude(shopping_lists__is_archived=False)
+        
+        # Exclure les meal plans déjà cuisinés
+        exclude_cooked = self.request.query_params.get('exclude_cooked')
+        if exclude_cooked == 'true':
+            qs = qs.filter(is_cooked=False)
+        
         # Autres filtres éventuels
         meal_time = self.request.query_params.get('meal_time')
         if meal_time:
@@ -192,16 +494,24 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if confirmed in ('true', 'false'):
             qs = qs.filter(confirmed=(confirmed == 'true'))
         
+        # Définir l'ordre des meal_time : lunch (0) avant dinner (1)
+        meal_time_order = Case(
+            When(meal_time='lunch', then=0),
+            When(meal_time='dinner', then=1),
+            default=2,
+            output_field=IntegerField(),
+        )
+        
         # Chargement optimisé des relations utilisées par le serializer
         if self.action in ['list']:
-            qs = qs.select_related('recipe').order_by('-date', 'meal_time')
+            qs = qs.select_related('recipe').order_by('date', meal_time_order)
         elif self.action in ['by_date']:
             from django.db.models import Prefetch
             qs = qs.select_related('user', 'recipe').prefetch_related(
                 Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-            ).order_by('-date', 'meal_time')
+            ).order_by('date', meal_time_order)
         elif self.action in ['by_week', 'by_dates', 'bulk']:
-            qs = qs.select_related('user', 'recipe').order_by('-date', 'meal_time')
+            qs = qs.select_related('user', 'recipe').order_by('date', meal_time_order)
         else:
             # Pour update, retrieve, etc. : préfetch les invitations si le serializer en a besoin
             from django.db.models import Prefetch
@@ -212,7 +522,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                     Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
                 )),
                 'recipe__recipe_ingredients__ingredient',
-            ).order_by('-date', 'meal_time')
+            ).order_by('date', meal_time_order)
         return qs
     
     def list(self, request, *args, **kwargs):
@@ -249,6 +559,87 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                   f"db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}")
         
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def cooked(self, request):
+        """
+        Retourner les meal plans cuisinés de l'utilisateur avec pagination.
+        Pour le carnet de l'utilisateur.
+        Un meal plan est considéré comme "cuisiné" si :
+        - is_cooked=True OU
+        - il a un post publié
+        """
+        from django.core.paginator import Paginator, EmptyPage
+        from django.db.models import Prefetch, Q
+        
+        # Filtrer les meal plans cuisinés avec une recette
+        # Inclure ceux avec is_cooked=True OU avec un post publié
+        qs = MealPlan.objects.filter(
+            user=request.user,
+            meal_type='recipe',
+            recipe__isnull=False
+        ).filter(
+            Q(is_cooked=True) | Q(posts__is_published=True)
+        ).distinct().select_related('recipe').prefetch_related(
+            Prefetch('draft_photos', queryset=PostPhoto.objects.order_by('-created_at')),
+            Prefetch('posts', queryset=Post.objects.filter(is_published=True))
+        ).order_by('-date', '-created_at')
+        
+        # Filtrer par recette si demandé
+        recipe_id = request.query_params.get('recipe')
+        if recipe_id:
+            qs = qs.filter(recipe_id=recipe_id)
+        
+        # Pagination : 12 par page
+        page = request.query_params.get('page', 1)
+        try:
+            page = int(page)
+        except (TypeError, ValueError):
+            page = 1
+        
+        paginator = Paginator(qs, 12)
+        try:
+            meal_plans = paginator.page(page)
+        except EmptyPage:
+            meal_plans = paginator.page(paginator.num_pages)
+        
+        # Construire la réponse avec les données nécessaires
+        results = []
+        for mp in meal_plans:
+            # Déterminer quelle photo afficher (priorité : photos user > photo recette)
+            photo_url = None
+            has_published_post = mp.posts.filter(is_published=True).exists()
+            
+            # Chercher d'abord une photo de l'utilisateur
+            user_photos = mp.draft_photos.all()
+            if user_photos:
+                photo_url = user_photos[0].image_url
+            elif mp.recipe.image_url:
+                # Sinon prendre la photo de la recette
+                photo_url = mp.recipe.image_url
+            
+            results.append({
+                'id': mp.id,
+                'date': mp.date,
+                'meal_time': mp.meal_time,
+                'meal_time_display': mp.get_meal_time_display(),
+                'recipe': {
+                    'id': mp.recipe.id,
+                    'title': mp.recipe.title,
+                    'image_url': mp.recipe.image_url,
+                },
+                'photo_url': photo_url,
+                'is_shared': has_published_post,
+            })
+        
+        return Response({
+            'results': results,
+            'count': paginator.count,
+            'num_pages': paginator.num_pages,
+            'current_page': meal_plans.number,
+            'has_next': meal_plans.has_next(),
+            'has_previous': meal_plans.has_previous(),
+        })
     
     @action(detail=False, methods=['get'])
     def by_dates(self, request):
@@ -455,6 +846,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     def invite(self, request, pk=None):
         """Inviter des utilisateurs à un repas"""
         from django.contrib.auth import get_user_model
+        from django.db import transaction
         from accounts.models import Follow, Notification
         User = get_user_model()
         
@@ -474,10 +866,18 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not valid_invitee_ids:
             return Response({'error': 'No valid complices found'}, status=status.HTTP_400_BAD_REQUEST)
         
+        # Précharger les utilisateurs pour éviter les requêtes N+1
+        invitees = {user.id: user for user in User.objects.filter(id__in=valid_invitee_ids)}
+        
         # Créer les invitations
         invitations = []
+        notification_data = []  # Stocker les données de notification pour les créer après commit
+        
         for invitee_id in valid_invitee_ids:
-            invitee = User.objects.get(id=invitee_id)
+            invitee = invitees.get(invitee_id)
+            if not invitee:
+                continue
+                
             invitation, created = MealInvitation.objects.get_or_create(
                 inviter=request.user,
                 invitee=invitee,
@@ -486,17 +886,37 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             )
             if created:
                 invitations.append(invitation)
-                # Créer une notification
-                Notification.objects.create(
-                    user=invitee,
-                    notification_type='meal_invitation',
-                    title=f"{request.user.username} vous invite à un repas",
-                    message=f"{request.user.username} vous invite à {meal_plan.get_meal_time_display()} le {meal_plan.date.strftime('%d/%m/%Y')}",
-                    related_user=request.user
-                )
+                # Stocker les données de notification pour les créer après commit (asynchrone)
+                notification_data.append({
+                    'user': invitee,
+                    'notification_type': 'meal_invitation',
+                    'title': f"{request.user.username} vous invite à un repas",
+                    'message': f"{request.user.username} vous invite à {meal_plan.get_meal_time_display()} le {meal_plan.date.strftime('%d/%m/%Y')}",
+                    'related_user': request.user
+                })
+        
+        # Créer les notifications après le commit de la transaction (asynchrone)
+        # Cela rend l'endpoint plus rapide car les notifications sont créées en arrière-plan
+        if notification_data:
+            def create_notifications():
+                for notif_data in notification_data:
+                    Notification.objects.create(**notif_data)
+            
+            transaction.on_commit(create_notifications)
+        
+        # Rafraîchir le meal_plan depuis la DB pour avoir les invitations à jour
+        # (nécessaire car le serializer utilise obj.invitations.all() qui peut être mis en cache)
+        meal_plan.refresh_from_db()
+        
+        # Retourner le meal plan mis à jour avec les participants pour que le frontend ait les données à jour
+        from .serializers import MealPlanSerializer
+        meal_plan_serializer = MealPlanSerializer(meal_plan, context={'request': request})
         
         serializer = MealInvitationSerializer(invitations, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response({
+            'invitations': serializer.data,
+            'meal_plan': meal_plan_serializer.data  # Inclure le meal plan mis à jour
+        }, status=status.HTTP_201_CREATED)
 
 
 class MealInvitationViewSet(viewsets.ModelViewSet):
@@ -506,9 +926,20 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         # L'utilisateur peut voir les invitations qu'il a envoyées ou reçues
-        return MealInvitation.objects.filter(
+        qs = MealInvitation.objects.filter(
             Q(inviter=self.request.user) | Q(invitee=self.request.user)
         ).select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__recipe')
+        
+        # Filtrer par meal_plan si fourni dans les query params
+        meal_plan_id = self.request.query_params.get('meal_plan')
+        if meal_plan_id:
+            try:
+                qs = qs.filter(meal_plan_id=meal_plan_id)
+            except ValueError:
+                # Si meal_plan_id n'est pas un entier valide, ignorer le filtre
+                pass
+        
+        return qs
     
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -688,7 +1119,8 @@ class CookingProgressViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(progress)
             return Response(serializer.data)
         else:
-            return Response(None, status=status.HTTP_404_NOT_FOUND)
+            # Retourner 200 avec null au lieu de 404 pour indiquer qu'il n'y a pas de progression
+            return Response(None, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
@@ -797,8 +1229,24 @@ class PostViewSet(viewsets.ModelViewSet):
         # Si on demande les posts publiés, montrer tous les posts publiés de tous les utilisateurs
         # Sinon, montrer uniquement les posts de l'utilisateur connecté
         is_published = self.request.query_params.get('is_published')
+        friends_only = self.request.query_params.get('friends_only')
+        
         if is_published is not None and is_published.lower() == 'true':
             queryset = Post.objects.filter(is_published=True)
+
+            # Filtrer uniquement les posts des amis
+            if friends_only and friends_only.lower() == 'true':
+                user = self.request.user
+                friend_ids = set()
+                # Utilisateurs que je suis
+                friend_ids.update(
+                    Follow.objects.filter(follower=user).values_list('following_id', flat=True)
+                )
+                # Utilisateurs qui me suivent
+                friend_ids.update(
+                    Follow.objects.filter(following=user).values_list('follower_id', flat=True)
+                )
+                queryset = queryset.filter(user_id__in=list(friend_ids))
         else:
             queryset = Post.objects.filter(user=self.request.user)
         
@@ -812,7 +1260,39 @@ class PostViewSet(viewsets.ModelViewSet):
         if meal_plan_id:
             queryset = queryset.filter(meal_plan_id=meal_plan_id)
         
-        return queryset.select_related('user', 'recipe', 'meal_plan', 'cooking_progress').prefetch_related('photos', 'cookies').order_by('-created_at')
+        # Optimisation : pour les listes, limiter les champs chargés
+        if self.action == 'list':
+            queryset = queryset.select_related(
+                'user', 'recipe', 'meal_plan'
+            ).prefetch_related(
+                'photos', 'cookies'
+            ).only(
+                'id', 'user', 'recipe', 'meal_plan', 'comment', 'is_published',
+                'created_at', 'updated_at',
+                'user__id', 'user__username', 'user__email', 'user__avatar_url',
+                'recipe__id', 'recipe__title', 'recipe__image_path',
+                'meal_plan__id', 'meal_plan__date', 'meal_plan__meal_time'
+            ).order_by('-created_at')
+        else:
+            queryset = queryset.select_related(
+                'user', 'recipe', 'meal_plan', 'cooking_progress'
+            ).prefetch_related('photos', 'cookies').order_by('-created_at')
+        
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        """Liste optimisée des posts avec pagination"""
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Utiliser la pagination DRF
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        # Fallback si pas de pagination (ne devrait pas arriver)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
     
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
@@ -1362,3 +1842,508 @@ class PostViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
         except PostCookie.DoesNotExist:
             return Response({'error': 'Cookie not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class ShoppingListViewSet(viewsets.ModelViewSet):
+    """ViewSet pour les listes de courses"""
+    serializer_class = ShoppingListSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filtrer par utilisateur"""
+        from django.db.models import Prefetch
+        
+        queryset = ShoppingList.objects.filter(user=self.request.user)
+        
+        # Filtrer par liste active
+        is_active = self.request.query_params.get('is_active')
+        if is_active == 'true':
+            queryset = queryset.filter(is_active=True)
+        
+        # Filtrer les listes archivées (par défaut, ne pas les afficher)
+        include_archived = self.request.query_params.get('include_archived')
+        if include_archived != 'true':
+            queryset = queryset.filter(is_archived=False)
+        
+        # Optimisation : précharger toutes les relations nécessaires
+        return queryset.prefetch_related(
+            Prefetch('meal_plans', queryset=MealPlan.objects.select_related('recipe')),
+            Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category'))
+        ).order_by('-created_at')
+    
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        """Archiver ou désarchiver une liste"""
+        shopping_list = self.get_object()
+        shopping_list.is_archived = not shopping_list.is_archived
+        shopping_list.save()
+        serializer = self.get_serializer(shopping_list)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['post'])
+    def generate_items(self, request, pk=None):
+        """Générer automatiquement les items d'ingrédients à partir des meal plans"""
+        from django.db.models import Prefetch
+        
+        shopping_list = ShoppingList.objects.prefetch_related(
+            Prefetch('meal_plans', queryset=MealPlan.objects.select_related(
+                'recipe'
+            ).prefetch_related(
+                'invitations',
+                Prefetch('recipe__recipe_ingredients', queryset=RecipeIngredient.objects.select_related('ingredient__category'))
+            ))
+        ).get(id=pk, user=request.user)
+        
+        # Agréger les ingrédients de tous les meal plans
+        ingredients_map = {}
+        
+        for meal_plan in shopping_list.meal_plans.all():
+            if not meal_plan.recipe:
+                continue
+                
+            # Calculer le nombre de personnes (utiliser le prefetch)
+            participants_count = meal_plan.invitations.filter(
+                status__in=['accepted', 'pending']
+            ).count()
+            servings = 1 + participants_count
+            base_servings = meal_plan.recipe.servings or 1
+            ratio = servings / base_servings
+            
+            # Parcourir les ingrédients de la recette (déjà préchargés)
+            for recipe_ingredient in meal_plan.recipe.recipe_ingredients.all():
+                ingredient_id = recipe_ingredient.ingredient.id
+                quantity = float(recipe_ingredient.quantity) * ratio
+                unit = recipe_ingredient.unit
+                
+                if ingredient_id not in ingredients_map:
+                    ingredients_map[ingredient_id] = {
+                        'quantity': 0,
+                        'unit': unit,
+                    }
+                
+                if ingredients_map[ingredient_id]['unit'] == unit:
+                    ingredients_map[ingredient_id]['quantity'] += quantity
+                else:
+                    ingredients_map[ingredient_id]['quantity'] += quantity
+        
+        # Créer ou mettre à jour les items en bulk
+        created_items = []
+        items_to_create = []
+        items_to_update = []
+        
+        existing_items = {
+            item.ingredient_id: item 
+            for item in shopping_list.items.select_related('ingredient__category').all()
+        }
+        
+        for ingredient_id, data in ingredients_map.items():
+            if ingredient_id in existing_items:
+                # Item existe déjà, on ne fait rien (on garde le statut et pantry_quantity)
+                item = existing_items[ingredient_id]
+            else:
+                # Créer un nouvel item
+                items_to_create.append(
+                    ShoppingListItem(
+                        shopping_list=shopping_list,
+                        ingredient_id=ingredient_id,
+                        status='to_buy',
+                        pantry_quantity=0,
+                    )
+                )
+        
+        # Créer en bulk
+        if items_to_create:
+            ShoppingListItem.objects.bulk_create(items_to_create)
+        
+        # Recharger les items créés pour les serializer
+        all_items = shopping_list.items.select_related('ingredient__category').all()
+        created_items = [ShoppingListItemSerializer(item).data for item in all_items]
+        
+        return Response(created_items, status=status.HTTP_200_OK)
+
+
+class ShoppingListItemViewSet(viewsets.ModelViewSet):
+    """ViewSet pour les items de liste de courses"""
+    serializer_class = ShoppingListItemSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filtrer par shopping list de l'utilisateur"""
+        from django.db.models import Prefetch
+        
+        shopping_list_id = self.request.query_params.get('shopping_list_id')
+        
+        if shopping_list_id:
+            # Vérifier que la shopping list appartient à l'utilisateur
+            try:
+                shopping_list = ShoppingList.objects.get(
+                    id=shopping_list_id,
+                    user=self.request.user
+                )
+                queryset = ShoppingListItem.objects.filter(shopping_list=shopping_list)
+            except ShoppingList.DoesNotExist:
+                return ShoppingListItem.objects.none()
+        else:
+            # Retourner les items de toutes les listes de l'utilisateur
+            user_lists = ShoppingList.objects.filter(user=self.request.user)
+            queryset = ShoppingListItem.objects.filter(shopping_list__in=user_lists)
+        
+        # Filtres optionnels
+        ingredient_id = self.request.query_params.get('ingredient_id')
+        status = self.request.query_params.get('status')
+        
+        if ingredient_id:
+            queryset = queryset.filter(ingredient_id=ingredient_id)
+        if status:
+            queryset = queryset.filter(status=status)
+        
+        # Optimisation : précharger toutes les relations nécessaires
+        return queryset.select_related(
+            'ingredient__category',
+            'shopping_list'
+        ).order_by('-updated_at')
+    
+    @action(detail=False, methods=['get'])
+    def with_quantities(self, request):
+        """Retourne les ingrédients avec leurs quantités calculées depuis les meal plans"""
+        from django.db.models import Prefetch
+        
+        shopping_list_id = request.query_params.get('shopping_list_id')
+        
+        if not shopping_list_id:
+            return Response({'error': 'shopping_list_id required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Optimisation maximale : précharger toutes les relations en une seule requête
+            shopping_list = ShoppingList.objects.prefetch_related(
+                Prefetch(
+                    'meal_plans',
+                    queryset=MealPlan.objects.select_related('recipe').prefetch_related(
+                        'invitations',
+                        Prefetch(
+                            'recipe__recipe_ingredients',
+                            queryset=RecipeIngredient.objects.select_related('ingredient__category')
+                        )
+                    )
+                ),
+                Prefetch(
+                    'items',
+                    queryset=ShoppingListItem.objects.select_related('ingredient__category')
+                )
+            ).get(id=shopping_list_id, user=request.user)
+        except ShoppingList.DoesNotExist:
+            return Response({'error': 'Shopping list not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Agréger les ingrédients depuis les meal plans
+        ingredients_map = {}
+        
+        for meal_plan in shopping_list.meal_plans.all():
+            if not meal_plan.recipe:
+                continue
+            
+            # Calculer le nombre de personnes
+            participants_count = meal_plan.invitations.filter(
+                status__in=['accepted', 'pending']
+            ).count()
+            servings = 1 + participants_count
+            base_servings = meal_plan.recipe.servings or 1
+            ratio = servings / base_servings
+            
+            # Parcourir les ingrédients de la recette
+            for recipe_ingredient in meal_plan.recipe.recipe_ingredients.all():
+                ingredient = recipe_ingredient.ingredient
+                ingredient_id = ingredient.id
+                quantity = float(recipe_ingredient.quantity) * ratio
+                unit = recipe_ingredient.unit
+                
+                if ingredient_id not in ingredients_map:
+                    ingredients_map[ingredient_id] = {
+                        'id': ingredient_id,
+                        'name': ingredient.name,
+                        'quantity': 0,
+                        'unit': unit,
+                        'category': {
+                            'id': ingredient.category.id if ingredient.category else None,
+                            'name': ingredient.category.name if ingredient.category else 'Autres',
+                        } if ingredient.category else {'id': None, 'name': 'Autres'},
+                        'item': None,
+                    }
+                
+                if ingredients_map[ingredient_id]['unit'] == unit:
+                    ingredients_map[ingredient_id]['quantity'] += quantity
+                else:
+                    ingredients_map[ingredient_id]['quantity'] += quantity
+        
+        # Enrichir avec les items existants (statut, pantry_quantity)
+        for item in shopping_list.items.all():
+            ingredient_id = item.ingredient.id
+            if ingredient_id in ingredients_map:
+                ingredients_map[ingredient_id]['item'] = {
+                    'id': item.id,
+                    'status': item.status,
+                    'pantry_quantity': float(item.pantry_quantity) if item.pantry_quantity else 0,
+                    'pantry_unit': item.pantry_unit or '',
+                }
+        
+        # Convertir en liste
+        ingredients_list = list(ingredients_map.values())
+        
+        return Response(ingredients_list, status=status.HTTP_200_OK)
+
+
+class CollectionViewSet(viewsets.ModelViewSet):
+    """ViewSet pour les collections de recettes"""
+    permission_classes = [IsAuthenticated]
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CollectionCreateSerializer
+        if self.action in ['update', 'partial_update']:
+            return CollectionUpdateSerializer
+        if self.action == 'my_collections':
+            from .serializers import CollectionListSerializer
+            return CollectionListSerializer
+        return CollectionSerializer
+    
+    def get_queryset(self):
+        """Filtrer les collections : publiques + celles de l'utilisateur"""
+        user = self.request.user
+        queryset = Collection.objects.filter(
+            Q(is_public=True) | Q(owner=user) | Q(members__user=user)
+        ).distinct()
+        
+        # Précharger les relations
+        queryset = queryset.select_related('owner').prefetch_related(
+            'collection_recipes__recipe',
+            'members__user'
+        )
+        
+        return queryset.order_by('-created_at')
+    
+    def perform_create(self, serializer):
+        """Créer une collection avec l'utilisateur connecté comme owner"""
+        # Le serializer.create() gère déjà la création du CollectionMember
+        serializer.save(owner=self.request.user)
+    
+    def perform_update(self, serializer):
+        """Vérifier que l'utilisateur est le propriétaire"""
+        collection = self.get_object()
+        if collection.owner != self.request.user:
+            return Response(
+                {'error': 'Vous n\'êtes pas le propriétaire de cette collection'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        serializer.save()
+    
+    def perform_destroy(self, instance):
+        """Vérifier que l'utilisateur est le propriétaire"""
+        if instance.owner != self.request.user:
+            return Response(
+                {'error': 'Vous n\'êtes pas le propriétaire de cette collection'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        instance.delete()
+    
+    @action(detail=True, methods=['post'])
+    def add_recipe(self, request, pk=None):
+        """Ajouter une recette à la collection"""
+        collection = self.get_object()
+        user = request.user
+        
+        # Vérifier les permissions
+        is_owner = collection.owner == user
+        is_member = collection.members.filter(user=user).exists()
+        is_public = collection.is_public
+        
+        if not (is_owner or (is_member and collection.is_collaborative) or is_public):
+            return Response(
+                {'error': 'Vous n\'avez pas la permission d\'ajouter des recettes à cette collection'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        recipe_id = request.data.get('recipe_id')
+        if not recipe_id:
+            return Response(
+                {'error': 'recipe_id est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            recipe = Recipe.objects.get(id=recipe_id)
+        except Recipe.DoesNotExist:
+            return Response(
+                {'error': 'Recette non trouvée'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Vérifier si la recette est déjà dans la collection
+        if CollectionRecipe.objects.filter(collection=collection, recipe=recipe).exists():
+            return Response(
+                {'error': 'Cette recette est déjà dans la collection'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Ajouter la recette
+        CollectionRecipe.objects.create(
+            collection=collection,
+            recipe=recipe,
+            added_by=user
+        )
+        
+        serializer = self.get_serializer(collection)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['post'])
+    def remove_recipe(self, request, pk=None):
+        """Retirer une recette de la collection"""
+        collection = self.get_object()
+        user = request.user
+        
+        # Vérifier les permissions (owner ou collaborateur)
+        is_owner = collection.owner == user
+        is_collaborator = collection.members.filter(user=user, role='collaborator').exists()
+        
+        if not (is_owner or is_collaborator):
+            return Response(
+                {'error': 'Vous n\'avez pas la permission de retirer des recettes de cette collection'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        recipe_id = request.data.get('recipe_id')
+        if not recipe_id:
+            return Response(
+                {'error': 'recipe_id est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            collection_recipe = CollectionRecipe.objects.get(
+                collection=collection,
+                recipe_id=recipe_id
+            )
+            collection_recipe.delete()
+        except CollectionRecipe.DoesNotExist:
+            return Response(
+                {'error': 'Cette recette n\'est pas dans la collection'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        serializer = self.get_serializer(collection)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['post'])
+    def add_member(self, request, pk=None):
+        """Ajouter un membre à la collection (si collaborative)"""
+        collection = self.get_object()
+        user = request.user
+        
+        # Vérifier que l'utilisateur est le propriétaire
+        if collection.owner != user:
+            return Response(
+                {'error': 'Seul le propriétaire peut ajouter des membres'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Vérifier que la collection est collaborative
+        if not collection.is_collaborative:
+            return Response(
+                {'error': 'Cette collection n\'est pas collaborative'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response(
+                {'error': 'user_id est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            member_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Utilisateur non trouvé'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Vérifier si l'utilisateur est déjà membre
+        if CollectionMember.objects.filter(collection=collection, user=member_user).exists():
+            return Response(
+                {'error': 'Cet utilisateur est déjà membre de la collection'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Ajouter le membre
+        CollectionMember.objects.create(
+            collection=collection,
+            user=member_user,
+            role='collaborator'
+        )
+        
+        serializer = self.get_serializer(collection)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['post'])
+    def remove_member(self, request, pk=None):
+        """Retirer un membre de la collection"""
+        collection = self.get_object()
+        user = request.user
+        
+        # Vérifier que l'utilisateur est le propriétaire
+        if collection.owner != user:
+            return Response(
+                {'error': 'Seul le propriétaire peut retirer des membres'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response(
+                {'error': 'user_id est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            member = CollectionMember.objects.get(
+                collection=collection,
+                user_id=user_id
+            )
+            # Ne pas permettre de retirer le propriétaire
+            if member.role == 'owner':
+                return Response(
+                    {'error': 'Impossible de retirer le propriétaire'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            member.delete()
+        except CollectionMember.DoesNotExist:
+            return Response(
+                {'error': 'Cet utilisateur n\'est pas membre de la collection'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        serializer = self.get_serializer(collection)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['get'])
+    def my_collections(self, request):
+        """Récupérer les collections de l'utilisateur connecté"""
+        try:
+            collections = Collection.objects.filter(
+                owner=request.user
+            ).select_related('owner').prefetch_related(
+                'collection_recipes__recipe'
+            ).annotate(
+                total_recipes=Count('collection_recipes', distinct=True)
+            ).order_by('-created_at')
+            
+            serializer = self.get_serializer(collections, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"Error in my_collections: {str(e)}")
+            print(error_trace)
+            return Response(
+                {'error': f'Erreur serveur: {str(e)}', 'details': error_trace if settings.DEBUG else None},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
