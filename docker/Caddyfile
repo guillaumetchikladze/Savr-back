@@ -1,0 +1,16 @@
+# NOTE: Ce fichier est une référence. Le Caddyfile réel est généré dynamiquement
+# par le script caddy-entrypoint.sh à partir des variables d'environnement.
+# 
+# Structure générée :
+# {
+#     email <CADDY_EMAIL> (si défini, sinon auto_https off)
+# }
+# 
+# <DOMAIN> {
+#     reverse_proxy django:8000
+# }
+# 
+# <MINIO_DOMAIN> {
+#     reverse_proxy minio:9000
+# }
+

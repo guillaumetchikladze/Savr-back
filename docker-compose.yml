@@ -58,6 +58,45 @@ services:
       timeout: 20s
       retries: 3
 
+  # Django avec Gunicorn
+  django:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.django
+    container_name: savr-django
+    restart: unless-stopped
+    command: gunicorn savr_back.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 120
+    volumes:
+      - .:/app
+    environment:
+      - DB_NAME=${DB_NAME:-savr_db}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      - AWS_BUCKET=${AWS_BUCKET:-savr}
+      - AWS_ENDPOINT=http://minio:9000
+      - AWS_USE_PATH_STYLE_ENDPOINT=true
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-change-me}
+      - DEBUG=${DEBUG:-False}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   # Celery Worker pour les tâches asynchrones
   celery-worker:
     build:
@@ -91,8 +130,32 @@ services:
     volumes:
       - .:/app
 
+  # Caddy pour le reverse proxy et HTTPS
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: savr-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/caddy-entrypoint.sh:/usr/local/bin/caddy-entrypoint.sh:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - MINIO_DOMAIN=${MINIO_DOMAIN:-}
+      - CADDY_EMAIL=${CADDY_EMAIL:-}
+    depends_on:
+      django:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/caddy-entrypoint.sh"]
+
 volumes:
   postgres-data:
   redis-data:
   minio-data:
+  caddy-data:
+  caddy-config:
 
