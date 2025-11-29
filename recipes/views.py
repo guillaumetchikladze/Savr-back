@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Max
 from datetime import datetime, date
 from time import perf_counter
 from django.conf import settings
@@ -49,7 +49,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return RecipeCreateSerializer
         # Utiliser RecipeLightSerializer pour les listes (pas besoin de steps/ingredients)
-        if self.action in ['list', 'search']:
+        if self.action in ['list', 'search', 'my_imports', 'my_favorites', 'my_recipes']:
             return RecipeLightSerializer
         return RecipeSerializer
     
@@ -171,14 +171,36 @@ class RecipeViewSet(viewsets.ModelViewSet):
         ).filter(
             Q(source_type='user_created') | Q(source_type='imported')
         )
-        serializer = self.get_serializer(recipes, many=True)
+        summary_only = request.query_params.get('summary')
+        if summary_only:
+            count = recipes.count()
+            last_recipe = recipes.order_by('-updated_at').first()
+            return Response({
+                'count': count,
+                'last_activity': last_recipe.updated_at if last_recipe else None,
+            })
+        page = self.paginate_queryset(recipes)
+        serializer = self.get_serializer(page if page is not None else recipes, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def my_favorites(self, request):
         """Récupérer les recettes favorites de l'utilisateur"""
         recipes = request.user.favorite_recipes.all()
-        serializer = self.get_serializer(recipes, many=True)
+        summary_only = request.query_params.get('summary')
+        if summary_only:
+            count = recipes.count()
+            last_recipe = recipes.order_by('-updated_at').first()
+            return Response({
+                'count': count,
+                'last_activity': last_recipe.updated_at if last_recipe else None,
+            })
+        page = self.paginate_queryset(recipes)
+        serializer = self.get_serializer(page if page is not None else recipes, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
     
     @action(detail=False, methods=['post'])
@@ -503,21 +525,27 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         )
         
         # Chargement optimisé des relations utilisées par le serializer
+        from django.db.models import Prefetch
+        from .models import MealPlanRecipe, StepIngredient
+        
         if self.action in ['list']:
-            qs = qs.select_related('recipe').order_by('date', meal_time_order)
+            qs = qs.select_related('recipe').prefetch_related(
+                Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related('recipe').order_by('order'))
+            ).order_by('date', meal_time_order)
         elif self.action in ['by_date']:
-            from django.db.models import Prefetch
             qs = qs.select_related('user', 'recipe').prefetch_related(
                 Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
+                Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related('recipe').order_by('order')),
             ).order_by('date', meal_time_order)
         elif self.action in ['by_week', 'by_dates', 'bulk']:
-            qs = qs.select_related('user', 'recipe').order_by('date', meal_time_order)
+            qs = qs.select_related('user', 'recipe').prefetch_related(
+                Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related('recipe').order_by('order'))
+            ).order_by('date', meal_time_order)
         else:
             # Pour update, retrieve, etc. : préfetch les invitations si le serializer en a besoin
-            from django.db.models import Prefetch
-            from .models import StepIngredient
             qs = qs.select_related('user', 'recipe').prefetch_related(
                 Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
+                Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related('recipe').order_by('order')),
                 Prefetch('recipe__steps', queryset=Step.objects.prefetch_related(
                     Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
                 )),
@@ -1866,8 +1894,11 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(is_archived=False)
         
         # Optimisation : précharger toutes les relations nécessaires
+        from .models import MealPlanRecipe
         return queryset.prefetch_related(
-            Prefetch('meal_plans', queryset=MealPlan.objects.select_related('recipe')),
+            Prefetch('meal_plans', queryset=MealPlan.objects.select_related('recipe').prefetch_related(
+                Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related('recipe'))
+            )),
             Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category'))
         ).order_by('-created_at')
     
@@ -1884,12 +1915,18 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
     def generate_items(self, request, pk=None):
         """Générer automatiquement les items d'ingrédients à partir des meal plans"""
         from django.db.models import Prefetch
+        from .models import MealPlanRecipe
         
         shopping_list = ShoppingList.objects.prefetch_related(
             Prefetch('meal_plans', queryset=MealPlan.objects.select_related(
                 'recipe'
             ).prefetch_related(
                 'invitations',
+                Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related(
+                    'recipe'
+                ).prefetch_related(
+                    Prefetch('recipe__recipe_ingredients', queryset=RecipeIngredient.objects.select_related('ingredient__category'))
+                )),
                 Prefetch('recipe__recipe_ingredients', queryset=RecipeIngredient.objects.select_related('ingredient__category'))
             ))
         ).get(id=pk, user=request.user)
@@ -1898,33 +1935,61 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         ingredients_map = {}
         
         for meal_plan in shopping_list.meal_plans.all():
-            if not meal_plan.recipe:
-                continue
-                
             # Calculer le nombre de personnes (utiliser le prefetch)
             participants_count = meal_plan.invitations.filter(
                 status__in=['accepted', 'pending']
             ).count()
             servings = 1 + participants_count
-            base_servings = meal_plan.recipe.servings or 1
-            ratio = servings / base_servings
             
-            # Parcourir les ingrédients de la recette (déjà préchargés)
-            for recipe_ingredient in meal_plan.recipe.recipe_ingredients.all():
-                ingredient_id = recipe_ingredient.ingredient.id
-                quantity = float(recipe_ingredient.quantity) * ratio
-                unit = recipe_ingredient.unit
+            # Parcourir les MealPlanRecipe (nouvelles relations multi-recettes)
+            meal_plan_recipes = meal_plan.meal_plan_recipes.all()
+            
+            if meal_plan_recipes.exists():
+                # Utiliser les MealPlanRecipe
+                for meal_plan_recipe in meal_plan_recipes:
+                    recipe = meal_plan_recipe.recipe
+                    base_servings = recipe.servings or 1
+                    servings_ratio = servings / base_servings
+                    # Ratio effectif = ratio de la recette * ratio des servings
+                    effective_ratio = float(meal_plan_recipe.ratio) * servings_ratio
+                    
+                    # Parcourir les ingrédients de la recette
+                    for recipe_ingredient in recipe.recipe_ingredients.all():
+                        ingredient_id = recipe_ingredient.ingredient.id
+                        quantity = float(recipe_ingredient.quantity) * effective_ratio
+                        unit = recipe_ingredient.unit
+                        
+                        if ingredient_id not in ingredients_map:
+                            ingredients_map[ingredient_id] = {
+                                'quantity': 0,
+                                'unit': unit,
+                            }
+                        
+                        if ingredients_map[ingredient_id]['unit'] == unit:
+                            ingredients_map[ingredient_id]['quantity'] += quantity
+                        else:
+                            ingredients_map[ingredient_id]['quantity'] += quantity
+            elif meal_plan.recipe:
+                # Fallback pour compatibilité : utiliser meal_plan.recipe (ancienne API)
+                base_servings = meal_plan.recipe.servings or 1
+                ratio = servings / base_servings
                 
-                if ingredient_id not in ingredients_map:
-                    ingredients_map[ingredient_id] = {
-                        'quantity': 0,
-                        'unit': unit,
-                    }
-                
-                if ingredients_map[ingredient_id]['unit'] == unit:
-                    ingredients_map[ingredient_id]['quantity'] += quantity
-                else:
-                    ingredients_map[ingredient_id]['quantity'] += quantity
+                # Parcourir les ingrédients de la recette (déjà préchargés)
+                for recipe_ingredient in meal_plan.recipe.recipe_ingredients.all():
+                    ingredient_id = recipe_ingredient.ingredient.id
+                    quantity = float(recipe_ingredient.quantity) * ratio
+                    unit = recipe_ingredient.unit
+                    
+                    if ingredient_id not in ingredients_map:
+                        ingredients_map[ingredient_id] = {
+                            'quantity': 0,
+                            'unit': unit,
+                        }
+                    
+                    if ingredients_map[ingredient_id]['unit'] == unit:
+                        ingredients_map[ingredient_id]['quantity'] += quantity
+                    else:
+                        ingredients_map[ingredient_id]['quantity'] += quantity
         
         # Créer ou mettre à jour les items en bulk
         created_items = []
@@ -2015,11 +2080,21 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         
         try:
             # Optimisation maximale : précharger toutes les relations en une seule requête
+            from .models import MealPlanRecipe
             shopping_list = ShoppingList.objects.prefetch_related(
                 Prefetch(
                     'meal_plans',
                     queryset=MealPlan.objects.select_related('recipe').prefetch_related(
                         'invitations',
+                        Prefetch(
+                            'meal_plan_recipes',
+                            queryset=MealPlanRecipe.objects.select_related('recipe').prefetch_related(
+                                Prefetch(
+                                    'recipe__recipe_ingredients',
+                                    queryset=RecipeIngredient.objects.select_related('ingredient__category')
+                                )
+                            )
+                        ),
                         Prefetch(
                             'recipe__recipe_ingredients',
                             queryset=RecipeIngredient.objects.select_related('ingredient__category')
@@ -2038,36 +2113,77 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         ingredients_map = {}
         
         for meal_plan in shopping_list.meal_plans.all():
-            if not meal_plan.recipe:
-                continue
-            
             # Calculer le nombre de personnes
             participants_count = meal_plan.invitations.filter(
                 status__in=['accepted', 'pending']
             ).count()
             servings = 1 + participants_count
-            base_servings = meal_plan.recipe.servings or 1
-            ratio = servings / base_servings
             
-            # Parcourir les ingrédients de la recette
-            for recipe_ingredient in meal_plan.recipe.recipe_ingredients.all():
-                ingredient = recipe_ingredient.ingredient
-                ingredient_id = ingredient.id
-                quantity = float(recipe_ingredient.quantity) * ratio
-                unit = recipe_ingredient.unit
+            # Parcourir les MealPlanRecipe (nouvelles relations multi-recettes)
+            meal_plan_recipes = meal_plan.meal_plan_recipes.all()
+            
+            if meal_plan_recipes.exists():
+                # Utiliser les MealPlanRecipe
+                for meal_plan_recipe in meal_plan_recipes:
+                    recipe = meal_plan_recipe.recipe
+                    base_servings = recipe.servings or 1
+                    servings_ratio = servings / base_servings
+                    # Ratio effectif = ratio de la recette * ratio des servings
+                    effective_ratio = float(meal_plan_recipe.ratio) * servings_ratio
+                    
+                    # Parcourir les ingrédients de la recette
+                    for recipe_ingredient in recipe.recipe_ingredients.all():
+                        ingredient = recipe_ingredient.ingredient
+                        ingredient_id = ingredient.id
+                        quantity = float(recipe_ingredient.quantity) * effective_ratio
+                        unit = recipe_ingredient.unit
+                        
+                        if ingredient_id not in ingredients_map:
+                            ingredients_map[ingredient_id] = {
+                                'id': ingredient_id,
+                                'name': ingredient.name,
+                                'quantity': 0,
+                                'unit': unit,
+                                'category': {
+                                    'id': ingredient.category.id if ingredient.category else None,
+                                    'name': ingredient.category.name if ingredient.category else 'Autres',
+                                } if ingredient.category else {'id': None, 'name': 'Autres'},
+                                'item': None,
+                            }
+                        
+                        if ingredients_map[ingredient_id]['unit'] == unit:
+                            ingredients_map[ingredient_id]['quantity'] += quantity
+                        else:
+                            ingredients_map[ingredient_id]['quantity'] += quantity
+            elif meal_plan.recipe:
+                # Fallback pour compatibilité : utiliser meal_plan.recipe (ancienne API)
+                base_servings = meal_plan.recipe.servings or 1
+                ratio = servings / base_servings
                 
-                if ingredient_id not in ingredients_map:
-                    ingredients_map[ingredient_id] = {
-                        'id': ingredient_id,
-                        'name': ingredient.name,
-                        'quantity': 0,
-                        'unit': unit,
-                        'category': {
-                            'id': ingredient.category.id if ingredient.category else None,
-                            'name': ingredient.category.name if ingredient.category else 'Autres',
-                        } if ingredient.category else {'id': None, 'name': 'Autres'},
-                        'item': None,
-                    }
+                # Parcourir les ingrédients de la recette
+                for recipe_ingredient in meal_plan.recipe.recipe_ingredients.all():
+                    ingredient = recipe_ingredient.ingredient
+                    ingredient_id = ingredient.id
+                    quantity = float(recipe_ingredient.quantity) * ratio
+                    unit = recipe_ingredient.unit
+                    
+                    if ingredient_id not in ingredients_map:
+                        ingredients_map[ingredient_id] = {
+                            'id': ingredient_id,
+                            'name': ingredient.name,
+                            'quantity': 0,
+                            'unit': unit,
+                            'category': {
+                                'id': ingredient.category.id if ingredient.category else None,
+                                'name': ingredient.category.name if ingredient.category else 'Autres',
+                            } if ingredient.category else {'id': None, 'name': 'Autres'},
+                            'item': None,
+                        }
+                    
+                    if ingredients_map[ingredient_id]['unit'] == unit:
+                        ingredients_map[ingredient_id]['quantity'] += quantity
+                    else:
+                        ingredients_map[ingredient_id]['quantity'] += quantity
                 
                 if ingredients_map[ingredient_id]['unit'] == unit:
                     ingredients_map[ingredient_id]['quantity'] += quantity
@@ -2118,7 +2234,11 @@ class CollectionViewSet(viewsets.ModelViewSet):
             'members__user'
         )
         
-        return queryset.order_by('-created_at')
+        queryset = queryset.annotate(
+            last_activity=Max('collection_recipes__added_at')
+        )
+        
+        return queryset.order_by('-last_activity', '-updated_at')
     
     def perform_create(self, serializer):
         """Créer une collection avec l'utilisateur connecté comme owner"""
@@ -2333,8 +2453,9 @@ class CollectionViewSet(viewsets.ModelViewSet):
             ).select_related('owner').prefetch_related(
                 'collection_recipes__recipe'
             ).annotate(
-                total_recipes=Count('collection_recipes', distinct=True)
-            ).order_by('-created_at')
+                total_recipes=Count('collection_recipes', distinct=True),
+                last_activity=Max('collection_recipes__added_at')
+            ).order_by('-last_activity', '-updated_at')
             
             serializer = self.get_serializer(collections, many=True)
             return Response(serializer.data)
@@ -2347,3 +2468,43 @@ class CollectionViewSet(viewsets.ModelViewSet):
                 {'error': f'Erreur serveur: {str(e)}', 'details': error_trace if settings.DEBUG else None},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['get'])
+    def recipes(self, request, pk=None):
+        """Lister les recettes d'une collection (paginé)"""
+        collection = self.get_object()
+        queryset = CollectionRecipe.objects.filter(
+            collection=collection
+        ).select_related('recipe').order_by('-added_at')
+        
+        page = self.paginate_queryset(queryset)
+        serializer = CollectionRecipeSerializer(
+            page if page is not None else queryset,
+            many=True,
+            context={'request': request}
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def suggestions(self, request, pk=None):
+        """Proposer des recettes similaires à ajouter dans la collection"""
+        collection = self.get_object()
+        existing_ids = collection.collection_recipes.values_list('recipe_id', flat=True)
+        
+        queryset = Recipe.objects.filter(
+            Q(is_public=True) | Q(created_by=request.user)
+        ).exclude(
+            id__in=existing_ids
+        ).order_by('-created_at')
+        
+        page = self.paginate_queryset(queryset)
+        serializer = RecipeLightSerializer(
+            page if page is not None else queryset,
+            many=True,
+            context={'request': request}
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)

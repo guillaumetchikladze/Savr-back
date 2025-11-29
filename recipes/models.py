@@ -309,6 +309,44 @@ class MealPlan(models.Model):
         return f"{self.user.email} - {self.date} - {self.get_meal_time_display()}"
 
 
+class MealPlanRecipe(models.Model):
+    """Relation entre MealPlan et Recipe avec ratio personnalisable"""
+    meal_plan = models.ForeignKey(
+        MealPlan,
+        on_delete=models.CASCADE,
+        related_name='meal_plan_recipes',
+        verbose_name='Repas planifié'
+    )
+    recipe = models.ForeignKey(
+        Recipe,
+        on_delete=models.CASCADE,
+        related_name='meal_plan_recipes',
+        verbose_name='Recette'
+    )
+    ratio = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=1.0,
+        help_text="Ratio à appliquer aux quantités de la recette (défaut: 1.0)"
+    )
+    order = models.IntegerField(
+        default=0,
+        help_text="Ordre d'affichage des recettes dans le meal plan"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ['meal_plan', 'recipe']
+        ordering = ['order', 'created_at']
+        indexes = [
+            models.Index(fields=['meal_plan', 'order'], name='mpr_mealplan_order_idx'),
+        ]
+    
+    def __str__(self):
+        return f"{self.meal_plan} - {self.recipe.title} (ratio: {self.ratio})"
+
+
 class MealInvitation(models.Model):
     """Invitation à un repas partagé"""
     STATUS_CHOICES = [
