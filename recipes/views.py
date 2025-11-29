@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q, Count, Max
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from time import perf_counter
 from django.conf import settings
 from django.db import connection
@@ -122,6 +122,56 @@ class RecipeViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
+            data = serializer.data
+            
+            # Ajouter les meal plans proches si demandé
+            include_nearby = request.query_params.get('include_nearby_meal_plans', 'false').lower() == 'true'
+            if include_nearby:
+                target_date_str = request.query_params.get('date')
+                meal_time = request.query_params.get('meal_time')
+                
+                if target_date_str and meal_time:
+                    try:
+                        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+                        nearby_meal_plans = self._get_nearby_meal_plans(request.user, target_date, meal_time)
+                        
+                        # Convertir les meal plans en format "recette suggérée"
+                        meal_plan_suggestions = []
+                        for meal_plan in nearby_meal_plans:
+                            # Calculer le nombre total de personnes
+                            total_servings = 1 + (meal_plan.invitations.filter(
+                                status__in=['pending', 'accepted']
+                            ).count())
+                            
+                            # Récupérer les recettes du meal plan
+                            recipes = []
+                            for mpr in meal_plan.meal_plan_recipes.all().select_related('recipe'):
+                                recipe_data = RecipeLightSerializer(mpr.recipe).data
+                                recipe_data['ratio'] = float(mpr.ratio)
+                                recipes.append(recipe_data)
+                            
+                            meal_plan_suggestions.append({
+                                'id': f'meal_plan_{meal_plan.id}',
+                                'is_meal_plan': True,
+                                'meal_plan_id': meal_plan.id,
+                                'title': f"Repas du {meal_plan.date.strftime('%d/%m')}",
+                                'image_url': recipes[0]['image_url'] if recipes else None,
+                                'recipes': recipes,
+                                'original_date': meal_plan.date.strftime('%Y-%m-%d'),
+                                'total_servings': total_servings,
+                                'meal_time': meal_plan.meal_time,
+                            })
+                        
+                        # Mélanger les suggestions et limiter à 2-3
+                        import random
+                        random.shuffle(meal_plan_suggestions)
+                        meal_plan_suggestions = meal_plan_suggestions[:3]
+                        
+                        # Insérer les suggestions de meal plans au début de la liste
+                        data = list(meal_plan_suggestions) + list(data)
+                    except (ValueError, TypeError) as e:
+                        # Si la date est invalide, ignorer les meal plans proches
+                        pass
             
             if settings.DEBUG:
                 t_ser_end = perf_counter()
@@ -131,10 +181,37 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 print(f"[RecipeViewSet.list] count={count} items={len(page)} qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} "
                       f"db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}")
             
-            return self.get_paginated_response(serializer.data)
+            return self.get_paginated_response(data)
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+    
+    def _get_nearby_meal_plans(self, user, target_date, meal_time, max_days=4, limit=10):
+        """Récupérer les meal plans des jours futurs uniquement (max 4 jours)"""
+        from django.db.models import Prefetch
+        from .models import MealPlanRecipe
+        from django.utils import timezone
+        
+        # Ne suggérer que les dates futures (pas de dates passées)
+        # Calculer la plage de dates futures uniquement
+        today = timezone.now().date()
+        date_start = target_date if target_date >= today else today
+        date_end = target_date + timedelta(days=max_days)
+        
+        # Récupérer les meal plans non cuisinés dans la plage (futurs uniquement)
+        meal_plans = MealPlan.objects.filter(
+            user=user,
+            date__gte=date_start,  # Commencer à partir d'aujourd'hui ou de la date cible
+            date__lte=date_end,
+            date__gt=target_date,  # Exclure le jour actuel et les dates passées
+            meal_time=meal_time,
+            is_cooked=False
+        ).prefetch_related(
+            Prefetch('meal_plan_recipes', queryset=MealPlanRecipe.objects.select_related('recipe').order_by('order')),
+            'invitations'
+        ).order_by('?')[:limit]  # Ordre aléatoire et limiter
+        
+        return meal_plans
     
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -868,6 +945,107 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             photo.save(update_fields=['post', 'order'])
 
         serializer = PostSerializer(post, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['post'], url_path='apply-to-dates')
+    def apply_to_dates(self, request, pk=None):
+        """Appliquer un meal plan à plusieurs dates en sommant les participants"""
+        from django.db import transaction
+        from decimal import Decimal
+        from .models import MealPlanRecipe
+        
+        source_meal_plan = self.get_object()
+        
+        # Vérifier que le meal plan source n'est pas déjà cuisiné
+        if source_meal_plan.is_cooked:
+            return Response(
+                {'error': 'Cannot apply a meal plan that has already been cooked'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        date_keys = request.data.get('date_keys', [])
+        meal_time = request.data.get('meal_time')
+        
+        if not date_keys or not isinstance(date_keys, list):
+            return Response(
+                {'error': 'date_keys must be a non-empty list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not meal_time:
+            return Response(
+                {'error': 'meal_time is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        created_meal_plans = []
+        
+        with transaction.atomic():
+            # Récupérer les recettes et ratios du meal plan source
+            source_recipes = source_meal_plan.meal_plan_recipes.all().select_related('recipe')
+            recipe_data = [(mpr.recipe_id, float(mpr.ratio), mpr.order) for mpr in source_recipes]
+            
+            for date_key in date_keys:
+                try:
+                    target_date = datetime.strptime(date_key, '%Y-%m-%d').date()
+                except ValueError:
+                    continue
+                
+                # Vérifier si un meal plan existe déjà pour cette date + meal_time
+                existing_meal_plan = MealPlan.objects.filter(
+                    user=request.user,
+                    date=target_date,
+                    meal_time=meal_time
+                ).first()
+                
+                # Calculer le nombre total de participants pour cette date
+                # Somme de tous les meal plans existants pour cette date + meal_time
+                total_participants = 1  # L'utilisateur lui-même
+                if existing_meal_plan:
+                    # Compter les invitations acceptées/pending du meal plan existant
+                    total_participants += existing_meal_plan.invitations.filter(
+                        status__in=['pending', 'accepted']
+                    ).count()
+                else:
+                    # Compter toutes les invitations de tous les meal plans de cette date
+                    all_meal_plans = MealPlan.objects.filter(
+                        user=request.user,
+                        date=target_date,
+                        meal_time=meal_time
+                    )
+                    for mp in all_meal_plans:
+                        total_participants += mp.invitations.filter(
+                            status__in=['pending', 'accepted']
+                        ).count()
+                
+                # Créer ou mettre à jour le meal plan
+                if existing_meal_plan:
+                    # Supprimer les anciennes recettes
+                    existing_meal_plan.meal_plan_recipes.all().delete()
+                    meal_plan = existing_meal_plan
+                else:
+                    # Créer un nouveau meal plan
+                    meal_plan = MealPlan.objects.create(
+                        user=request.user,
+                        date=target_date,
+                        meal_time=meal_time,
+                        meal_type=source_meal_plan.meal_type,
+                        confirmed=source_meal_plan.confirmed,
+                    )
+                
+                # Ajouter les recettes avec leurs ratios
+                for recipe_id, ratio, order in recipe_data:
+                    MealPlanRecipe.objects.create(
+                        meal_plan=meal_plan,
+                        recipe_id=recipe_id,
+                        ratio=Decimal(str(ratio)),
+                        order=order
+                    )
+                
+                created_meal_plans.append(meal_plan)
+        
+        # Sérialiser les meal plans créés
+        serializer = self.get_serializer(created_meal_plans, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     
     @action(detail=True, methods=['post'])
