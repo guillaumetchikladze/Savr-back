@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.conf import settings
 from .models import (
     Category,
     Recipe,
@@ -8,6 +9,8 @@ from .models import (
     StepIngredient,
     MealPlan,
     MealPlanRecipe,
+    MealPlanGroup,
+    MealPlanGroupMember,
     MealInvitation,
     CookingProgress,
     Timer,
@@ -79,6 +82,41 @@ class StepSerializer(serializers.ModelSerializer):
     class Meta:
         model = Step
         fields = ['id', 'order', 'title', 'instruction', 'tip', 'has_timer', 'timer_duration', 'step_ingredients']
+
+
+class RecipeDetailSerializer(serializers.ModelSerializer):
+    """
+    Serializer léger pour retrieve - charge seulement les données essentielles
+    Les steps et ingrédients détaillés sont chargés via des endpoints séparés
+    """
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    is_favorited = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
+    # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
+    
+    class Meta:
+        model = Recipe
+        fields = [
+            'id', 'title', 'description', 'steps_summary', 'meal_type', 'meal_type_display',
+            'difficulty', 'difficulty_display', 'prep_time', 'cook_time',
+            'servings', 'image_path', 'image_url', 'created_by', 'created_by_username',
+            'is_public', 'source_type', 'source_type_display', 'import_source_url',
+            'created_at', 'updated_at', 'is_favorited'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
+    
+    def get_image_url(self, obj):
+        return obj.image_url
+    
+    def get_is_favorited(self, obj):
+        """Vérifier si l'utilisateur connecté a favorisé cette recette"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.favorited_by.filter(id=request.user.id).exists()
+        return False
 
 
 class RecipeSerializer(serializers.ModelSerializer):
@@ -187,8 +225,127 @@ class MealPlanRecipeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class MealPlanSerializer(serializers.ModelSerializer):
-    recipe = RecipeSerializer(read_only=True)  # Garder pour compatibilité
+class MealPlanGroupMixin:
+    """Fournit les champs group_id et groupedDates pour les serializers de MealPlan."""
+    
+    def _get_group_membership(self, obj):
+        membership = getattr(obj, '_cached_group_membership', None)
+        if membership is not None:
+            return membership
+        membership = obj.group_memberships.first() if hasattr(obj, 'group_memberships') else None
+        if membership:
+            setattr(obj, '_cached_group_membership', membership)
+        return membership
+    
+    def get_group_id(self, obj):
+        membership = self._get_group_membership(obj)
+        return membership.group.id if membership else None
+    
+    def get_groupedDates(self, obj):
+        membership = self._get_group_membership(obj)
+        if membership:
+            group = membership.group
+            members = list(group.members.all())
+            if not members:
+                return [obj.date.isoformat()]
+            members.sort(
+                key=lambda m: (
+                    m.order,
+                    m.meal_plan.date,
+                    m.meal_plan.meal_time,
+                    m.meal_plan.id,
+                )
+            )
+            return [member.meal_plan.date.isoformat() for member in members]
+        return [obj.date.isoformat()]
+
+
+class MealPlanDetailSerializer(MealPlanGroupMixin, serializers.ModelSerializer):
+    """
+    Serializer léger pour retrieve - charge seulement les données essentielles
+    Les steps et ingrédients détaillés sont chargés via des endpoints séparés
+    """
+    recipe = RecipeLightSerializer(read_only=True)  # Utiliser RecipeLightSerializer au lieu de RecipeSerializer
+    recipes = MealPlanRecipeSerializer(source='meal_plan_recipes', many=True, read_only=True)
+    meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
+    meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    user = UserLightSerializer(read_only=True)
+    participants = serializers.SerializerMethodField()
+    total_guest_count = serializers.SerializerMethodField()
+    total_participants = serializers.SerializerMethodField()
+    total_servings = serializers.SerializerMethodField()
+    groupedDates = serializers.SerializerMethodField()
+    group_id = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = MealPlan
+        fields = [
+            'id', 'date', 'meal_time', 'meal_time_display',
+            'meal_type', 'meal_type_display', 'recipe', 'recipes',
+            'user', 'participants', 'confirmed', 'is_cooked', 'guest_count', 
+            'total_guest_count', 'total_participants', 'total_servings',
+            'groupedDates', 'group_id', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['user', 'participants', 'is_cooked', 'created_at', 'updated_at']
+    
+    def get_participants(self, obj):
+        from .models import MealInvitation
+        invitations = obj.invitations.all() if hasattr(obj, 'invitations') else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+        # Log pour debug (uniquement en mode DEBUG)
+        if settings.DEBUG:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"[MealPlanDetailSerializer] get_participants for meal plan {obj.id}: {len(invitations)} invitations")
+            for inv in invitations:
+                logger.debug(f"  - Invitation {inv.id}: user_id={inv.invitee_id}, status={inv.status}")
+        return [
+            {
+                'user': UserLightSerializer(inv.invitee, context=self.context).data,
+                'status': inv.status
+            }
+            for inv in invitations
+        ]
+    
+    def get_total_guest_count(self, obj: MealPlan):
+        if hasattr(obj, '_total_guest_count'):
+            return obj._total_guest_count
+        return obj.guest_count or 0
+    
+    def get_total_participants(self, obj: MealPlan):
+        if hasattr(obj, '_total_participants'):
+            precedence = {'accepted': 3, 'pending': 2, 'declined': 1}
+            by_user_id = {}
+            for p in obj._total_participants:
+                uid = p['user'].id
+                existing = by_user_id.get(uid)
+                if not existing or precedence.get(p['status'], 0) > precedence.get(existing['status'], 0):
+                    by_user_id[uid] = {
+                        'user': UserLightSerializer(p['user'], context=self.context).data,
+                        'status': p['status'],
+                    }
+            return list(by_user_id.values())
+        return self.get_participants(obj)
+    
+    def get_total_servings(self, obj: MealPlan):
+        if hasattr(obj, '_total_servings'):
+            return obj._total_servings
+        
+        participants_to_use = None
+        if hasattr(obj, '_total_participants'):
+            participants_to_use = obj._total_participants
+        else:
+            participants_to_use = self.get_participants(obj)
+        
+        active_participants_count = sum(
+            1 for p in participants_to_use
+            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
+        )
+        
+        guest_count_to_use = self.get_total_guest_count(obj)
+        return 1 + active_participants_count + guest_count_to_use
+    
+class MealPlanSerializer(MealPlanGroupMixin, serializers.ModelSerializer):
+    recipe = RecipeSerializer(read_only=True)  # Garder pour compatibilité (utilisé pour create/update)
     recipe_id = serializers.PrimaryKeyRelatedField(
         queryset=Recipe.objects.all(),
         source='recipe',
@@ -218,6 +375,11 @@ class MealPlanSerializer(serializers.ModelSerializer):
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     user = UserLightSerializer(read_only=True)
     participants = serializers.SerializerMethodField()
+    total_guest_count = serializers.SerializerMethodField()
+    total_participants = serializers.SerializerMethodField()
+    total_servings = serializers.SerializerMethodField()
+    groupedDates = serializers.SerializerMethodField()
+    group_id = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
@@ -225,8 +387,9 @@ class MealPlanSerializer(serializers.ModelSerializer):
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'recipe', 'recipe_id',
             'recipes', 'recipe_ids', 'recipe_ratios',
-            'user', 'participants', 'confirmed', 'is_cooked',
-            'created_at', 'updated_at'
+            'user', 'participants', 'confirmed', 'is_cooked', 'guest_count', 
+            'total_guest_count', 'total_participants', 'total_servings',
+            'groupedDates', 'group_id', 'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'participants', 'is_cooked', 'created_at', 'updated_at']
     
@@ -328,21 +491,81 @@ class MealPlanSerializer(serializers.ModelSerializer):
             }
             for inv in invitations
         ]
-
-
-class MealPlanListSerializer(serializers.ModelSerializer):
+    
+    def get_total_guest_count(self, obj: MealPlan):
+        """
+        Retourne le total_guest_count pré-calculé si disponible.
+        Sinon retourne simplement guest_count (meal plan non groupé).
+        """
+        if hasattr(obj, '_total_guest_count'):
+            return obj._total_guest_count
+        return obj.guest_count or 0
+    
+    def get_total_participants(self, obj: MealPlan):
+        """
+        Retourne les participants groupés pré-calculés si disponibles.
+        Sinon retourne les participants du meal plan individuel.
+        """
+        if hasattr(obj, '_total_participants'):
+            precedence = {'accepted': 3, 'pending': 2, 'declined': 1}
+            by_user_id = {}
+            for p in obj._total_participants:
+                uid = p['user'].id
+                existing = by_user_id.get(uid)
+                if not existing or precedence.get(p['status'], 0) > precedence.get(existing['status'], 0):
+                    by_user_id[uid] = {
+                        'user': UserLightSerializer(p['user'], context=self.context).data,
+                        'status': p['status'],
+                    }
+            return list(by_user_id.values())
+        
+        # Fallback : utiliser get_participants normal
+        return self.get_participants(obj)
+    
+    def get_total_servings(self, obj: MealPlan):
+        """
+        Calcule le nombre total de personnes pour ce meal plan.
+        Pour un meal plan simple : 1 + participants actifs + guest_count
+        Pour un meal plan groupé : utilise _total_servings pré-calculé
+        """
+        # Si on a un total_servings pré-calculé (meal plan groupé), l'utiliser
+        if hasattr(obj, '_total_servings'):
+            return obj._total_servings
+        
+        # Sinon, calculer pour un meal plan simple
+        # Utiliser total_participants si disponible (groupé), sinon participants
+        participants_to_use = None
+        if hasattr(obj, '_total_participants'):
+            participants_to_use = obj._total_participants
+        else:
+            participants_to_use = self.get_participants(obj)
+        
+        # Compter uniquement les participants actifs (accepted ou pending)
+        active_participants_count = sum(
+            1 for p in participants_to_use
+            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
+        )
+        
+        # Utiliser total_guest_count si disponible (groupé), sinon guest_count
+        guest_count_to_use = self.get_total_guest_count(obj)
+        
+        return 1 + active_participants_count + guest_count_to_use
+    
+class MealPlanListSerializer(MealPlanGroupMixin, serializers.ModelSerializer):
     user = UserLightSerializer(read_only=True)
     recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipes', many=True, read_only=True)
     meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    groupedDates = serializers.SerializerMethodField()
+    group_id = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'confirmed', 'is_cooked',
-            'recipe', 'user',
+            'recipe', 'user', 'recipes', 'groupedDates', 'group_id',
         ]
 
 
@@ -367,7 +590,7 @@ class MealInvitationSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'inviter', 'invitee', 'meal_plan', 'status_display']
 
-class MealPlanRangeListSerializer(serializers.ModelSerializer):
+class MealPlanRangeListSerializer(MealPlanGroupMixin, serializers.ModelSerializer):
     """
     Lightweight list serializer for ranged listing:
     - removes user/shared_with to reduce payload
@@ -376,14 +599,80 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipes', many=True, read_only=True)
     meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    total_guest_count = serializers.SerializerMethodField()
+    total_participants = serializers.SerializerMethodField()
+    total_servings = serializers.SerializerMethodField()
+    groupedDates = serializers.SerializerMethodField()
+    group_id = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'confirmed', 'is_cooked',
-            'recipe', 'recipes',
+            'recipe', 'recipes', 'total_guest_count', 'total_participants', 'total_servings',
+            'groupedDates', 'group_id',
         ]
+    
+    def get_total_guest_count(self, obj: MealPlan):
+        """
+        Retourne le total_guest_count pré-calculé si disponible.
+        Sinon retourne simplement guest_count (meal plan non groupé).
+        """
+        if hasattr(obj, '_total_guest_count'):
+            return obj._total_guest_count
+        return obj.guest_count or 0
+    
+    def get_total_participants(self, obj: MealPlan):
+        """
+        Retourne les participants groupés pré-calculés si disponibles.
+        Sinon retourne une liste vide (meal plan non groupé).
+        """
+        if hasattr(obj, '_total_participants'):
+            precedence = {'accepted': 3, 'pending': 2, 'declined': 1}
+            by_user_id = {}
+            for p in obj._total_participants:
+                uid = p['user'].id
+                existing = by_user_id.get(uid)
+                if not existing or precedence.get(p['status'], 0) > precedence.get(existing['status'], 0):
+                    by_user_id[uid] = {
+                        'user': UserLightSerializer(p['user'], context=self.context).data,
+                        'status': p['status'],
+                    }
+            return list(by_user_id.values())
+        
+        # Fallback : retourner une liste vide pour les meal plans non groupés
+        return []
+    
+    def get_total_servings(self, obj: MealPlan):
+        """
+        Calcule le nombre total de personnes pour ce meal plan.
+        Pour un meal plan simple : 1 + participants actifs + guest_count
+        Pour un meal plan groupé : utilise _total_servings pré-calculé
+        """
+        # Si on a un total_servings pré-calculé (meal plan groupé), l'utiliser
+        if hasattr(obj, '_total_servings'):
+            return obj._total_servings
+        
+        # Sinon, calculer pour un meal plan simple
+        # Utiliser total_participants si disponible (groupé), sinon participants
+        participants_to_use = None
+        if hasattr(obj, '_total_participants'):
+            participants_to_use = obj._total_participants
+        else:
+            # Pour MealPlanRangeListSerializer, on n'a pas get_participants, donc utiliser une liste vide
+            participants_to_use = []
+        
+        # Compter uniquement les participants actifs (accepted ou pending)
+        active_participants_count = sum(
+            1 for p in participants_to_use
+            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
+        )
+        
+        # Utiliser total_guest_count si disponible (groupé), sinon guest_count
+        guest_count_to_use = self.get_total_guest_count(obj)
+        
+        return 1 + active_participants_count + guest_count_to_use
 
 class MealPlanByDateSerializer(serializers.ModelSerializer):
     """
@@ -395,13 +684,19 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
     meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     participants = serializers.SerializerMethodField()
+    total_guest_count = serializers.SerializerMethodField()
+    total_participants = serializers.SerializerMethodField()
+    total_servings = serializers.SerializerMethodField()
+    groupedDates = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'confirmed', 'is_cooked',
-            'recipe', 'recipes', 'host', 'participants',
+            'recipe', 'recipes', 'host', 'participants', 'guest_count', 
+            'total_guest_count', 'total_participants', 'total_servings',
+            'groupedDates',
         ]
     
     def get_participants(self, obj: MealPlan):
@@ -421,6 +716,65 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
                     'status': inv.status,
                 }
         return list(by_user_id.values())
+    
+    def get_total_guest_count(self, obj: MealPlan):
+        """
+        Retourne le total_guest_count pré-calculé dans by_date.
+        Si pas pré-calculé, retourne simplement guest_count (meal plan non groupé).
+        """
+        if hasattr(obj, '_total_guest_count'):
+            return obj._total_guest_count
+        return obj.guest_count or 0
+    
+    def get_total_participants(self, obj: MealPlan):
+        """
+        Retourne les participants groupés pré-calculés dans by_date.
+        Si pas pré-calculé, retourne les participants du meal plan individuel.
+        """
+        if hasattr(obj, '_total_participants'):
+            precedence = {'accepted': 3, 'pending': 2, 'declined': 1}
+            by_user_id = {}
+            for p in obj._total_participants:
+                uid = p['user'].id
+                existing = by_user_id.get(uid)
+                if not existing or precedence.get(p['status'], 0) > precedence.get(existing['status'], 0):
+                    by_user_id[uid] = {
+                        'user': UserLightSerializer(p['user'], context=self.context).data,
+                        'status': p['status'],
+                    }
+            return list(by_user_id.values())
+        
+        # Fallback : utiliser get_participants normal
+        return self.get_participants(obj)
+    
+    def get_total_servings(self, obj: MealPlan):
+        """
+        Calcule le nombre total de personnes pour ce meal plan.
+        Pour un meal plan simple : 1 + participants actifs + guest_count
+        Pour un meal plan groupé : utilise _total_servings pré-calculé
+        """
+        # Si on a un total_servings pré-calculé (meal plan groupé), l'utiliser
+        if hasattr(obj, '_total_servings'):
+            return obj._total_servings
+        
+        # Sinon, calculer pour un meal plan simple
+        # Utiliser total_participants si disponible (groupé), sinon participants
+        participants_to_use = None
+        if hasattr(obj, '_total_participants'):
+            participants_to_use = obj._total_participants
+        else:
+            participants_to_use = self.get_participants(obj)
+        
+        # Compter uniquement les participants actifs (accepted ou pending)
+        active_participants_count = sum(
+            1 for p in participants_to_use
+            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
+        )
+        
+        # Utiliser total_guest_count si disponible (groupé), sinon guest_count
+        guest_count_to_use = self.get_total_guest_count(obj)
+        
+        return 1 + active_participants_count + guest_count_to_use
 
 
 class CookingProgressSerializer(serializers.ModelSerializer):
@@ -1061,6 +1415,85 @@ class RecipeFormalizeSerializer(serializers.Serializer):
         if len(lines) > 50:
             raise serializers.ValidationError("Maximum 50 étapes autorisées.")
         return value
+
+
+class MealPlanGroupMemberSerializer(serializers.ModelSerializer):
+    """Serializer pour un membre d'un groupe de meal plans"""
+    meal_plan = MealPlanSerializer(read_only=True)
+    meal_plan_id = serializers.PrimaryKeyRelatedField(
+        queryset=MealPlan.objects.all(),
+        source='meal_plan',
+        write_only=True,
+        required=True
+    )
+    
+    class Meta:
+        model = MealPlanGroupMember
+        fields = ['id', 'group', 'meal_plan', 'meal_plan_id', 'order', 'created_at']
+        read_only_fields = ['id', 'group', 'created_at']
+
+
+class MealPlanGroupSerializer(serializers.ModelSerializer):
+    """Serializer pour un groupe de meal plans"""
+    user = UserLightSerializer(read_only=True)
+    members = MealPlanGroupMemberSerializer(many=True, read_only=True)
+    meal_plan_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+        help_text="Liste des IDs de meal plans à ajouter au groupe"
+    )
+    members_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = MealPlanGroup
+        fields = ['id', 'user', 'name', 'members', 'meal_plan_ids', 'members_count', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'created_at', 'updated_at']
+    
+    def get_members_count(self, obj):
+        """Retourne le nombre de meal plans dans le groupe"""
+        return obj.members.count()
+    
+    def create(self, validated_data):
+        """Créer un groupe et y ajouter les meal plans"""
+        validated_data['user'] = self.context['request'].user
+        meal_plan_ids = validated_data.pop('meal_plan_ids', [])
+        
+        # Créer le groupe
+        group = super().create(validated_data)
+        
+        # Ajouter les meal plans au groupe
+        if meal_plan_ids:
+            for order, meal_plan_id in enumerate(meal_plan_ids):
+                MealPlanGroupMember.objects.create(
+                    group=group,
+                    meal_plan_id=meal_plan_id,
+                    order=order
+                )
+        
+        return group
+    
+    def update(self, instance, validated_data):
+        """Mettre à jour un groupe et ses membres"""
+        meal_plan_ids = validated_data.pop('meal_plan_ids', None)
+        
+        # Mettre à jour les champs du groupe
+        instance = super().update(instance, validated_data)
+        
+        # Mettre à jour les membres si meal_plan_ids est fourni
+        if meal_plan_ids is not None:
+            # Supprimer les anciens membres
+            instance.members.all().delete()
+            
+            # Ajouter les nouveaux membres
+            for order, meal_plan_id in enumerate(meal_plan_ids):
+                MealPlanGroupMember.objects.create(
+                    group=instance,
+                    meal_plan_id=meal_plan_id,
+                    order=order
+                )
+        
+        return instance
 
 
 class RecipeImportRequestSerializer(serializers.ModelSerializer):

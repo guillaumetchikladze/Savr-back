@@ -294,6 +294,10 @@ class MealPlan(models.Model):
     )
     confirmed = models.BooleanField(default=False)
     is_cooked = models.BooleanField(default=False, help_text="Le plat a été cuisiné")
+    guest_count = models.IntegerField(
+        default=0,
+        help_text="Nombre d'invités anonymes (sans compte) pour ce repas"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -303,7 +307,27 @@ class MealPlan(models.Model):
         indexes = [
             models.Index(fields=['user', 'date'], name='mealplan_user_date_idx'),
             models.Index(fields=['user', 'is_cooked'], name='mealplan_user_cooked_idx'),
+            models.Index(fields=['user', 'meal_time'], name='mealplan_user_meal_time_idx'),
         ]
+    
+    def get_group_key(self):
+        """
+        Génère une clé unique pour identifier les meal plans du même groupe
+        (même meal_time, mêmes recettes avec mêmes ratios).
+        Utilisé pour grouper les meal plans sur plusieurs dates.
+        """
+        # Récupérer les recettes et ratios triés
+        meal_plan_recipes = self.meal_plan_recipes.all().order_by('order')
+        if meal_plan_recipes.exists():
+            recipe_ids = ','.join(str(mpr.recipe_id) for mpr in meal_plan_recipes)
+            # Normaliser les ratios pour éviter les problèmes de comparaison (ex: 1.0 vs 1.00)
+            from decimal import Decimal
+            ratios = ','.join(str(Decimal(str(mpr.ratio)).normalize()) for mpr in meal_plan_recipes)
+            return f"{self.meal_time}|{recipe_ids}|{ratios}"
+        elif self.recipe:
+            # Ancienne API : une seule recette
+            return f"{self.meal_time}|{self.recipe_id}|1"
+        return None
     
     def __str__(self):
         return f"{self.user.email} - {self.date} - {self.get_meal_time_display()}"
@@ -341,10 +365,76 @@ class MealPlanRecipe(models.Model):
         ordering = ['order', 'created_at']
         indexes = [
             models.Index(fields=['meal_plan', 'order'], name='mpr_mealplan_order_idx'),
+            models.Index(fields=['meal_plan', 'recipe'], name='mpr_mealplan_recipe_idx'),
         ]
     
     def __str__(self):
         return f"{self.meal_plan} - {self.recipe.title} (ratio: {self.ratio})"
+
+
+class MealPlanGroup(models.Model):
+    """Groupe explicite de meal plans partagés sur plusieurs dates"""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='meal_plan_groups',
+        help_text="Utilisateur propriétaire du groupe"
+    )
+    name = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Nom optionnel du groupe (ex: 'Repas de la semaine')"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at'], name='mpg_user_created_idx'),
+        ]
+        verbose_name = 'Groupe de repas planifiés'
+        verbose_name_plural = 'Groupes de repas planifiés'
+    
+    def __str__(self):
+        if self.name:
+            return f"{self.user.username} - {self.name}"
+        return f"{self.user.username} - Groupe #{self.id}"
+
+
+class MealPlanGroupMember(models.Model):
+    """Membre d'un groupe de meal plans"""
+    group = models.ForeignKey(
+        MealPlanGroup,
+        on_delete=models.CASCADE,
+        related_name='members',
+        help_text="Groupe auquel appartient ce meal plan"
+    )
+    meal_plan = models.ForeignKey(
+        MealPlan,
+        on_delete=models.CASCADE,
+        related_name='group_memberships',
+        help_text="Meal plan membre du groupe"
+    )
+    order = models.IntegerField(
+        default=0,
+        help_text="Ordre d'affichage dans le groupe (pour trier par date)"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        unique_together = ['group', 'meal_plan']
+        ordering = ['order', 'created_at']
+        indexes = [
+            models.Index(fields=['group', 'order'], name='mpgm_group_order_idx'),
+            models.Index(fields=['meal_plan'], name='mpgm_mealplan_idx'),
+        ]
+        verbose_name = 'Membre de groupe de repas'
+        verbose_name_plural = 'Membres de groupes de repas'
+    
+    def __str__(self):
+        return f"{self.group} - {self.meal_plan.date} ({self.meal_plan.get_meal_time_display()})"
 
 
 class MealInvitation(models.Model):
@@ -387,6 +477,11 @@ class MealInvitation(models.Model):
         unique_together = ['invitee', 'meal_plan']
         verbose_name = 'Invitation à un repas'
         verbose_name_plural = 'Invitations à des repas'
+        indexes = [
+            models.Index(fields=['meal_plan', 'status'], name='mealinv_mealplan_status_idx'),
+            models.Index(fields=['invitee', 'status'], name='mealinv_invitee_status_idx'),
+            models.Index(fields=['meal_plan'], name='mealinv_mealplan_idx'),
+        ]
     
     def __str__(self):
         return f"{self.inviter.username} invite {self.invitee.username} - {self.meal_plan.date} - {self.meal_plan.get_meal_time_display()}"
@@ -446,16 +541,36 @@ class CookingProgress(models.Model):
     def complete(self):
         """Marquer la progression comme terminée"""
         from django.utils import timezone
+        from django.db.models import Q
         self.status = 'completed'
         self.completed_at = timezone.now()
         if self.started_at:
             delta = self.completed_at - self.started_at
             self.total_time_minutes = int(delta.total_seconds() / 60)
         
-        # Marquer le meal_plan comme cuisiné
+        # Marquer le meal_plan associé comme cuisiné
         if self.meal_plan:
             self.meal_plan.is_cooked = True
             self.meal_plan.save(update_fields=['is_cooked', 'updated_at'])
+        
+        # Marquer tous les autres meal plans de l'utilisateur qui ont la même recette
+        if self.recipe:
+            # Trouver tous les meal plans de l'utilisateur qui contiennent cette recette
+            # et qui ne sont pas encore cuisinés
+            meal_plans_to_mark = MealPlan.objects.filter(
+                user=self.user,
+                is_cooked=False
+            ).filter(
+                # Ancienne API : meal plan avec recipe direct
+                Q(recipe=self.recipe) |
+                # Nouvelle API : meal plan avec recette via MealPlanRecipe
+                Q(meal_plan_recipes__recipe=self.recipe)
+            ).distinct()
+            
+            # Marquer tous ces meal plans comme cuisinés en une seule requête
+            if meal_plans_to_mark.exists():
+                meal_plans_to_mark.update(is_cooked=True, updated_at=timezone.now())
+        
         self.save()
 
 
