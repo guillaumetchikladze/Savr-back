@@ -25,9 +25,14 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # Copier le code de l'application
 COPY . .
 
+# Copier et rendre exécutable le script d'entrypoint
+COPY docker/django-entrypoint.sh /usr/local/bin/django-entrypoint.sh
+RUN chmod +x /usr/local/bin/django-entrypoint.sh
+
 # Exposer le port
 EXPOSE 8000
 
-# Commande par défaut (peut être surchargée dans docker-compose.yml)
+# Utiliser le script d'entrypoint qui exécute les migrations puis lance gunicorn
+ENTRYPOINT ["/usr/local/bin/django-entrypoint.sh"]
 CMD ["gunicorn", "savr_back.wsgi:application", "--bind", "0.0.0.0:8000"]
 
