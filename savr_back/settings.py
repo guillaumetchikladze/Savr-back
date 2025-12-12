@@ -26,8 +26,7 @@ from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.celery import CeleryIntegration
 
 SENTRY_DSN = config('SENTRY_DSN', default='')
-print("="*60)
-print("sentry_dsn:", SENTRY_DSN)
+
 if SENTRY_DSN:
     sentry_sdk.init(
         dsn=SENTRY_DSN,
