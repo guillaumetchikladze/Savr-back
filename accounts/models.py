@@ -71,7 +71,7 @@ class Follow(models.Model):
 class Notification(models.Model):
     """Notifications pour les utilisateurs"""
     NOTIFICATION_TYPES = [
-        ('follow', 'Nouveau complice'),
+        ('follow', 'Nouvel ami'),
         ('recipe_reminder', 'Rappel de recette'),
         ('recipe_shared', 'Recette partagée'),
         ('achievement', 'Nouveau succès'),

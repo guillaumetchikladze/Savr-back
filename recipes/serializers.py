@@ -29,9 +29,60 @@ from .utils import get_accessible_meal_plan_filter
 User = get_user_model()
 
 class UserLightSerializer(serializers.ModelSerializer):
+    avatar_url = serializers.SerializerMethodField()
+    
     class Meta:
         model = User
         fields = ['id', 'username', 'avatar_url']
+    
+    def get_avatar_url(self, obj):
+        """Retourner l'URL de l'avatar avec presigned URL si disponible"""
+        if not obj.avatar_url:
+            return None
+        
+        # Si l'URL contient un chemin S3 (avatars/...), générer une presigned URL
+        # Sinon, retourner l'URL telle quelle (peut être une URL externe)
+        try:
+            from savr_back.settings import build_presigned_get_url
+            import re
+            
+            # Extraire le chemin depuis l'URL S3
+            # Formats possibles:
+            # - http://host/bucket/avatars/2/file.jpg
+            # - https://bucket.s3.region.amazonaws.com/avatars/2/file.jpg
+            # - http://192.168.1.51:9000/savr/avatars/2/file.jpg
+            
+            if 'avatars/' in obj.avatar_url:
+                # Chercher le pattern /bucket/avatars/... ou /avatars/...
+                # On cherche après le dernier / qui précède "avatars"
+                match = re.search(r'/(?:[^/]+/)?(avatars/.+)$', obj.avatar_url)
+                if match:
+                    image_path = match.group(1)
+                    presigned_url = build_presigned_get_url(image_path)
+                    if presigned_url:
+                        return presigned_url
+                
+                # Si la regex ne fonctionne pas, essayer de trouver directement "avatars/"
+                idx = obj.avatar_url.find('avatars/')
+                if idx != -1:
+                    image_path = obj.avatar_url[idx:]
+                    presigned_url = build_presigned_get_url(image_path)
+                    if presigned_url:
+                        return presigned_url
+            
+            # Si c'est une URL externe (pas S3, pas d'avatars), retourner telle quelle
+            if obj.avatar_url.startswith('http') and 'avatars/' not in obj.avatar_url:
+                return obj.avatar_url
+            
+            # Par défaut, essayer de générer une presigned URL avec l'URL complète
+            # (peut fonctionner si c'est déjà un chemin relatif)
+            return build_presigned_get_url(obj.avatar_url) if obj.avatar_url else None
+        except Exception as e:
+            # En cas d'erreur, retourner l'URL originale
+            import traceback
+            print(f"Error generating presigned URL for avatar in UserLightSerializer: {e}")
+            print(traceback.format_exc())
+            return obj.avatar_url
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -1237,6 +1288,7 @@ class PostSerializer(serializers.ModelSerializer):
     photos_count = serializers.IntegerField(read_only=True)
     has_all_photos = serializers.BooleanField(read_only=True)
     recipe_meta = serializers.SerializerMethodField()
+    recipe = serializers.SerializerMethodField()
     cookies_count = serializers.SerializerMethodField()
     has_cookie_from_user = serializers.SerializerMethodField()
     
@@ -1244,12 +1296,23 @@ class PostSerializer(serializers.ModelSerializer):
         model = Post
         fields = [
             'id', 'user', 'recipe_batch',
-            'comment', 'is_published', 'recipe_meta',
+            'comment', 'is_published', 'recipe_meta', 'recipe',
             'photos', 'photos_count', 'has_all_photos',
             'cookies_count', 'has_cookie_from_user',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
+    
+    def get_recipe(self, obj):
+        """Retourner les infos de base de la recette pour compatibilité avec PostDetailModal"""
+        recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
+        if not recipe:
+            return None
+        return {
+            'id': recipe.id,
+            'title': recipe.title,
+            'image_url': getattr(recipe, 'image_url', None),
+        }
     
     def get_recipe_meta(self, obj):
         recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
@@ -1321,6 +1384,7 @@ class PostListSerializer(serializers.ModelSerializer):
     user = UserLightSerializer(read_only=True)
     photos = PostPhotoListSerializer(many=True, read_only=True)
     recipe = serializers.SerializerMethodField()
+    recipe_batch = serializers.SerializerMethodField()
     cookies_count = serializers.SerializerMethodField()
     has_cookie_from_user = serializers.SerializerMethodField()
     
@@ -1331,7 +1395,7 @@ class PostListSerializer(serializers.ModelSerializer):
             'comment', 'is_published',
             'photos',
             'cookies_count', 'has_cookie_from_user',
-            'recipe',
+            'recipe', 'recipe_batch',
             'created_at',
         ]
         read_only_fields = ['user', 'created_at']
@@ -1344,6 +1408,68 @@ class PostListSerializer(serializers.ModelSerializer):
             'id': recipe.id,
             'title': recipe.title,
             'image_url': getattr(recipe, 'image_url', None),
+            'servings': recipe.servings,
+        }
+    
+    def get_recipe_batch(self, obj):
+        """Retourner les infos minimales du batch pour le carnet"""
+        if not obj.recipe_batch:
+            return None
+        batch = obj.recipe_batch
+        recipe = batch.recipe if batch else None
+        
+        # Utiliser les données préchargées si disponibles pour éviter les requêtes N+1
+        meal_plan_ids = []
+        grouped_dates = []
+        meals = []
+        
+        # Si les meal_plan_recipe_batches sont préchargés, les utiliser
+        if hasattr(batch, '_prefetched_objects_cache') and 'meal_plan_recipe_batches' in batch._prefetched_objects_cache:
+            mprbs = batch._prefetched_objects_cache['meal_plan_recipe_batches']
+            meal_plan_ids = [mprb.meal_plan_id for mprb in mprbs if mprb.meal_plan_id]
+            # Récupérer les meal plans depuis le cache si disponible
+            if meal_plan_ids:
+                from .models import MealPlan
+                meal_plans = MealPlan.objects.filter(id__in=meal_plan_ids).only('id', 'date', 'meal_time')
+                grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
+                meals = [
+                    {
+                        'id': mp.id,
+                        'date': mp.date.isoformat(),
+                        'meal_time': mp.meal_time,
+                    }
+                    for mp in meal_plans
+                ]
+        else:
+            # Fallback : faire une requête si les données ne sont pas préchargées
+            from .models import MealPlanRecipeBatch, MealPlan
+            meal_plan_ids = list(
+                MealPlanRecipeBatch.objects.filter(recipe_batch=batch)
+                .values_list('meal_plan_id', flat=True)
+            )
+            if meal_plan_ids:
+                meal_plans = MealPlan.objects.filter(id__in=meal_plan_ids).only('id', 'date', 'meal_time')
+                grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
+                meals = [
+                    {
+                        'id': mp.id,
+                        'date': mp.date.isoformat(),
+                        'meal_time': mp.meal_time,
+                    }
+                    for mp in meal_plans
+                ]
+        
+        return {
+            'id': batch.id,
+            'recipe': {
+                'id': recipe.id if recipe else None,
+                'title': recipe.title if recipe else None,
+                'image_url': getattr(recipe, 'image_url', None) if recipe else None,
+                'servings': recipe.servings if recipe else 1,
+            },
+            'groupedDates': grouped_dates,
+            'meals': meals,
+            'meal_plan_ids': meal_plan_ids,
         }
     
     def get_cookies_count(self, obj):

@@ -1228,16 +1228,24 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         from django.core.paginator import Paginator, EmptyPage
         from django.db.models import Prefetch, Q
         
-        # Filtrer les batches liés aux meal plans accessibles par l'utilisateur qui sont cuisinés
-        # (propriétaire ou invité accepté)
+        # Filtrer les batches cuisinés de l'utilisateur :
+        # 1. Batches créés par l'utilisateur ET (is_cooked=True OU a un post publié)
+        # 2. OU batches liés à des meal plans accessibles ET (is_cooked=True OU a un post publié)
+        # Cela garantit que tous les batches cuisinés de l'utilisateur sont retournés,
+        # même s'ils ne sont plus liés à un meal plan accessible
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
         qs = RecipeBatch.objects.filter(
-            meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                accessible_meal_plan_filter
-            ),
             recipe__isnull=False
         ).filter(
-            Q(is_cooked=True) | Q(posts__is_published=True)
+            (
+                # Batches créés par l'utilisateur ET (is_cooked=True OU a un post publié)
+                Q(created_by=request.user) & (Q(is_cooked=True) | Q(posts__is_published=True))
+            ) | (
+                # OU batches liés à des meal plans accessibles ET (is_cooked=True OU a un post publié)
+                Q(meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
+                    accessible_meal_plan_filter
+                )) & (Q(is_cooked=True) | Q(posts__is_published=True))
+            )
         ).distinct().select_related('recipe').prefetch_related(
             Prefetch('posts', queryset=Post.objects.filter(is_published=True)),
             Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan'))
@@ -1538,7 +1546,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def shared_with_me(self, request):
         """Récupérer les repas partagés avec l'utilisateur connecté"""
-        invitations = MealInvitation.objects.filter(invitee=request.user, status='accepted').select_related('meal_plan', 'meal_plan__user', 'meal_plan__recipe')
+        invitations = MealInvitation.objects.filter(invitee=request.user, status='accepted').select_related('meal_plan', 'meal_plan__user')
         meal_plans = [inv.meal_plan for inv in invitations]
         serializer = self.get_serializer(meal_plans, many=True)
         return Response(serializer.data)
@@ -1909,7 +1917,7 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         # L'utilisateur peut voir les invitations qu'il a envoyées ou reçues
         qs = MealInvitation.objects.filter(
             Q(inviter=self.request.user) | Q(invitee=self.request.user)
-        ).select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__recipe')
+        ).select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
         
         # Filtrer par meal_plan si fourni dans les query params
         meal_plan_id = self.request.query_params.get('meal_plan')
@@ -1991,7 +1999,7 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         invitations = MealInvitation.objects.filter(
             invitee=request.user,
             status='pending'
-        ).select_related('inviter', 'meal_plan', 'meal_plan__recipe')
+        ).select_related('inviter', 'meal_plan', 'meal_plan__user')
         serializer = self.get_serializer(invitations, many=True)
         return Response(serializer.data)
 
@@ -2237,14 +2245,27 @@ class PostViewSet(viewsets.ModelViewSet):
         if recipe_id:
             queryset = queryset.filter(recipe_batch__recipe_id=recipe_id)
         
+        # Filtrer par utilisateur si fourni
+        user_id = self.request.query_params.get('user')
+        if user_id:
+            try:
+                queryset = queryset.filter(user_id=int(user_id))
+            except (ValueError, TypeError):
+                pass
+        
         # Optimisation : pour les listes, limiter les champs chargés
         if self.action == 'list':
+            from django.db.models import Prefetch
             queryset = queryset.select_related(
                 'user',
                 'recipe_batch',
                 'recipe_batch__recipe'
             ).prefetch_related(
-                'photos', 'cookies'
+                'photos', 'cookies',
+                Prefetch(
+                    'recipe_batch__meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only('meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time')
+                )
             ).order_by('-created_at')
         else:
             queryset = queryset.select_related(
@@ -3141,9 +3162,34 @@ class CollectionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filtrer les collections : publiques + celles de l'utilisateur"""
         user = self.request.user
-        queryset = Collection.objects.filter(
-            Q(is_public=True) | Q(owner=user) | Q(members__user=user)
-        ).distinct()
+        
+        # Filtrer par owner si fourni dans les query params
+        owner_id = self.request.query_params.get('owner')
+        is_public_param = self.request.query_params.get('is_public')
+        
+        if owner_id:
+            try:
+                owner_id_int = int(owner_id)
+                # Si on filtre par owner spécifique, montrer seulement ses collections publiques ou celles où l'utilisateur connecté est membre
+                if is_public_param and is_public_param.lower() == 'true':
+                    queryset = Collection.objects.filter(
+                        owner_id=owner_id_int,
+                        is_public=True
+                    )
+                else:
+                    queryset = Collection.objects.filter(
+                        Q(owner_id=owner_id_int, is_public=True) | 
+                        Q(owner_id=owner_id_int, owner=user) |
+                        Q(owner_id=owner_id_int, members__user=user)
+                    ).distinct()
+            except (ValueError, TypeError):
+                queryset = Collection.objects.filter(
+                    Q(is_public=True) | Q(owner=user) | Q(members__user=user)
+                ).distinct()
+        else:
+            queryset = Collection.objects.filter(
+                Q(is_public=True) | Q(owner=user) | Q(members__user=user)
+            ).distinct()
         
         # Précharger les relations
         queryset = queryset.select_related('owner').prefetch_related(

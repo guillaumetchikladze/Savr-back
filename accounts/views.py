@@ -6,10 +6,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.db.models import Q, F
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
+from django.conf import settings
+import uuid
 from .serializers import UserRegistrationSerializer, UserSerializer, LoginSerializer, NotificationSerializer
 from .models import Follow, Notification
 from recipes.models import Recipe
 from recipes.serializers import RecipeSerializer
+from savr_back.settings import build_s3_client, build_presigned_get_url, build_s3_url
 
 User = get_user_model()
 
@@ -52,11 +55,110 @@ def login_view(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def profile_view(request):
-    """Get current user profile"""
-    serializer = UserSerializer(request.user, context={'request': request})
+    """Get or update current user profile"""
+    if request.method == 'GET':
+        serializer = UserSerializer(request.user, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    elif request.method == 'PATCH':
+        # Mise à jour du profil (notamment avatar_url)
+        serializer = UserSerializer(request.user, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upload_avatar_view(request):
+    """Générer une URL pré-signée pour uploader un avatar et mettre à jour le profil"""
+    try:
+        s3_client = build_s3_client()
+        bucket_name = settings.AWS_BUCKET
+        
+        if not bucket_name:
+            return Response(
+                {'error': 'S3 bucket non configuré'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Générer un nom de fichier unique pour l'avatar
+        unique_id = str(uuid.uuid4()).replace('-', '')
+        file_name = f"avatars/{request.user.id}/{unique_id}.jpg"
+        
+        # Générer l'URL pré-signée pour l'upload (valide 5 minutes)
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': file_name,
+                'ContentType': 'image/jpeg',
+            },
+            ExpiresIn=300  # 5 minutes
+        )
+        
+        # Construire l'URL permanente (sera convertie en presigned URL par le serializer)
+        avatar_url = build_s3_url(file_name)
+        
+        return Response({
+            'presigned_url': presigned_url,
+            'avatar_url': avatar_url,
+            'image_path': file_name,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response(
+            {'error': f'Erreur lors de la génération de l\'URL: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def confirm_avatar_upload_view(request):
+    """Confirmer l'upload de l'avatar et mettre à jour le profil utilisateur"""
+    image_path = request.data.get('image_path')
+    if not image_path:
+        return Response(
+            {'error': 'image_path requis'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        # Construire l'URL permanente de l'avatar (pas pré-signée car elle expire)
+        avatar_url = build_s3_url(image_path)
+        
+        # Mettre à jour l'avatar_url de l'utilisateur
+        request.user.avatar_url = avatar_url
+        request.user.save()
+        
+        serializer = UserSerializer(request.user, context={'request': request})
+        return Response({
+            'message': 'Avatar mis à jour avec succès',
+            'user': serializer.data,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in confirm_avatar_upload_view: {error_details}")
+        return Response(
+            {'error': f'Erreur lors de la mise à jour de l\'avatar: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_detail_view(request, user_id):
+    """Récupérer les informations d'un utilisateur spécifique avec les statuts de suivi"""
+    try:
+        target_user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = UserSerializer(target_user, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -65,6 +167,22 @@ def profile_view(request):
 def search_view(request):
     """Recherche intelligente d'utilisateurs et de recettes"""
     query = request.query_params.get('q', '').strip()
+    user_id = request.query_params.get('id')
+    
+    # Si un ID est fourni, retourner directement l'utilisateur
+    if user_id:
+        try:
+            user = User.objects.get(id=int(user_id))
+            serializer = UserSerializer(user, context={'request': request})
+            return Response({
+                'users': [serializer.data],
+                'recipes': [],
+            }, status=status.HTTP_200_OK)
+        except (User.DoesNotExist, ValueError, TypeError):
+            return Response({
+                'users': [],
+                'recipes': [],
+            }, status=status.HTTP_200_OK)
     
     if not query:
         # Retourner des suggestions (utilisateurs et recettes populaires)
@@ -140,7 +258,7 @@ def search_view(request):
 @api_view(['POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def follow_user_view(request, user_id):
-    """Devenir complice (follow) ou ne plus être complice (unfollow) d'un utilisateur"""
+    """Devenir ami (follow) ou ne plus être ami (unfollow) d'un utilisateur"""
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
@@ -160,22 +278,22 @@ def follow_user_view(request, user_id):
             Notification.objects.create(
                 user=target_user,
                 notification_type='follow',
-                title='Nouveau complice',
-                message=f'{request.user.username} vous a ajouté comme complice',
+                title='Nouvel ami',
+                message=f'{request.user.username} vous a ajouté comme ami',
                 related_user=request.user
             )
-            return Response({'message': 'Vous êtes maintenant complice'}, status=status.HTTP_201_CREATED)
+            return Response({'message': 'Vous êtes maintenant ami'}, status=status.HTTP_201_CREATED)
         else:
-            return Response({'message': 'Vous êtes déjà complice'}, status=status.HTTP_200_OK)
+            return Response({'message': 'Vous êtes déjà ami'}, status=status.HTTP_200_OK)
     
     elif request.method == 'DELETE':
-        # Ne plus être complice
+        # Ne plus être ami
         try:
             follow = Follow.objects.get(follower=request.user, following=target_user)
             follow.delete()
-            return Response({'message': 'Vous n\'êtes plus complice'}, status=status.HTTP_200_OK)
+            return Response({'message': 'Vous n\'êtes plus ami'}, status=status.HTTP_200_OK)
         except Follow.DoesNotExist:
-            return Response({'message': 'Vous n\'êtes pas complice'}, status=status.HTTP_200_OK)
+            return Response({'message': 'Vous n\'êtes pas ami'}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
