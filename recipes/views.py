@@ -1269,16 +1269,14 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     def cooked(self, request):
         """
         Retourner les batches cuisinés de l'utilisateur (ancien endpoint meal_plans).
-        Un batch est "cuisiné" si :
-        - is_cooked=True OU
-        - il a un post publié
+        Un batch est "cuisiné" si is_cooked=True
         """
         from django.core.paginator import Paginator, EmptyPage
         from django.db.models import Prefetch, Q
         
         # Filtrer les batches cuisinés de l'utilisateur :
-        # 1. Batches créés par l'utilisateur ET (is_cooked=True OU a un post publié)
-        # 2. OU batches liés à des meal plans accessibles ET (is_cooked=True OU a un post publié)
+        # 1. Batches créés par l'utilisateur ET is_cooked=True
+        # 2. OU batches liés à des meal plans accessibles ET is_cooked=True
         # Cela garantit que tous les batches cuisinés de l'utilisateur sont retournés,
         # même s'ils ne sont plus liés à un meal plan accessible
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
@@ -1286,13 +1284,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             recipe__isnull=False
         ).filter(
             (
-                # Batches créés par l'utilisateur ET (is_cooked=True OU a un post publié)
-                Q(created_by=request.user) & (Q(is_cooked=True) | Q(posts__is_published=True))
+                # Batches créés par l'utilisateur ET is_cooked=True
+                Q(created_by=request.user) & Q(is_cooked=True)
             ) | (
-                # OU batches liés à des meal plans accessibles ET (is_cooked=True OU a un post publié)
+                # OU batches liés à des meal plans accessibles ET is_cooked=True
                 Q(meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
                     accessible_meal_plan_filter
-                )) & (Q(is_cooked=True) | Q(posts__is_published=True))
+                )) & Q(is_cooked=True)
             )
         ).distinct().select_related('recipe').prefetch_related(
             Prefetch('posts', queryset=Post.objects.filter(is_published=True)),
@@ -3088,7 +3086,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def with_quantities(self, request):
-        """Retourne les ingrédients avec leurs quantités calculées depuis les meal plans"""
+        """Retourne les ingrédients avec leurs quantités calculées depuis les recipe_batches"""
         from django.db.models import Prefetch
         
         shopping_list_id = request.query_params.get('shopping_list_id')
@@ -3098,24 +3096,23 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         
         try:
             # Optimisation maximale : précharger toutes les relations en une seule requête
-            from .models import MealPlanRecipeBatch
+            from .models import MealPlan, MealInvitation, MealPlanRecipeBatch
             shopping_list = ShoppingList.objects.prefetch_related(
                 Prefetch(
-                    'meal_plans',
-                    queryset=MealPlan.objects.prefetch_related(
-                        'invitations',
-                        Prefetch(
-                            'meal_plan_recipe_batches',
-                            queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').prefetch_related(
-                                Prefetch(
-                                    'recipe_batch__recipe__recipe_ingredients',
-                                    queryset=RecipeIngredient.objects.select_related('ingredient__category')
-                                )
-                            )
-                        ),
+                    'recipe_batches',
+                    queryset=RecipeBatch.objects.select_related('recipe').prefetch_related(
                         Prefetch(
                             'recipe__recipe_ingredients',
                             queryset=RecipeIngredient.objects.select_related('ingredient__category')
+                        ),
+                        Prefetch(
+                            'meal_plan_recipe_batches',
+                            queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').prefetch_related(
+                                Prefetch(
+                                    'meal_plan__invitations',
+                                    queryset=MealInvitation.objects.select_related('invitee')
+                                )
+                            )
                         )
                     )
                 ),
@@ -3127,53 +3124,54 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         except ShoppingList.DoesNotExist:
             return Response({'error': 'Shopping list not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        # Agréger les ingrédients depuis les meal plans
+        # Agréger les ingrédients depuis les recipe_batches
         ingredients_map = {}
         
-        for meal_plan in shopping_list.meal_plans.all():
-            # Utiliser la fonction helper pour calculer total_servings (gère les meal plans groupés)
-            servings = calculate_meal_plan_servings(meal_plan)
+        for batch in shopping_list.recipe_batches.all():
+            recipe = batch.recipe
+            if not recipe:
+                continue
             
-            # Parcourir les MealPlanRecipe (nouvelles relations multi-recettes)
-            meal_plan_recipes = meal_plan.meal_plan_recipes.all()
+            # Calculer total_servings_batch en sommant les servings de tous les meal plans du batch
+            total_servings_batch = 0
+            all_meal_plans = MealPlan.objects.filter(
+                meal_plan_recipe_batches__recipe_batch=batch
+            ).prefetch_related(
+                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
+            ).distinct()
             
-            if meal_plan_recipes.exists():
-                # Utiliser les MealPlanRecipe
-                for meal_plan_recipe in meal_plan_recipes:
-                    recipe = meal_plan_recipe.recipe
-                    base_servings = recipe.servings or 1
-                    servings_ratio = servings / base_servings
-                    # Ratio effectif = ratio de la recette * ratio des servings
-                    effective_ratio = float(meal_plan_recipe.ratio) * servings_ratio
-                    
-                    # Parcourir les ingrédients de la recette
-                    for recipe_ingredient in recipe.recipe_ingredients.all():
-                        ingredient = recipe_ingredient.ingredient
-                        ingredient_id = ingredient.id
-                        quantity = float(recipe_ingredient.quantity) * effective_ratio
-                    unit = recipe_ingredient.unit
-                    
-                    if ingredient_id not in ingredients_map:
-                        ingredients_map[ingredient_id] = {
-                            'id': ingredient_id,
-                            'name': ingredient.name,
-                            'quantity': 0,
-                            'unit': unit,
-                            'category': {
-                                'id': ingredient.category.id if ingredient.category else None,
-                                'name': ingredient.category.name if ingredient.category else 'Autres',
-                            } if ingredient.category else {'id': None, 'name': 'Autres'},
-                            'item': None,
-                        }
-                    
-                    if ingredients_map[ingredient_id]['unit'] == unit:
-                        ingredients_map[ingredient_id]['quantity'] += quantity
-                    else:
-                        ingredients_map[ingredient_id]['quantity'] += quantity
+            for mp in all_meal_plans:
+                total_servings_batch += calculate_meal_plan_servings(mp)
+            
+            # Utiliser total_servings_batch ou fallback sur servings de la recette
+            servings = total_servings_batch if total_servings_batch > 0 else (recipe.servings or 1)
+            base_servings = recipe.servings or 1
+            ratio = servings / base_servings if base_servings else 1
+            
+            # Parcourir les ingrédients de la recette
+            for recipe_ingredient in recipe.recipe_ingredients.all():
+                ingredient = recipe_ingredient.ingredient
+                ingredient_id = ingredient.id
+                quantity = float(recipe_ingredient.quantity) * ratio
+                unit = recipe_ingredient.unit
+                
+                if ingredient_id not in ingredients_map:
+                    ingredients_map[ingredient_id] = {
+                        'id': ingredient_id,
+                        'name': ingredient.name,
+                        'quantity': 0,
+                        'unit': unit,
+                        'category': {
+                            'id': ingredient.category.id if ingredient.category else None,
+                            'name': ingredient.category.name if ingredient.category else 'Autres',
+                        } if ingredient.category else {'id': None, 'name': 'Autres'},
+                        'item': None,
+                    }
                 
                 if ingredients_map[ingredient_id]['unit'] == unit:
                     ingredients_map[ingredient_id]['quantity'] += quantity
                 else:
+                    # Unités différentes : additionner quand même (pour l'instant)
                     ingredients_map[ingredient_id]['quantity'] += quantity
         
         # Enrichir avec les items existants (statut, pantry_quantity)
