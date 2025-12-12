@@ -73,7 +73,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(is_cooked=False)
         
         # Annoter groupedDates et total_servings_batch
-        qs = qs.prefetch_related(
+        qs = qs.select_related('created_by').prefetch_related(
             Prefetch(
                 'meal_plan_recipe_batches',
                 queryset=MealPlanRecipeBatch.objects.select_related('meal_plan')
@@ -88,16 +88,30 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         for batch in queryset:
             # Filtrer les meal plans accessibles par l'utilisateur pour ce batch
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-            meal_plans = MealPlan.objects.filter(
+            meal_plans_accessible = MealPlan.objects.filter(
                 meal_plan_recipe_batches__recipe_batch=batch
             ).filter(accessible_meal_plan_filter).distinct()
-            grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
+            
+            # Pour total_servings_batch, calculer avec TOUS les meal plans du batch
+            # (même ceux auxquels l'utilisateur n'est pas invité)
+            from .models import MealInvitation
+            all_meal_plans = MealPlan.objects.filter(
+                meal_plan_recipe_batches__recipe_batch=batch
+            ).prefetch_related(
+                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
+            ).distinct()
+            
+            grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
             total_servings = 0
+            # Calculer le total avec TOUS les meal plans du batch
+            for mp in all_meal_plans:
+                total_servings += calculate_meal_plan_servings(mp)
+            
             meals = []
             meal_plan_ids = []
             any_cooked = False
-            for mp in meal_plans:
-                total_servings += calculate_meal_plan_servings(mp)
+            # Mais ne retourner que les meal plans accessibles dans meals et meal_plan_ids
+            for mp in meal_plans_accessible:
                 meal_plan_ids.append(mp.id)
                 meals.append({
                     'id': mp.id,
@@ -107,9 +121,9 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 })
             payload = RecipeBatchLightSerializer(batch, context={'request': request}).data
             payload['groupedDates'] = grouped_dates
-            payload['total_servings_batch'] = total_servings
-            payload['meal_plan_ids'] = meal_plan_ids
-            payload['meals'] = meals
+            payload['total_servings_batch'] = total_servings  # Total de TOUS les meal plans
+            payload['meal_plan_ids'] = meal_plan_ids  # Seulement les accessibles
+            payload['meals'] = meals  # Seulement les accessibles
             payload['is_cooked'] = any_cooked
             data.append(payload)
         return Response(data)
@@ -118,16 +132,47 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         batch = self.get_object()
         # Filtrer les meal plans accessibles par l'utilisateur pour ce batch
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-        meal_plans = MealPlan.objects.filter(
+        meal_plans_accessible = MealPlan.objects.filter(
             meal_plan_recipe_batches__recipe_batch=batch
         ).filter(accessible_meal_plan_filter).distinct()
-        grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
+        
+        # Pour total_servings_batch, calculer avec TOUS les meal plans du batch
+        # (même ceux auxquels l'utilisateur n'est pas invité)
+        # Précharger les invitations pour pouvoir calculer correctement les servings
+        from .models import MealInvitation
+        all_meal_plans = MealPlan.objects.filter(
+            meal_plan_recipe_batches__recipe_batch=batch
+        ).prefetch_related(
+            Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
+        ).distinct()
+        
+        grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
         total_servings = 0
+        # Calculer le total avec TOUS les meal plans du batch
+        # (même ceux auxquels l'utilisateur n'est pas invité)
+        all_meal_plans_list = list(all_meal_plans)
+        
+        import sys
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"[RecipeBatchViewSet.retrieve] Batch {batch.id} - User {request.user.id}", file=sys.stderr)
+        print(f"  All meal plans: {len(all_meal_plans_list)}", file=sys.stderr)
+        print(f"  Accessible meal plans: {meal_plans_accessible.count()}", file=sys.stderr)
+        
+        for mp in all_meal_plans_list:
+            servings = calculate_meal_plan_servings(mp)
+            participants_count = mp.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(mp, 'invitations') else 0
+            guest_count = mp.guest_count or 0
+            print(f"  Meal plan {mp.id}: servings={servings} (1 + {participants_count} participants + {guest_count} guests)", file=sys.stderr)
+            total_servings += servings
+        
+        print(f"  ✅ TOTAL SERVINGS_BATCH: {total_servings}", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
+        
         meals = []
         meal_plan_ids = []
         any_cooked = False
-        for mp in meal_plans:
-            total_servings += calculate_meal_plan_servings(mp)
+        # Mais ne retourner que les meal plans accessibles dans meals et meal_plan_ids
+        for mp in meal_plans_accessible:
             meal_plan_ids.append(mp.id)
             meals.append({
                 'id': mp.id,
@@ -138,9 +183,9 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = RecipeBatchLightSerializer(batch, context={'request': request})
         payload = serializer.data
         payload['groupedDates'] = grouped_dates
-        payload['total_servings_batch'] = total_servings
-        payload['meal_plan_ids'] = meal_plan_ids
-        payload['meals'] = meals
+        payload['total_servings_batch'] = total_servings  # Total de TOUS les meal plans
+        payload['meal_plan_ids'] = meal_plan_ids  # Seulement les accessibles
+        payload['meals'] = meals  # Seulement les accessibles
         payload['is_cooked'] = any_cooked
         return Response(payload)
     
@@ -501,11 +546,14 @@ class RecipeViewSet(viewsets.ModelViewSet):
                             return f"J{delta}"
                         
                         for meal_plan in nearby_meal_plans:
-                            for mprb in meal_plan.meal_plan_recipe_batches.all().select_related('recipe_batch__recipe'):
+                            for mprb in meal_plan.meal_plan_recipe_batches.all().select_related('recipe_batch__recipe', 'recipe_batch__created_by'):
                                 batch = mprb.recipe_batch
                                 if not batch or not batch.recipe:
                                     continue
                                 if batch.id in seen_batches:
+                                    continue
+                                # Filtrer : ne garder que les batches dont l'utilisateur est le créateur
+                                if batch.created_by_id != request.user.id:
                                     continue
                                 seen_batches.add(batch.id)
                                 

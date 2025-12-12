@@ -267,6 +267,7 @@ class RecipeLightSerializer(serializers.ModelSerializer):
 
 class RecipeBatchLightSerializer(serializers.ModelSerializer):
     recipe = RecipeLightSerializer(read_only=True)
+    created_by = UserLightSerializer(read_only=True)
     total_servings_batch = serializers.IntegerField(read_only=True)
     groupedDates = serializers.ListField(child=serializers.CharField(), read_only=True)
     meal_plan_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
@@ -277,7 +278,7 @@ class RecipeBatchLightSerializer(serializers.ModelSerializer):
     class Meta:
         model = RecipeBatch
         fields = [
-            'id', 'name', 'recipe',
+            'id', 'name', 'recipe', 'created_by',
             'total_servings_batch', 'groupedDates',
             'meal_plan_ids', 'meals', 'is_cooked',
             'steps',
