@@ -164,12 +164,45 @@ class RecipeIngredient(models.Model):
         return f"{self.recipe.title} - {self.quantity} {self.get_unit_display()} {self.ingredient.name}"
 
 
+class RecipeBatch(models.Model):
+    """
+    Batch préparatoire pour une recette donnée.
+    Permet de lier plusieurs meal plans à une préparation unique.
+    """
+    recipe = models.ForeignKey(
+        Recipe,
+        on_delete=models.CASCADE,
+        related_name='batches'
+    )
+    name = models.CharField(max_length=255, blank=True, null=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='recipe_batches'
+    )
+    is_cooked = models.BooleanField(default=False, help_text="Au moins un meal plan lié est cuisiné")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['recipe', '-created_at'], name='recipebatch_recipe_idx'),
+        ]
+    
+    def __str__(self):
+        label = self.name or f"Batch {self.id}"
+        return f"{label} - {self.recipe.title}"
+
+
 class Step(models.Model):
     """Étape de préparation d'une recette"""
     recipe = models.ForeignKey(
         Recipe,
         on_delete=models.CASCADE,
-        related_name='steps'
+        related_name='steps',
+        help_text="Recette associée"
     )
     order = models.IntegerField()
     title = models.CharField(max_length=200, blank=True, help_text="Titre court de l'étape")
@@ -192,7 +225,8 @@ class Step(models.Model):
         unique_together = ['recipe', 'order']
     
     def __str__(self):
-        return f"{self.recipe.title} - Étape {self.order}"
+        recipe_title = self.recipe.title if self.recipe else "Unknown"
+        return f"{recipe_title} - Étape {self.order}"
 
 
 class StepIngredient(models.Model):
@@ -285,15 +319,7 @@ class MealPlan(models.Model):
     date = models.DateField()
     meal_time = models.CharField(max_length=20, choices=MEAL_TIME_CHOICES)
     meal_type = models.CharField(max_length=20, choices=MEAL_TYPE_CHOICES)
-    recipe = models.ForeignKey(
-        Recipe,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='meal_plans'
-    )
     confirmed = models.BooleanField(default=False)
-    is_cooked = models.BooleanField(default=False, help_text="Le plat a été cuisiné")
     guest_count = models.IntegerField(
         default=0,
         help_text="Nombre d'invités anonymes (sans compte) pour ce repas"
@@ -306,7 +332,6 @@ class MealPlan(models.Model):
         unique_together = ['user', 'date', 'meal_time']
         indexes = [
             models.Index(fields=['user', 'date'], name='mealplan_user_date_idx'),
-            models.Index(fields=['user', 'is_cooked'], name='mealplan_user_cooked_idx'),
             models.Index(fields=['user', 'meal_time'], name='mealplan_user_meal_time_idx'),
         ]
     
@@ -324,117 +349,52 @@ class MealPlan(models.Model):
             from decimal import Decimal
             ratios = ','.join(str(Decimal(str(mpr.ratio)).normalize()) for mpr in meal_plan_recipes)
             return f"{self.meal_time}|{recipe_ids}|{ratios}"
-        elif self.recipe:
-            # Ancienne API : une seule recette
-            return f"{self.meal_time}|{self.recipe_id}|1"
         return None
     
     def __str__(self):
         return f"{self.user.email} - {self.date} - {self.get_meal_time_display()}"
 
 
-class MealPlanRecipe(models.Model):
-    """Relation entre MealPlan et Recipe avec ratio personnalisable"""
+class MealPlanRecipeBatch(models.Model):
+    """
+    Relation entre MealPlan et RecipeBatch avec ratio personnalisable.
+    Remplace les anciens groupes de recettes/meal plans.
+    """
     meal_plan = models.ForeignKey(
         MealPlan,
         on_delete=models.CASCADE,
-        related_name='meal_plan_recipes',
+        related_name='meal_plan_recipe_batches',
         verbose_name='Repas planifié'
     )
-    recipe = models.ForeignKey(
-        Recipe,
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
         on_delete=models.CASCADE,
-        related_name='meal_plan_recipes',
-        verbose_name='Recette'
+        related_name='meal_plan_recipe_batches',
+        verbose_name='Batch'
     )
     ratio = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=1.0,
-        help_text="Ratio à appliquer aux quantités de la recette (défaut: 1.0)"
+        help_text="Ratio appliqué aux quantités (défaut: 1.0)"
     )
     order = models.IntegerField(
         default=0,
-        help_text="Ordre d'affichage des recettes dans le meal plan"
+        help_text="Ordre d'affichage dans le meal plan"
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        unique_together = ['meal_plan', 'recipe']
+        unique_together = ['meal_plan', 'recipe_batch']
         ordering = ['order', 'created_at']
         indexes = [
-            models.Index(fields=['meal_plan', 'order'], name='mpr_mealplan_order_idx'),
-            models.Index(fields=['meal_plan', 'recipe'], name='mpr_mealplan_recipe_idx'),
+            models.Index(fields=['meal_plan', 'order'], name='mprb_mealplan_order_idx'),
+            models.Index(fields=['meal_plan', 'recipe_batch'], name='mprb_mealplan_batch_idx'),
         ]
     
     def __str__(self):
-        return f"{self.meal_plan} - {self.recipe.title} (ratio: {self.ratio})"
-
-
-class MealPlanGroup(models.Model):
-    """Groupe explicite de meal plans partagés sur plusieurs dates"""
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='meal_plan_groups',
-        help_text="Utilisateur propriétaire du groupe"
-    )
-    name = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        help_text="Nom optionnel du groupe (ex: 'Repas de la semaine')"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    class Meta:
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['user', '-created_at'], name='mpg_user_created_idx'),
-        ]
-        verbose_name = 'Groupe de repas planifiés'
-        verbose_name_plural = 'Groupes de repas planifiés'
-    
-    def __str__(self):
-        if self.name:
-            return f"{self.user.username} - {self.name}"
-        return f"{self.user.username} - Groupe #{self.id}"
-
-
-class MealPlanGroupMember(models.Model):
-    """Membre d'un groupe de meal plans"""
-    group = models.ForeignKey(
-        MealPlanGroup,
-        on_delete=models.CASCADE,
-        related_name='members',
-        help_text="Groupe auquel appartient ce meal plan"
-    )
-    meal_plan = models.ForeignKey(
-        MealPlan,
-        on_delete=models.CASCADE,
-        related_name='group_memberships',
-        help_text="Meal plan membre du groupe"
-    )
-    order = models.IntegerField(
-        default=0,
-        help_text="Ordre d'affichage dans le groupe (pour trier par date)"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    class Meta:
-        unique_together = ['group', 'meal_plan']
-        ordering = ['order', 'created_at']
-        indexes = [
-            models.Index(fields=['group', 'order'], name='mpgm_group_order_idx'),
-            models.Index(fields=['meal_plan'], name='mpgm_mealplan_idx'),
-        ]
-        verbose_name = 'Membre de groupe de repas'
-        verbose_name_plural = 'Membres de groupes de repas'
-    
-    def __str__(self):
-        return f"{self.group} - {self.meal_plan.date} ({self.meal_plan.get_meal_time_display()})"
+        return f"{self.meal_plan} - {self.recipe_batch} (ratio: {self.ratio})"
 
 
 class MealInvitation(models.Model):
@@ -488,7 +448,7 @@ class MealInvitation(models.Model):
 
 
 class CookingProgress(models.Model):
-    """Progression de cuisson d'une recette par un utilisateur"""
+    """Progression de cuisson d'un batch par un utilisateur"""
     STATUS_CHOICES = [
         ('in_progress', 'En cours'),
         ('completed', 'Terminée'),
@@ -500,17 +460,12 @@ class CookingProgress(models.Model):
         on_delete=models.CASCADE,
         related_name='cooking_progresses'
     )
-    recipe = models.ForeignKey(
-        Recipe,
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
         on_delete=models.CASCADE,
-        related_name='cooking_progresses'
-    )
-    meal_plan = models.ForeignKey(
-        MealPlan,
-        on_delete=models.SET_NULL,
+        related_name='cooking_progresses',
         null=True,
-        blank=True,
-        related_name='cooking_progresses'
+        blank=True
     )
     current_step_index = models.IntegerField(default=0, help_text="Index de l'étape actuelle (0-based)")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='in_progress')
@@ -524,58 +479,36 @@ class CookingProgress(models.Model):
         ordering = ['-updated_at']
         indexes = [
             models.Index(fields=['user', 'status'], name='cookprog_user_status_idx'),
-            models.Index(fields=['recipe', 'status'], name='cookprog_recipe_status_idx'),
+            models.Index(fields=['recipe_batch', 'status'], name='cookprog_batch_status_idx'),
         ]
-        # Permettre une seule progression en cours par recette/meal_plan
         constraints = [
             models.UniqueConstraint(
-                fields=['user', 'recipe', 'meal_plan', 'status'],
+                fields=['user', 'recipe_batch', 'status'],
                 condition=models.Q(status='in_progress'),
-                name='unique_in_progress_per_recipe_mealplan'
+                name='unique_in_progress_per_batch'
             ),
         ]
     
     def __str__(self):
-        return f"{self.user.email} - {self.recipe.title} - Étape {self.current_step_index + 1}"
+        return f"{self.user.email} - Batch {self.recipe_batch.id} - Étape {self.current_step_index + 1}"
     
     def complete(self):
         """Marquer la progression comme terminée"""
         from django.utils import timezone
-        from django.db.models import Q
         self.status = 'completed'
         self.completed_at = timezone.now()
         if self.started_at:
             delta = self.completed_at - self.started_at
             self.total_time_minutes = int(delta.total_seconds() / 60)
-        
-        # Marquer le meal_plan associé comme cuisiné
-        if self.meal_plan:
-            self.meal_plan.is_cooked = True
-            self.meal_plan.save(update_fields=['is_cooked', 'updated_at'])
-        
-        # Marquer tous les autres meal plans de l'utilisateur qui ont la même recette
-        if self.recipe:
-            # Trouver tous les meal plans de l'utilisateur qui contiennent cette recette
-            # et qui ne sont pas encore cuisinés
-            meal_plans_to_mark = MealPlan.objects.filter(
-                user=self.user,
-                is_cooked=False
-            ).filter(
-                # Ancienne API : meal plan avec recipe direct
-                Q(recipe=self.recipe) |
-                # Nouvelle API : meal plan avec recette via MealPlanRecipe
-                Q(meal_plan_recipes__recipe=self.recipe)
-            ).distinct()
-            
-            # Marquer tous ces meal plans comme cuisinés en une seule requête
-            if meal_plans_to_mark.exists():
-                meal_plans_to_mark.update(is_cooked=True, updated_at=timezone.now())
-        
-        self.save()
+        self.save(update_fields=['status', 'completed_at', 'total_time_minutes', 'updated_at'])
+        # Marquer le batch comme cuisiné
+        if self.recipe_batch and not self.recipe_batch.is_cooked:
+            self.recipe_batch.is_cooked = True
+            self.recipe_batch.save(update_fields=['is_cooked', 'updated_at'])
 
 
 class Timer(models.Model):
-    """Minuteur actif pour une étape de cuisson"""
+    """Minuteur actif pour une étape de cuisson (batch)"""
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -593,10 +526,12 @@ class Timer(models.Model):
         on_delete=models.CASCADE,
         related_name='timers'
     )
-    recipe = models.ForeignKey(
-        Recipe,
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
         on_delete=models.CASCADE,
-        related_name='active_timers'
+        related_name='active_timers',
+        null=True,
+        blank=True
     )
     duration_minutes = models.IntegerField(help_text="Durée totale du minuteur en minutes")
     remaining_seconds = models.IntegerField(help_text="Secondes restantes")
@@ -614,7 +549,7 @@ class Timer(models.Model):
         ]
     
     def __str__(self):
-        return f"{self.user.email} - {self.recipe.title} - Étape {self.step.order} - {self.remaining_seconds}s"
+        return f"{self.user.email} - Batch {self.recipe_batch.id} - Étape {self.step.order} - {self.remaining_seconds}s"
     
     def save(self, *args, **kwargs):
         from django.utils import timezone
@@ -638,26 +573,12 @@ class Post(models.Model):
         on_delete=models.CASCADE,
         related_name='posts'
     )
-    recipe = models.ForeignKey(
-        Recipe,
-        on_delete=models.SET_NULL,
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
+        on_delete=models.CASCADE,
+        related_name='posts',
         null=True,
-        blank=True,
-        related_name='posts'
-    )
-    meal_plan = models.ForeignKey(
-        MealPlan,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='posts'
-    )
-    cooking_progress = models.ForeignKey(
-        CookingProgress,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='posts'
+        blank=True
     )
     comment = models.TextField(blank=True, help_text="Commentaire du post")
     is_published = models.BooleanField(default=False, help_text="Le post est publié")
@@ -668,12 +589,12 @@ class Post(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['user', 'is_published'], name='post_user_published_idx'),
-            models.Index(fields=['recipe'], name='post_recipe_idx'),
+            models.Index(fields=['recipe_batch'], name='post_recipebatch_idx'),
             models.Index(fields=['is_published', '-created_at'], name='post_published_created_idx'),
         ]
     
     def __str__(self):
-        return f"{self.user.email} - {self.recipe.title if self.recipe else 'Sans recette'} - {self.created_at.strftime('%d/%m/%Y')}"
+        return f"{self.user.email} - Batch {self.recipe_batch.id} - {self.created_at.strftime('%d/%m/%Y')}"
     
     @property
     def photos_count(self):
@@ -708,13 +629,13 @@ class PostPhoto(models.Model):
         blank=True,
         help_text="Post associé (null si pas encore publié)"
     )
-    meal_plan = models.ForeignKey(
-        'MealPlan',
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
         on_delete=models.CASCADE,
         related_name='draft_photos',
         null=True,
         blank=True,
-        help_text="Meal plan associé (avant publication)"
+        help_text="Batch associé (avant publication)"
     )
     photo_type = models.CharField(
         max_length=25,
@@ -754,7 +675,7 @@ class PostPhoto(models.Model):
     
     class Meta:
         ordering = ['order', 'created_at']
-        # Un seul photo de chaque type par post ou meal_plan (sauf spontaneous qui peut être multiple)
+        # Un seul photo de chaque type par post ou batch (sauf spontaneous)
         constraints = [
             models.UniqueConstraint(
                 fields=['post', 'photo_type'],
@@ -762,17 +683,17 @@ class PostPhoto(models.Model):
                 name='unique_photo_type_per_post'
             ),
             models.UniqueConstraint(
-                fields=['meal_plan', 'photo_type'],
-                condition=models.Q(photo_type__in=['during_cooking', 'after_cooking', 'at_meal_time']) & models.Q(meal_plan__isnull=False),
-                name='unique_photo_type_per_meal_plan'
+                fields=['recipe_batch', 'photo_type'],
+                condition=models.Q(photo_type__in=['during_cooking', 'after_cooking', 'at_meal_time']) & models.Q(recipe_batch__isnull=False),
+                name='unique_photo_type_per_batch'
             ),
         ]
     
     def __str__(self):
         if self.post:
             return f"{self.post.user.email} - {self.get_photo_type_display()} - {self.created_at.strftime('%d/%m/%Y %H:%M')}"
-        elif self.meal_plan:
-            return f"{self.meal_plan.user.email} - {self.get_photo_type_display()} - {self.created_at.strftime('%d/%m/%Y %H:%M')}"
+        elif self.recipe_batch:
+            return f"Batch {self.recipe_batch.id} - {self.get_photo_type_display()} - {self.created_at.strftime('%d/%m/%Y %H:%M')}"
         return f"{self.get_photo_type_display()} - {self.created_at.strftime('%d/%m/%Y %H:%M')}"
 
 
@@ -813,10 +734,10 @@ class ShoppingList(models.Model):
         blank=True,
         help_text="Nom de la liste (optionnel, par défaut date de création)"
     )
-    meal_plans = models.ManyToManyField(
-        MealPlan,
+    recipe_batches = models.ManyToManyField(
+        RecipeBatch,
         related_name='shopping_lists',
-        help_text="Repas planifiés inclus dans cette liste"
+        help_text="Batches inclus dans cette liste"
     )
     is_active = models.BooleanField(
         default=True,
