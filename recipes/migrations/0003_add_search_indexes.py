@@ -10,6 +10,11 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # Installer l'extension pg_trgm si elle n'existe pas déjà
+        migrations.RunSQL(
+            sql="CREATE EXTENSION IF NOT EXISTS pg_trgm;",
+            reverse_sql="DROP EXTENSION IF EXISTS pg_trgm;"
+        ),
         # Index GIN pour Full-Text Search sur title et description
         migrations.RunSQL(
             sql="""
