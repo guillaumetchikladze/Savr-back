@@ -2,7 +2,12 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from . import views
 
+
+def trigger_error(request):
+    division_by_zero = 1 / 0
+
 urlpatterns = [
+    path('sentry-debug/', trigger_error),
     path('register/', views.register_view, name='register'),
     path('login/', views.login_view, name='login'),
     path('profile/', views.profile_view, name='profile'),

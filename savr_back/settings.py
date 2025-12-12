@@ -20,6 +20,40 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-in-producti
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
+# Sentry Configuration
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
+from sentry_sdk.integrations.celery import CeleryIntegration
+
+SENTRY_DSN = config('SENTRY_DSN', default='')
+print("="*60)
+print("sentry_dsn:", SENTRY_DSN)
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(
+                transaction_style='url',
+                middleware_spans=True,
+                signals_spans=True,
+                cache_spans=True,
+            ),
+            CeleryIntegration(),
+        ],
+        # Set traces_sample_rate to 1.0 to capture 100%
+        # of the transactions for performance monitoring.
+        # We recommend adjusting this value in production.
+        traces_sample_rate=0.1 if DEBUG else 0.05,
+        # If you wish to associate users to errors (assuming you are using
+        # django.contrib.auth) you may enable sending PII data.
+        send_default_pii=True,
+        # Set profiles_sample_rate to 1.0 to profile 100%
+        # of sampled transactions.
+        # We recommend adjusting this value in production.
+        profiles_sample_rate=0.1 if DEBUG else 0.05,
+        environment='development' if DEBUG else 'production',
+    )
+
 ALLOWED_HOSTS = ['*']
 
 
