@@ -102,10 +102,20 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             ).distinct()
             
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
-            total_servings = 0
+            total_servings_all = 0
+            servings_breakdown_all = []
+            total_servings_accessible = 0
+            servings_breakdown_accessible = []
             # Calculer le total avec TOUS les meal plans du batch
             for mp in all_meal_plans:
-                total_servings += calculate_meal_plan_servings(mp)
+                adjusted, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
+                total_servings_all += adjusted
+                servings_breakdown_all.extend(breakdown)
+            # Total pour les meal plans accessibles (vue utilisateur)
+            for mp in meal_plans_accessible:
+                adjusted, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
+                total_servings_accessible += adjusted
+                servings_breakdown_accessible.extend(breakdown)
             
             meals = []
             meal_plan_ids = []
@@ -121,7 +131,10 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 })
             payload = RecipeBatchLightSerializer(batch, context={'request': request}).data
             payload['groupedDates'] = grouped_dates
-            payload['total_servings_batch'] = total_servings  # Total de TOUS les meal plans
+            payload['total_servings_batch'] = total_servings_all  # Total de TOUS les meal plans
+            payload['servings_breakdown'] = servings_breakdown_all
+            payload['total_servings_batch_accessible'] = total_servings_accessible
+            payload['servings_breakdown_accessible'] = servings_breakdown_accessible
             payload['meal_plan_ids'] = meal_plan_ids  # Seulement les accessibles
             payload['meals'] = meals  # Seulement les accessibles
             payload['is_cooked'] = any_cooked
@@ -148,6 +161,9 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         
         grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
         total_servings = 0
+        servings_breakdown = []
+        accessible_total_servings = 0
+        accessible_servings_breakdown = []
         # Calculer le total avec TOUS les meal plans du batch
         # (même ceux auxquels l'utilisateur n'est pas invité)
         all_meal_plans_list = list(all_meal_plans)
@@ -159,11 +175,16 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         print(f"  Accessible meal plans: {meal_plans_accessible.count()}", file=sys.stderr)
         
         for mp in all_meal_plans_list:
-            servings = calculate_meal_plan_servings(mp)
+            servings, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
             participants_count = mp.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(mp, 'invitations') else 0
             guest_count = mp.guest_count or 0
             print(f"  Meal plan {mp.id}: servings={servings} (1 + {participants_count} participants + {guest_count} guests)", file=sys.stderr)
             total_servings += servings
+            servings_breakdown.extend(breakdown)
+        for mp in meal_plans_accessible:
+            servings, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
+            accessible_total_servings += servings
+            accessible_servings_breakdown.extend(breakdown)
         
         print(f"  ✅ TOTAL SERVINGS_BATCH: {total_servings}", file=sys.stderr)
         print(f"{'='*60}\n", file=sys.stderr)
@@ -184,6 +205,9 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         payload = serializer.data
         payload['groupedDates'] = grouped_dates
         payload['total_servings_batch'] = total_servings  # Total de TOUS les meal plans
+        payload['servings_breakdown'] = servings_breakdown
+        payload['total_servings_batch_accessible'] = accessible_total_servings
+        payload['servings_breakdown_accessible'] = accessible_servings_breakdown
         payload['meal_plan_ids'] = meal_plan_ids  # Seulement les accessibles
         payload['meals'] = meals  # Seulement les accessibles
         payload['is_cooked'] = any_cooked
@@ -376,27 +400,20 @@ PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 
 
-def calculate_meal_plan_servings(meal_plan, group_meal_plans=None):
+def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_breakdown=False, recipe_batch_id=None):
     """
-    Calcule le nombre total de personnes pour un meal plan.
-    
-    Args:
-        meal_plan: Le meal plan pour lequel calculer
-        group_meal_plans: Liste optionnelle de meal plans du même groupe (si groupé)
-    
-    Returns:
-        int: Nombre total de personnes (total_servings)
+    Calcule le nombre total de personnes pour un meal plan en appliquant le ratio
+    stocké sur MealPlanRecipeBatch. Retourne uniquement le total sauf si
+    include_breakdown=True.
     """
-    # Si on a déjà _total_servings calculé, l'utiliser
+    # Si on a déjà _total_servings calculé, l'utiliser (déjà ajusté côté back)
     if hasattr(meal_plan, '_total_servings'):
-        return meal_plan._total_servings
+        return (meal_plan._total_servings, []) if include_breakdown else meal_plan._total_servings
     
-    # Si group_meal_plans est fourni, calculer pour un groupe
+    # Déterminer la base de servings (avant ratio)
     if group_meal_plans and len(group_meal_plans) > 1:
-        # Meal plan groupé : calculer total_servings
         total_guest_count = sum(mp.guest_count or 0 for mp in group_meal_plans)
         all_participants = []
-        
         for mp in group_meal_plans:
             invitations = mp.invitations.all() if hasattr(mp, 'invitations') else []
             for inv in invitations:
@@ -404,29 +421,58 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None):
                     'user': inv.invitee,
                     'status': inv.status,
                 })
-        
-        # Compter les participants actifs (accepted ou pending) en dédupliquant par utilisateur
-        # Un utilisateur invité sur plusieurs meal plans du groupe ne compte qu'une seule fois
         active_participants_by_user = {}
         for p in all_participants:
             if p.get('status') in ['accepted', 'pending']:
                 user_id = p['user'].id if hasattr(p['user'], 'id') else p['user']['id'] if isinstance(p['user'], dict) else None
                 if user_id:
-                    # Garder le meilleur statut (accepted > pending)
                     existing_status = active_participants_by_user.get(user_id)
                     if not existing_status or (p.get('status') == 'accepted' and existing_status != 'accepted'):
                         active_participants_by_user[user_id] = p.get('status')
-        
         active_participants_count = len(active_participants_by_user)
-        days_count = len(group_meal_plans)
-        return days_count + active_participants_count + total_guest_count
+        base_servings = len(group_meal_plans) + active_participants_count + total_guest_count
+    else:
+        participants_count = meal_plan.invitations.filter(
+            status__in=['accepted', 'pending']
+        ).count() if hasattr(meal_plan, 'invitations') else 0
+        guest_count = meal_plan.guest_count or 0
+        base_servings = 1 + participants_count + guest_count
     
-    # Meal plan simple : 1 (créateur) + participants actifs + guests
-    participants_count = meal_plan.invitations.filter(
-        status__in=['accepted', 'pending']
-    ).count() if hasattr(meal_plan, 'invitations') else 0
-    guest_count = meal_plan.guest_count or 0
-    return 1 + participants_count + guest_count
+    # Appliquer les ratios des MealPlanRecipeBatch
+    from decimal import Decimal
+    mprbs_qs = getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).all()
+    if recipe_batch_id is not None:
+        mprbs_qs = mprbs_qs.filter(recipe_batch_id=recipe_batch_id)
+    mprbs = mprbs_qs
+    breakdown = []
+    total = Decimal('0')
+    if mprbs.exists():
+        for mprb in mprbs:
+            ratio = mprb.ratio if mprb.ratio is not None else Decimal('1')
+            adjusted = Decimal(base_servings) * Decimal(ratio)
+            total += adjusted
+            if include_breakdown:
+                breakdown.append({
+                    'meal_plan_id': meal_plan.id,
+                    'recipe_batch_id': mprb.recipe_batch_id,
+                    'base_servings': float(base_servings),
+                    'ratio': float(ratio),
+                    'adjusted_servings': float(adjusted),
+                })
+    else:
+        total = Decimal(base_servings)
+        if include_breakdown:
+            breakdown.append({
+                'meal_plan_id': meal_plan.id,
+                'recipe_batch_id': None,
+                'base_servings': float(base_servings),
+                'ratio': 1.0,
+                'adjusted_servings': float(total),
+            })
+    
+    if include_breakdown:
+        return float(total), breakdown
+    return float(total)
 
 
 class RecipeViewSet(viewsets.ModelViewSet):
@@ -1324,15 +1370,18 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             ).filter(accessible_meal_plan_filter).distinct()
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
             total_servings = 0
+            total_servings_accessible = 0
             meals = []
             for mp in meal_plans:
-                total_servings += calculate_meal_plan_servings(mp)
+                total_servings += calculate_meal_plan_servings(mp, recipe_batch_id=batch.id)
                 meals.append({
                     'id': mp.id,
                     'date': mp.date,
                     'meal_time': mp.meal_time,
                     'is_cooked': batch.is_cooked,
                 })
+            # Ici meal_plans est déjà filtré par accessible_meal_plan_filter
+            total_servings_accessible = total_servings
             
             has_published_post = batch.posts.filter(is_published=True).exists()
             photo_url = None
@@ -1348,6 +1397,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             payload.update({
                 'groupedDates': grouped_dates,
                 'total_servings_batch': total_servings,
+                'total_servings_batch_accessible': total_servings_accessible,
                 'meal_plan_ids': [mp.id for mp in meal_plans],
                 'meals': meals,
                 'is_shared': has_published_post,

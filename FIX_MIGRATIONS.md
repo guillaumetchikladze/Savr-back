@@ -70,3 +70,60 @@ docker compose exec django env | grep DB_
 docker compose logs django
 ```
 
+## 🔧 Erreur : "operator class gin_trgm_ops does not exist"
+
+Si vous voyez cette erreur :
+```
+psycopg2.errors.UndefinedObject: operator class "gin_trgm_ops" does not exist for access method "gin"
+```
+
+**Cause** : L'extension PostgreSQL `pg_trgm` n'est pas installée dans votre base de données.
+
+### Solution automatique (recommandée)
+
+La migration a été modifiée pour installer automatiquement l'extension. Reconstruisez et relancez :
+
+```bash
+git pull
+docker compose up -d --build django
+```
+
+### Solution manuelle (si la base de données ne permet pas l'installation via migrations)
+
+Si vous utilisez une base de données externe (Neon, Supabase, etc.) qui nécessite des permissions spéciales :
+
+1. **Connectez-vous à votre base de données** :
+```bash
+docker compose exec django python manage.py dbshell
+```
+
+2. **Installez l'extension manuellement** :
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```
+
+Ou via psql directement :
+```bash
+psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+```
+
+3. **Vérifiez que l'extension est installée** :
+```sql
+SELECT * FROM pg_extension WHERE extname = 'pg_trgm';
+```
+
+4. **Relancez les migrations** :
+```bash
+docker compose exec django python manage.py migrate
+```
+
+### Extensions PostgreSQL requises
+
+Pour que l'application fonctionne complètement, ces extensions doivent être installées :
+- `pg_trgm` : Pour la recherche fuzzy (trigram similarity)
+- `vector` : Pour les embeddings vectoriels (si utilisé)
+- `unaccent` : Pour la recherche sans accents (optionnel)
+
+La migration `0003_add_search_indexes.py` installe automatiquement `pg_trgm`.
+La migration `0024_enable_pgvector.py` installe automatiquement `vector`.
+

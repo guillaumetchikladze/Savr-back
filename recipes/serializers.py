@@ -26,6 +26,53 @@ from .models import (
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from .utils import get_accessible_meal_plan_filter
+from decimal import Decimal
+
+# Helpers
+def compute_meal_plan_servings_with_ratio(meal_plan):
+    """
+    Calcule le total de servings ajusté par le ratio des MealPlanRecipeBatch
+    pour un meal plan donné. Retourne (total_adjusted, breakdown, base_servings).
+    - ratio null/absent => 1
+    """
+    try:
+        participants_count = meal_plan.invitations.filter(
+            status__in=['accepted', 'pending']
+        ).count() if hasattr(meal_plan, 'invitations') else 0
+    except Exception:
+        participants_count = 0
+    guest_count = meal_plan.guest_count or 0
+    base_servings = 1 + participants_count + guest_count
+
+    try:
+        mprbs = meal_plan.meal_plan_recipe_batches.all()
+    except Exception:
+        mprbs = []
+
+    breakdown = []
+    total = Decimal('0')
+    if mprbs:
+        for mprb in mprbs:
+            ratio = mprb.ratio if mprb.ratio is not None else Decimal('1')
+            adjusted = Decimal(base_servings) * Decimal(ratio)
+            total += adjusted
+            breakdown.append({
+                'meal_plan_id': meal_plan.id,
+                'recipe_batch_id': mprb.recipe_batch_id,
+                'base_servings': float(base_servings),
+                'ratio': float(ratio),
+                'adjusted_servings': float(adjusted),
+            })
+    else:
+        total = Decimal(base_servings)
+        breakdown.append({
+            'meal_plan_id': meal_plan.id,
+            'base_servings': float(base_servings),
+            'ratio': 1.0,
+            'adjusted_servings': float(total),
+        })
+
+    return float(total), breakdown, base_servings
 User = get_user_model()
 
 class UserLightSerializer(serializers.ModelSerializer):
@@ -268,7 +315,10 @@ class RecipeLightSerializer(serializers.ModelSerializer):
 class RecipeBatchLightSerializer(serializers.ModelSerializer):
     recipe = RecipeLightSerializer(read_only=True)
     created_by = UserLightSerializer(read_only=True)
-    total_servings_batch = serializers.IntegerField(read_only=True)
+    total_servings_batch = serializers.FloatField(read_only=True)
+    servings_breakdown = serializers.ListField(child=serializers.DictField(), read_only=True)
+    total_servings_batch_accessible = serializers.FloatField(read_only=True)
+    servings_breakdown_accessible = serializers.ListField(child=serializers.DictField(), read_only=True)
     groupedDates = serializers.ListField(child=serializers.CharField(), read_only=True)
     meal_plan_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
     meals = serializers.ListField(child=serializers.DictField(), read_only=True)
@@ -279,7 +329,9 @@ class RecipeBatchLightSerializer(serializers.ModelSerializer):
         model = RecipeBatch
         fields = [
             'id', 'name', 'recipe', 'created_by',
-            'total_servings_batch', 'groupedDates',
+            'total_servings_batch', 'servings_breakdown',
+            'total_servings_batch_accessible', 'servings_breakdown_accessible',
+            'groupedDates',
             'meal_plan_ids', 'meals', 'is_cooked',
             'steps',
             'created_at', 'updated_at'
@@ -310,44 +362,6 @@ class RecipeBatchSerializer(serializers.ModelSerializer):
         model = RecipeBatch
         fields = ['id', 'name', 'notes', 'recipe', 'recipe_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
-
-
-class MealPlanRecipeByDateSerializer(serializers.ModelSerializer):
-    """
-    Serializer allégé pour /meal-plans/by_date/ :
-    - inclut uniquement la recette (light) et l'id du batch
-    - pas de recipe doublé dans recipe_batch
-    """
-    recipe = RecipeLightSerializer(source='recipe_batch.recipe', read_only=True)
-    recipe_batch_id = serializers.IntegerField(read_only=True)
-    ratio = serializers.DecimalField(max_digits=5, decimal_places=2)
-    groupedDates = serializers.SerializerMethodField()
-    group_id = serializers.SerializerMethodField()
-
-    class Meta:
-        model = MealPlanRecipeBatch
-        fields = [
-            'id',
-            'recipe',
-            'recipe_batch_id',
-            'ratio',
-            'order',
-            'group_id',
-            'groupedDates',
-        ]
-        read_only_fields = ['id', 'recipe', 'recipe_batch_id']
-
-    def get_group_id(self, obj):
-        return obj.recipe_batch_id if obj.recipe_batch_id else None
-
-    def get_groupedDates(self, obj):
-        if not obj.recipe_batch_id:
-            return [obj.meal_plan.date.isoformat()]
-        meal_plans = MealPlan.objects.filter(
-            meal_plan_recipe_batches__recipe_batch_id=obj.recipe_batch_id
-        ).distinct().order_by('date', 'meal_time')
-        dates = [mp.date.isoformat() for mp in meal_plans]
-        return dates or [obj.meal_plan.date.isoformat()]
 
 
 class MealPlanRecipeSerializer(serializers.ModelSerializer):
@@ -413,6 +427,7 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
     total_guest_count = serializers.SerializerMethodField()
     total_participants = serializers.SerializerMethodField()
     total_servings = serializers.SerializerMethodField()
+    servings_breakdown = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
@@ -420,7 +435,7 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'recipe', 'recipes',
             'user', 'participants', 'confirmed', 'guest_count', 
-            'total_guest_count', 'total_participants', 'total_servings',
+            'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at']
@@ -466,20 +481,12 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
     def get_total_servings(self, obj: MealPlan):
         if hasattr(obj, '_total_servings'):
             return obj._total_servings
-        
-        participants_to_use = None
-        if hasattr(obj, '_total_participants'):
-            participants_to_use = obj._total_participants
-        else:
-            participants_to_use = self.get_participants(obj)
-        
-        active_participants_count = sum(
-            1 for p in participants_to_use
-            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
-        )
-        
-        guest_count_to_use = self.get_total_guest_count(obj)
-        return 1 + active_participants_count + guest_count_to_use
+        participants = obj.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(obj, 'invitations') else 0
+        guest_count = obj.guest_count or 0
+        return 1 + participants + guest_count
+
+    def get_servings_breakdown(self, obj: MealPlan):
+        return []
     
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
@@ -541,6 +548,16 @@ class MealPlanSerializer(serializers.ModelSerializer):
         required=False,
         help_text="Liste unifiée {recipe_id, batch_id, ratio, order}"
     )
+    # Payload léger pour mettre à jour UNIQUEMENT les ratios des MealPlanRecipeBatch existants
+    # sans créer de nouveaux RecipeBatch ni modifier la composition du meal plan.
+    # Format attendu côté front : { recipe_batch_id: ratio }
+    entry_ratios = serializers.DictField(
+        child=serializers.FloatField(),
+        write_only=True,
+        required=False,
+        help_text="Dictionnaire {recipe_batch_id: ratio} pour mettre à jour les ratios existants sans recréer de batches"
+    )
+    servings_breakdown = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
@@ -548,9 +565,9 @@ class MealPlanSerializer(serializers.ModelSerializer):
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'recipe', 'recipe_id',
             'recipes', 'batch_ids', 'recipe_ids', 'recipe_ratios',
-            'entries', 'recipes_entries',
+            'entries', 'entry_ratios', 'recipes_entries',
             'user', 'participants', 'confirmed', 'guest_count', 
-            'total_guest_count', 'total_participants', 'total_servings',
+            'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at', 'recipes', 'recipe']
@@ -636,6 +653,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
         batch_ids = validated_data.pop('batch_ids', None)
         recipe_ids = validated_data.pop('recipe_ids', None)
         recipe_ratios = validated_data.pop('recipe_ratios', {})
+        entry_ratios = validated_data.pop('entry_ratios', None)
         
         # Mettre à jour le meal plan (seulement si d'autres champs sont fournis)
         meal_plan = super().update(instance, validated_data)
@@ -643,6 +661,18 @@ class MealPlanSerializer(serializers.ModelSerializer):
         # Payload unifié : remplace l'ensemble
         if entries is not None:
             from decimal import Decimal, ROUND_HALF_UP
+            # Construire une map des batchs existants par recipe_id AVANT suppression,
+            # pour pouvoir les réutiliser plutôt que de créer de nouveaux RecipeBatch.
+            existing_mprbs = list(
+                meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe')
+            )
+            existing_batch_by_recipe_id = {}
+            for mprb in existing_mprbs:
+                if mprb.recipe_batch and mprb.recipe_batch.recipe_id:
+                    # On garde le dernier batch rencontré pour cette recette
+                    existing_batch_by_recipe_id[mprb.recipe_batch.recipe_id] = mprb.recipe_batch_id
+
+            # On remplace ensuite les liens pour ce meal plan
             meal_plan.meal_plan_recipe_batches.all().delete()
             for order, item in enumerate(entries):
                 recipe_id = item.get('recipe_id')
@@ -651,6 +681,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
                 order_value = item.get('order', order)
                 ratio_decimal = Decimal(str(ratio_value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
                 if batch_id:
+                    # Si un batch explicite est fourni, on l'utilise tel quel
                     MealPlanRecipeBatch.objects.create(
                         meal_plan=meal_plan,
                         recipe_batch_id=batch_id,
@@ -658,13 +689,24 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         order=order_value
                     )
                 elif recipe_id:
-                    batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
-                    MealPlanRecipeBatch.objects.create(
-                        meal_plan=meal_plan,
-                        recipe_batch=batch,
-                        ratio=ratio_decimal,
-                        order=order_value
-                    )
+                    # Sinon, on essaie d'abord de réutiliser un batch existant pour cette recette
+                    reused_batch_id = existing_batch_by_recipe_id.get(recipe_id)
+                    if reused_batch_id:
+                        MealPlanRecipeBatch.objects.create(
+                            meal_plan=meal_plan,
+                            recipe_batch_id=reused_batch_id,
+                            ratio=ratio_decimal,
+                            order=order_value
+                        )
+                    else:
+                        # En dernier recours, on crée un nouveau batch pour cette recette
+                        batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
+                        MealPlanRecipeBatch.objects.create(
+                            meal_plan=meal_plan,
+                            recipe_batch=batch,
+                            ratio=ratio_decimal,
+                            order=order_value
+                        )
             return meal_plan
         
         # Si batch_ids est fourni explicitement, on remplace les liens par ces batches
@@ -682,18 +724,69 @@ class MealPlanSerializer(serializers.ModelSerializer):
         
         # Sinon, compat: handle recipe_ids en créant des batches
         if recipe_ids is not None:
+            # Compat legacy : recipe_ids + recipe_ratios.
+            # On essaie d'abord de réutiliser les RecipeBatch existants pour ces recettes
+            # avant d'en créer de nouveaux.
+            existing_mprbs = list(
+                meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe')
+            )
+            existing_batch_by_recipe_id = {}
+            for mprb in existing_mprbs:
+                if mprb.recipe_batch and mprb.recipe_batch.recipe_id:
+                    existing_batch_by_recipe_id[mprb.recipe_batch.recipe_id] = mprb.recipe_batch_id
+
             meal_plan.meal_plan_recipe_batches.all().delete()
             default_ratio = Decimal('1.0') / Decimal(str(len(recipe_ids))) if recipe_ids else Decimal('1.0')
             for order, recipe_id in enumerate(recipe_ids):
-                ratio_value = recipe_ratios.get(str(recipe_id)) or recipe_ratios.get(recipe_id) or default_ratio
-                ratio_decimal = Decimal(str(ratio_value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
-                MealPlanRecipeBatch.objects.create(
-                    meal_plan=meal_plan,
-                    recipe_batch=batch,
-                    ratio=ratio_decimal,
-                    order=order
+                ratio_value = (
+                    recipe_ratios.get(str(recipe_id))
+                    or recipe_ratios.get(recipe_id)
+                    or default_ratio
                 )
+                ratio_decimal = Decimal(str(ratio_value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+                reused_batch_id = existing_batch_by_recipe_id.get(recipe_id)
+                if reused_batch_id:
+                    MealPlanRecipeBatch.objects.create(
+                        meal_plan=meal_plan,
+                        recipe_batch_id=reused_batch_id,
+                        ratio=ratio_decimal,
+                        order=order
+                    )
+                else:
+                    batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
+                    MealPlanRecipeBatch.objects.create(
+                        meal_plan=meal_plan,
+                        recipe_batch=batch,
+                        ratio=ratio_decimal,
+                        order=order
+                    )
+            return meal_plan
+        
+        # Mise à jour légère des ratios existants sans toucher aux RecipeBatch
+        # Utilise entry_ratios : { recipe_batch_id: ratio }
+        if entry_ratios is not None:
+            from decimal import Decimal, ROUND_HALF_UP
+            # Ne pas recréer les liens : simplement mettre à jour les instances existantes
+            for key, ratio_value in entry_ratios.items():
+                try:
+                    recipe_batch_id = int(key)
+                except (TypeError, ValueError):
+                    # Clé invalide, ignorer
+                    continue
+                try:
+                    mprb = meal_plan.meal_plan_recipe_batches.get(recipe_batch_id=recipe_batch_id)
+                except MealPlanRecipeBatch.DoesNotExist:
+                    # Aucun lien pour ce batch sur ce meal plan, ignorer silencieusement
+                    continue
+                try:
+                    ratio_decimal = Decimal(str(ratio_value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                except (TypeError, ValueError, ArithmeticError):
+                    # Ratio invalide, ignorer cette entrée
+                    continue
+                if mprb.ratio != ratio_decimal:
+                    mprb.ratio = ratio_decimal
+                    mprb.save(update_fields=['ratio', 'updated_at'])
         
         return meal_plan
 
@@ -774,29 +867,21 @@ class MealPlanSerializer(serializers.ModelSerializer):
         return total_servings
     
     def get_total_servings(self, obj: MealPlan):
-        """
-        Calcule le nombre total de personnes pour ce meal plan.
-        Pour un meal plan avec plusieurs recettes : somme des servings de chaque recette
-        (groupée ou non).
-        """
-        # Si on a un total_servings pré-calculé, l'utiliser
+        # Les totals de meal plan ne doivent pas être affectés par les ratios (vue meal plan)
         if hasattr(obj, '_total_servings'):
             return obj._total_servings
-        
-        # Calculer en sommant les servings de chaque recette
-        meal_plan_recipes = obj.meal_plan_recipe_batches.all()
-        if not meal_plan_recipes.exists():
-            # Pas de recettes : calculer pour le meal plan seul
-            participants = obj.invitations.filter(status__in=['accepted', 'pending']).count()
-            return 1 + participants + (obj.guest_count or 0)
-        
-        # Pour chaque recette, calculer ses servings (groupée ou non)
-        total_servings = 0
-        for meal_plan_recipe in meal_plan_recipes:
-            recipe_servings = self._calculate_recipe_group_servings(meal_plan_recipe)
-            total_servings += recipe_servings
-        
-        return total_servings
+        # Base = 1 + participants actifs + guests
+        participants = obj.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(obj, 'invitations') else 0
+        return 1 + participants + (obj.guest_count or 0)
+
+    def get_servings_breakdown(self, obj: MealPlan):
+        """
+        Pour les vues meal plan (calendrier, by_date, détail simple), on conserve
+        un total_servings basé uniquement sur 1 + participants actifs + guests,
+        sans appliquer les ratios. Le breakdown par ratio est réservé aux vues
+        de batch (RecipeBatchViewSet, RecipeSummaryModal, etc.).
+        """
+        return []
     
 class MealPlanListSerializer(serializers.ModelSerializer):
     user = UserLightSerializer(read_only=True)
@@ -966,7 +1051,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
     Detailed list for by_date: include host and participants with status.
     """
     host = UserLightSerializer(source='user', read_only=True)
-    recipes = MealPlanRecipeByDateSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
+    recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
     meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     participants = serializers.SerializerMethodField()
