@@ -312,6 +312,44 @@ class RecipeBatchSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
+class MealPlanRecipeByDateSerializer(serializers.ModelSerializer):
+    """
+    Serializer allégé pour /meal-plans/by_date/ :
+    - inclut uniquement la recette (light) et l'id du batch
+    - pas de recipe doublé dans recipe_batch
+    """
+    recipe = RecipeLightSerializer(source='recipe_batch.recipe', read_only=True)
+    recipe_batch_id = serializers.IntegerField(read_only=True)
+    ratio = serializers.DecimalField(max_digits=5, decimal_places=2)
+    groupedDates = serializers.SerializerMethodField()
+    group_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MealPlanRecipeBatch
+        fields = [
+            'id',
+            'recipe',
+            'recipe_batch_id',
+            'ratio',
+            'order',
+            'group_id',
+            'groupedDates',
+        ]
+        read_only_fields = ['id', 'recipe', 'recipe_batch_id']
+
+    def get_group_id(self, obj):
+        return obj.recipe_batch_id if obj.recipe_batch_id else None
+
+    def get_groupedDates(self, obj):
+        if not obj.recipe_batch_id:
+            return [obj.meal_plan.date.isoformat()]
+        meal_plans = MealPlan.objects.filter(
+            meal_plan_recipe_batches__recipe_batch_id=obj.recipe_batch_id
+        ).distinct().order_by('date', 'meal_time')
+        dates = [mp.date.isoformat() for mp in meal_plans]
+        return dates or [obj.meal_plan.date.isoformat()]
+
+
 class MealPlanRecipeSerializer(serializers.ModelSerializer):
     """
     Serializer pour la relation MealPlan-RecipeBatch avec ratio.
@@ -928,8 +966,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
     Detailed list for by_date: include host and participants with status.
     """
     host = UserLightSerializer(source='user', read_only=True)
-    recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
-    recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
+    recipes = MealPlanRecipeByDateSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
     meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     participants = serializers.SerializerMethodField()
@@ -943,7 +980,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display',
             'meal_type', 'meal_type_display', 'confirmed',
-            'recipe', 'recipes', 'host', 'participants', 'guest_count', 
+            'recipes', 'host', 'participants', 'guest_count', 
             'total_guest_count', 'total_participants', 'total_servings',
             'groupedDates',
         ]
