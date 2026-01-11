@@ -734,6 +734,18 @@ class RecipeViewSet(viewsets.ModelViewSet):
         serializer = RecipeIngredientSerializer(ingredients, many=True, context={'request': request})
         return Response(serializer.data)
     
+    @action(detail=True, methods=['get'])
+    def summary(self, request, pk=None):
+        """
+        Récupérer la description et le résumé des étapes de la recette.
+        Endpoint léger pour afficher ces infos dans RecipeSummaryModal.
+        """
+        recipe = self.get_object()
+        return Response({
+            'description': recipe.description,
+            'steps_summary': recipe.steps_summary,
+        })
+    
     @action(detail=False, methods=['get'])
     def my_recipes(self, request):
         """Récupérer les recettes de l'utilisateur connecté"""
