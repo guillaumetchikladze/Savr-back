@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.db.models import Q, F
+from django.db.models.functions import Greatest
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
 from django.conf import settings
 import uuid
@@ -199,10 +200,23 @@ def search_view(request):
             'recipes': recipes_serializer.data,
         }, status=status.HTTP_200_OK)
     
-    # Recherche stricte pour les utilisateurs (username ou email exact)
-    users = User.objects.filter(
-        Q(username__iexact=query) | Q(email__iexact=query)
-    ).exclude(id=request.user.id)
+    # Recherche fuzzy pour les utilisateurs avec trigram similarity
+    try:
+        users = User.objects.exclude(id=request.user.id).annotate(
+            username_similarity=TrigramSimilarity('username', query),
+            email_similarity=TrigramSimilarity('email', query),
+        ).annotate(
+            max_similarity=Greatest('username_similarity', 'email_similarity')
+        ).filter(
+            Q(username__icontains=query) | 
+            Q(email__icontains=query) | 
+            Q(max_similarity__gt=0.2)
+        ).order_by('-max_similarity')
+    except Exception:
+        # Fallback sans trigram similarity
+        users = User.objects.filter(
+            Q(username__icontains=query) | Q(email__icontains=query)
+        ).exclude(id=request.user.id)
     
     # Recherche fuzzy pour les recettes avec PostgreSQL Full-Text Search
     try:
