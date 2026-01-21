@@ -1303,7 +1303,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         from django.db.models import Case, When, IntegerField
         
-        qs = MealPlan.objects.filter(user=self.request.user)
+        # Utiliser le filtre accessible qui inclut les meal plans où l'utilisateur est invité accepté
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(self.request.user)
+        qs = MealPlan.objects.filter(accessible_meal_plan_filter).distinct()
         
         # Filtres de date (format YYYY-MM-DD)
         date_gte = self.request.query_params.get('date__gte')
@@ -2259,18 +2261,10 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         invitation.status = 'accepted'
         invitation.save()
         
-        # Créer un meal plan pour l'invité (sans écraser ce qu'il a déjà)
-        meal_plan = invitation.meal_plan
-        user_meal_plan, created = MealPlan.objects.get_or_create(
-            user=request.user,
-            date=meal_plan.date,
-            meal_time=meal_plan.meal_time,
-            defaults={
-                'meal_type': meal_plan.meal_type,
-            }
-        )
+        # Ne plus créer de meal plan pour l'invité - l'invitation acceptée est la source de vérité
+        # L'invité verra le meal plan dans son calendrier via le champ is_guest du serializer
         
-        # Pas de shared_with: l'acceptation est portée par l'invitation (source of truth)
+        meal_plan = invitation.meal_plan
         
         # Créer une notification pour l'inviteur
         Notification.objects.create(

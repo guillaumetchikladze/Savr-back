@@ -582,6 +582,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
         help_text="Dictionnaire {recipe_batch_id: ratio} pour mettre à jour les ratios existants sans recréer de batches"
     )
     servings_breakdown = serializers.SerializerMethodField()
+    is_guest = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
@@ -592,7 +593,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
             'entries', 'entry_ratios', 'recipes_entries',
             'user', 'participants', 'confirmed', 'guest_count', 
             'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
-            'created_at', 'updated_at'
+            'is_guest', 'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at', 'recipes', 'recipe']
     
@@ -907,6 +908,21 @@ class MealPlanSerializer(serializers.ModelSerializer):
         """
         return []
     
+    def get_is_guest(self, obj: MealPlan):
+        """
+        Vérifie si l'utilisateur actuel a une invitation acceptée pour ce meal plan.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        
+        from .models import MealInvitation
+        return MealInvitation.objects.filter(
+            meal_plan=obj,
+            invitee=request.user,
+            status='accepted'
+        ).exists()
+    
 class MealPlanListSerializer(serializers.ModelSerializer):
     user = UserLightSerializer(read_only=True)
     recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
@@ -1061,13 +1077,50 @@ class MealPlanMinimalListSerializer(serializers.ModelSerializer):
     """
     meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    is_guest = serializers.SerializerMethodField()
+    inviter_name = serializers.SerializerMethodField()
+    user = UserLightSerializer(read_only=True)
     
     class Meta:
         model = MealPlan
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display',
-            'meal_type', 'meal_type_display', 'confirmed',
+            'meal_type', 'meal_type_display', 'confirmed', 'is_guest', 'inviter_name', 'user',
         ]
+    
+    def get_is_guest(self, obj: MealPlan):
+        """
+        Vérifie si l'utilisateur actuel a une invitation acceptée pour ce meal plan.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        
+        from .models import MealInvitation
+        return MealInvitation.objects.filter(
+            meal_plan=obj,
+            invitee=request.user,
+            status='accepted'
+        ).exists()
+    
+    def get_inviter_name(self, obj: MealPlan):
+        """
+        Retourne le nom de l'inviteur si l'utilisateur actuel est invité.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        
+        from .models import MealInvitation
+        invitation = MealInvitation.objects.filter(
+            meal_plan=obj,
+            invitee=request.user,
+            status='accepted'
+        ).select_related('inviter').first()
+        
+        if invitation and invitation.inviter:
+            return invitation.inviter.username or invitation.inviter.email
+        return None
 
 
 class MealPlanByDateSerializer(serializers.ModelSerializer):
@@ -1083,6 +1136,8 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
     total_participants = serializers.SerializerMethodField()
     total_servings = serializers.SerializerMethodField()
     groupedDates = serializers.SerializerMethodField()
+    is_guest = serializers.SerializerMethodField()
+    inviter_name = serializers.SerializerMethodField()
     
     class Meta:
         model = MealPlan
@@ -1091,8 +1146,42 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
             'meal_type', 'meal_type_display', 'confirmed',
             'recipes', 'host', 'participants', 'guest_count', 
             'total_guest_count', 'total_participants', 'total_servings',
-            'groupedDates',
+            'groupedDates', 'is_guest', 'inviter_name',
         ]
+    
+    def get_is_guest(self, obj: MealPlan):
+        """
+        Vérifie si l'utilisateur actuel a une invitation acceptée pour ce meal plan.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        
+        from .models import MealInvitation
+        return MealInvitation.objects.filter(
+            meal_plan=obj,
+            invitee=request.user,
+            status='accepted'
+        ).exists()
+    
+    def get_inviter_name(self, obj: MealPlan):
+        """
+        Retourne le nom de l'inviteur si l'utilisateur actuel est invité.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        
+        from .models import MealInvitation
+        invitation = MealInvitation.objects.filter(
+            meal_plan=obj,
+            invitee=request.user,
+            status='accepted'
+        ).select_related('inviter').first()
+        
+        if invitation and invitation.inviter:
+            return invitation.inviter.username or invitation.inviter.email
+        return None
     
     def get_participants(self, obj: MealPlan):
         from .models import MealInvitation
