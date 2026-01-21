@@ -59,7 +59,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
       - AWS_BUCKET=${AWS_BUCKET:-savr}
       - AWS_S3_REGION_NAME=${AWS_S3_REGION_NAME:-eu-west-3}
-      - AWS_ENDPOINT=http://minio:9000
+      - AWS_ENDPOINT=${AWS_ENDPOINT:-minioadmin}
       - AWS_USE_PATH_STYLE_ENDPOINT=true
       - SECRET_KEY=${SECRET_KEY:-django-insecure-change-me}
       - DEBUG=${DEBUG:-False}
