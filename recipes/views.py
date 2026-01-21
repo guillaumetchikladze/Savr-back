@@ -838,6 +838,91 @@ class RecipeViewSet(viewsets.ModelViewSet):
             'description': recipe.description,
             'steps_summary': recipe.steps_summary,
         })
+
+    @action(detail=True, methods=['put'], url_path='edit')
+    def edit(self, request, pk=None):
+        """
+        Mettre à jour une recette (métadonnées + ingrédients + steps) par son auteur.
+        Attendu en payload :
+        - champs meta (title, description, steps_summary, meal_type, difficulty, prep_time, cook_time, servings, image_path, is_public)
+        - ingredients: [{ingredient_id?, ingredient_name?, quantity, unit}]
+        - steps: [{title, instruction, tip?, has_timer?, timer_duration?}]
+        """
+        recipe = self.get_object()
+        if recipe.created_by_id != request.user.id:
+            return Response({'error': "Seul l'auteur peut modifier la recette."}, status=status.HTTP_403_FORBIDDEN)
+
+        data = request.data or {}
+
+        meta_fields = ['title', 'description', 'steps_summary', 'meal_type', 'difficulty', 'prep_time', 'cook_time', 'servings', 'image_path', 'is_public']
+
+        with transaction.atomic():
+            # Mettre à jour les métadonnées si présentes
+            for field in meta_fields:
+                if field in data:
+                    setattr(recipe, field, data.get(field))
+            recipe.save()
+
+            # Mettre à jour les ingrédients
+            if 'ingredients' in data:
+                ingredients_payload = data.get('ingredients') or []
+                RecipeIngredient.objects.filter(recipe=recipe).delete()
+
+                for item in ingredients_payload:
+                    if not isinstance(item, dict):
+                        continue
+
+                    ingredient_id = item.get('ingredient_id') or (item.get('ingredient') or {}).get('id')
+                    ingredient_name = item.get('ingredient_name') or (item.get('ingredient') or {}).get('name') or item.get('name')
+
+                    ingredient_obj = None
+                    if ingredient_id:
+                        ingredient_obj = Ingredient.objects.filter(pk=ingredient_id).first()
+
+                    if not ingredient_obj and ingredient_name:
+                        ingredient_name = ingredient_name.strip()
+                        if ingredient_name:
+                            ingredient_obj, _ = Ingredient.objects.get_or_create(name=ingredient_name)
+
+                    if not ingredient_obj:
+                        # Impossible de déterminer l'ingrédient, on ignore cette entrée
+                        continue
+
+                    quantity = item.get('quantity', 0)
+                    try:
+                        quantity_decimal = Decimal(str(quantity))
+                    except Exception:
+                        quantity_decimal = Decimal('0')
+
+                    unit = item.get('unit') or 'g'
+                    RecipeIngredient.objects.create(
+                        recipe=recipe,
+                        ingredient=ingredient_obj,
+                        quantity=quantity_decimal,
+                        unit=unit,
+                    )
+
+            # Mettre à jour les steps
+            if 'steps' in data:
+                steps_payload = data.get('steps') or []
+                Step.objects.filter(recipe=recipe).delete()
+
+                for idx, step_data in enumerate(steps_payload):
+                    if not isinstance(step_data, dict):
+                        continue
+
+                    Step.objects.create(
+                        recipe=recipe,
+                        order=idx,
+                        title=step_data.get('title', '') or '',
+                        instruction=step_data.get('instruction') or step_data.get('text') or '',
+                        tip=step_data.get('tip', '') or '',
+                        has_timer=bool(step_data.get('has_timer', False)),
+                        timer_duration=step_data.get('timer_duration'),
+                    )
+
+        serializer = RecipeSerializer(recipe, context={'request': request})
+        return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def my_recipes(self, request):

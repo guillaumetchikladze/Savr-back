@@ -194,6 +194,7 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     is_favorited = serializers.SerializerMethodField()
+    is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
     
@@ -204,7 +205,7 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
             'difficulty', 'difficulty_display', 'prep_time', 'cook_time',
             'servings', 'image_path', 'image_url', 'created_by', 'created_by_username',
             'is_public', 'source_type', 'source_type_display', 'import_source_url',
-            'created_at', 'updated_at', 'is_favorited'
+            'created_at', 'updated_at', 'is_favorited', 'is_author'
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
     
@@ -217,6 +218,13 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(id=request.user.id).exists()
         return False
+    
+    def get_is_author(self, obj):
+        """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.created_by_id == request.user.id
+        return False
 
 
 class RecipeSerializer(serializers.ModelSerializer):
@@ -227,6 +235,7 @@ class RecipeSerializer(serializers.ModelSerializer):
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     is_favorited = serializers.SerializerMethodField()
+    is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     
     class Meta:
@@ -236,7 +245,7 @@ class RecipeSerializer(serializers.ModelSerializer):
             'difficulty', 'difficulty_display', 'prep_time', 'cook_time',
             'servings', 'image_path', 'image_url', 'created_by', 'created_by_username',
             'is_public', 'source_type', 'source_type_display', 'import_source_url',
-            'created_at', 'updated_at', 'steps', 'recipe_ingredients', 'is_favorited'
+            'created_at', 'updated_at', 'steps', 'recipe_ingredients', 'is_favorited', 'is_author'
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
     
@@ -248,6 +257,13 @@ class RecipeSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(id=request.user.id).exists()
+        return False
+    
+    def get_is_author(self, obj):
+        """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.created_by_id == request.user.id
         return False
 
 
@@ -302,14 +318,22 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
 class RecipeLightSerializer(serializers.ModelSerializer):
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
+    is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     
     class Meta:
         model = Recipe
-        fields = ['id', 'title', 'image_path', 'image_url', 'meal_type', 'meal_type_display', 'difficulty', 'difficulty_display', 'prep_time', 'cook_time', 'servings']
+        fields = ['id', 'title', 'image_path', 'image_url', 'meal_type', 'meal_type_display', 'difficulty', 'difficulty_display', 'prep_time', 'cook_time', 'servings', 'is_author']
     
     def get_image_url(self, obj):
         return obj.image_url
+    
+    def get_is_author(self, obj):
+        """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.created_by_id == request.user.id
+        return False
 
 
 class RecipeBatchLightSerializer(serializers.ModelSerializer):
