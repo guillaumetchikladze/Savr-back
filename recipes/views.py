@@ -14,6 +14,7 @@ from pgvector.django import CosineDistance
 from pydantic_ai.exceptions import UserError as PydanticAIUserError
 import uuid
 import logging
+import traceback
 from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
 from .services.ingredient_matcher import get_batch_embeddings
 from .models import (
@@ -308,8 +309,10 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['delete'], url_path='delete-photo')
     def delete_photo(self, request, pk=None):
         """Supprimer une photo d'un batch"""
+        logger = logging.getLogger(__name__)
         batch = self.get_object()
-        photo_id = request.data.get('photo_id')
+        # Accepter photo_id depuis query params (recommandé pour DELETE) ou body (compatibilité)
+        photo_id = request.query_params.get('photo_id') or request.data.get('photo_id')
         
         if not photo_id:
             return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -317,24 +320,43 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             photo = PostPhoto.objects.get(id=photo_id, recipe_batch=batch)
             
-            # Supprimer de S3
-            try:
-                from savr_back.settings import build_s3_client
-                s3_client = build_s3_client()
-                file_path = photo.image_path.replace('s3:/', '').lstrip('/') if photo.image_path else None
-                if file_path:
-                    from django.conf import settings
-                    s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=file_path)
-            except Exception as e:
-                print(f"Error deleting from S3: {str(e)}")
+            # Sauvegarder le chemin de l'image avant suppression
+            image_path_to_delete = photo.image_path
+            
+            # Supprimer de S3 AVANT de supprimer de la DB
+            s3_deleted = False
+            if image_path_to_delete:
+                try:
+                    s3_client = build_s3_client()
+                    # Nettoyer le chemin (enlever s3:/ et les slashes en début)
+                    file_path = image_path_to_delete.replace('s3:/', '').lstrip('/')
+                    
+                    if file_path and settings.AWS_BUCKET:
+                        logger.info(f"Deleting S3 object: Bucket={settings.AWS_BUCKET}, Key={file_path}")
+                        s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=file_path)
+                        s3_deleted = True
+                        logger.info(f"Successfully deleted S3 object: {file_path}")
+                    else:
+                        logger.warning(f"Cannot delete S3 object: file_path={file_path}, bucket={settings.AWS_BUCKET}")
+                except Exception as e:
+                    logger.error(f"Error deleting from S3: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    # On continue quand même pour supprimer de la DB
             
             # Supprimer de la base de données
             photo.delete()
             
-            return Response({'message': 'Photo deleted successfully'}, status=status.HTTP_200_OK)
+            return Response({
+                'message': 'Photo deleted successfully',
+                's3_deleted': s3_deleted
+            }, status=status.HTTP_200_OK)
             
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Unexpected error deleting photo: {str(e)}")
+            logger.error(traceback.format_exc())
+            return Response({'error': f'Error deleting photo: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'], url_path='publish-post')
     def publish_post(self, request, pk=None):
