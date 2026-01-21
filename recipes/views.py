@@ -238,10 +238,103 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
     def photos(self, request, pk=None):
         """Galerie de photos associées au batch"""
         batch = self.get_object()
+        step_order = request.query_params.get('step_order')
+        photo_type = request.query_params.get('photo_type')
+        
         photos = PostPhoto.objects.filter(recipe_batch=batch).select_related('step').order_by('-created_at')
+        
+        # Filtrer par photo_type si fourni
+        if photo_type:
+            photos = photos.filter(photo_type=photo_type)
+        
+        # Filtrer par step_order si fourni (seulement pour during_cooking)
+        if step_order:
+            try:
+                step_order_int = int(step_order)
+                photos = photos.filter(step__order=step_order_int)
+            except ValueError:
+                pass
+        
         from .serializers import PostPhotoLightSerializer
         serializer = PostPhotoLightSerializer(photos, many=True, context={'request': request})
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'], url_path='create-photo-draft')
+    def create_photo_draft(self, request, pk=None):
+        """Créer un PostPhoto draft pour une étape photo"""
+        batch = self.get_object()
+        step_order = request.data.get('step_order')
+        step_id = request.data.get('step_id')
+        photo_type = request.data.get('photo_type', 'during_cooking')
+        
+        # Pour after_cooking, step_order/step_id sont optionnels
+        if photo_type != 'after_cooking' and not step_order and not step_id:
+            return Response({'error': 'step_order or step_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Vérifier que step_order est dans photo_step_orders (seulement pour during_cooking)
+        if step_order is not None and photo_type == 'during_cooking' and step_order not in batch.photo_step_orders:
+            return Response({'error': 'Invalid step_order'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Trouver la step correspondante (optionnel pour after_cooking)
+        step = None
+        if step_id:
+            step = batch.recipe.steps.filter(id=step_id).first()
+        elif step_order:
+            step = batch.recipe.steps.filter(order=step_order).first()
+        else:
+            step = None
+            
+        # Pour during_cooking, step est requis
+        if photo_type == 'during_cooking' and not step:
+            return Response({'error': 'Step not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Vérifier que step_order correspond bien (seulement si step existe)
+        if step and step_order and step.order != step_order:
+            return Response({'error': 'Step order mismatch'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Créer le draft
+        draft = PostPhoto.objects.create(
+            recipe_batch=batch,
+            photo_type=photo_type,
+            step=step,  # Peut être None pour after_cooking
+            is_draft=True,
+            image_path=''
+        )
+        
+        from .serializers import PostPhotoSerializer
+        serializer = PostPhotoSerializer(draft, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['delete'], url_path='delete-photo')
+    def delete_photo(self, request, pk=None):
+        """Supprimer une photo d'un batch"""
+        batch = self.get_object()
+        photo_id = request.data.get('photo_id')
+        
+        if not photo_id:
+            return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            photo = PostPhoto.objects.get(id=photo_id, recipe_batch=batch)
+            
+            # Supprimer de S3
+            try:
+                from savr_back.settings import build_s3_client
+                s3_client = build_s3_client()
+                file_path = photo.image_path.replace('s3:/', '').lstrip('/') if photo.image_path else None
+                if file_path:
+                    from django.conf import settings
+                    s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=file_path)
+            except Exception as e:
+                print(f"Error deleting from S3: {str(e)}")
+            
+            # Supprimer de la base de données
+            photo.delete()
+            
+            return Response({'message': 'Photo deleted successfully'}, status=status.HTTP_200_OK)
+            
+        except PostPhoto.DoesNotExist:
+            return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
     
     @action(detail=True, methods=['post'], url_path='publish-post')
     def publish_post(self, request, pk=None):
@@ -2462,9 +2555,13 @@ class PostViewSet(viewsets.ModelViewSet):
         if photo_type not in PHOTO_TYPES:
             return Response({'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Vérifier l'unicité pour les types non-spontanés
+        # Vérifier l'unicité pour les types non-spontanés (sauf during_cooking qui peut avoir plusieurs)
         if photo_type in RESTRICTED_PHOTO_TYPES:
-            existing_photo = PostPhoto.objects.filter(recipe_batch=recipe_batch, photo_type=photo_type).first()
+            existing_photo = PostPhoto.objects.filter(
+                recipe_batch=recipe_batch, 
+                photo_type=photo_type,
+                is_draft=False
+            ).first()
             if existing_photo:
                 return Response({'error': f'A {photo_type} photo already exists for this recipe batch'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -2553,11 +2650,12 @@ class PostViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['post'])
     def confirm_photo_upload(self, request):
-        """Confirmer qu'une photo a été uploadée et créer l'objet PostPhoto"""
+        """Confirmer qu'une photo a été uploadée et créer ou finaliser l'objet PostPhoto"""
         recipe_batch_id = request.data.get('recipe_batch_id')
         image_path = request.data.get('image_path') or request.data.get('file_name')  # Support des deux pour compatibilité
         photo_type = request.data.get('photo_type', 'spontaneous')
         step_id = request.data.get('step_id', None)
+        draft_id = request.data.get('draft_id', None)  # ID du draft à finaliser
         
         if not recipe_batch_id or not image_path:
             return Response({'error': 'recipe_batch_id and image_path (or file_name) are required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2577,25 +2675,45 @@ class PostViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': f'Error accessing recipe batch: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-        # Vérifier l'unicité pour certains types
-        if photo_type in RESTRICTED_PHOTO_TYPES:
-            existing_photo = PostPhoto.objects.filter(recipe_batch=recipe_batch, photo_type=photo_type).first()
-            if existing_photo:
-                return Response({'error': f'A {photo_type} photo already exists for this recipe batch'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Créer l'objet PostPhoto avec image_path
-        photo_data = {
-            'recipe_batch': recipe_batch,
-            'photo_type': photo_type,
-            'image_path': image_path
-        }
-        if step_id:
+        # Si un draft_id est fourni, finaliser le draft
+        if draft_id:
             try:
-                photo_data['step'] = Step.objects.get(id=step_id)
-            except Step.DoesNotExist:
-                pass
-        
-        post_photo = PostPhoto.objects.create(**photo_data)
+                draft = PostPhoto.objects.get(
+                    id=draft_id,
+                    recipe_batch=recipe_batch,
+                    is_draft=True
+                )
+                draft.image_path = image_path
+                draft.is_draft = False
+                draft.save(update_fields=['image_path', 'is_draft'])
+                post_photo = draft
+            except PostPhoto.DoesNotExist:
+                return Response({'error': 'Draft not found or already finalized'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            # Vérifier l'unicité pour certains types (sauf during_cooking qui peut avoir plusieurs)
+            if photo_type in RESTRICTED_PHOTO_TYPES:
+                existing_photo = PostPhoto.objects.filter(
+                    recipe_batch=recipe_batch, 
+                    photo_type=photo_type,
+                    is_draft=False
+                ).first()
+                if existing_photo:
+                    return Response({'error': f'A {photo_type} photo already exists for this recipe batch'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Créer l'objet PostPhoto avec image_path
+            photo_data = {
+                'recipe_batch': recipe_batch,
+                'photo_type': photo_type,
+                'image_path': image_path,
+                'is_draft': False
+            }
+            if step_id:
+                try:
+                    photo_data['step'] = Step.objects.get(id=step_id)
+                except Step.DoesNotExist:
+                    pass
+            
+            post_photo = PostPhoto.objects.create(**photo_data)
         
         serializer = PostPhotoSerializer(post_photo, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -2957,9 +3075,20 @@ class PostViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def send_cookie(self, request, pk=None):
-        """Envoyer un cookie (like) à un post"""
-        post = self.get_object()
+        """
+        Envoyer un cookie (like) à un post.
+        
+        Contrairement au queryset par défaut de PostViewSet (qui limite parfois
+        aux posts de l'utilisateur connecté), ici on veut permettre d'envoyer
+        un cookie à (presque) n'importe quel post publié.
+        """
         user = request.user
+
+        # On autorise les cookies sur tous les posts publiés, sans restriction
+        # de propriétaire ou d'amitié (la "visibilité" d'un post est déjà
+        # gérée par is_published).
+        post_qs = Post.objects.filter(is_published=True)
+        post = get_object_or_404(post_qs, pk=pk)
         
         # Vérifier si l'utilisateur a déjà donné un cookie
         cookie, created = PostCookie.objects.get_or_create(
@@ -2967,15 +3096,14 @@ class PostViewSet(viewsets.ModelViewSet):
             post=post
         )
         
+        serializer = PostSerializer(post, context={'request': request})
         if created:
-            serializer = PostSerializer(post, context={'request': request})
             return Response({
                 'message': 'Cookie sent successfully',
                 'post': serializer.data
             }, status=status.HTTP_201_CREATED)
         else:
             # Cookie déjà existant
-            serializer = PostSerializer(post, context={'request': request})
             return Response({
                 'message': 'Cookie already sent',
                 'post': serializer.data
@@ -2984,8 +3112,11 @@ class PostViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['delete'])
     def remove_cookie(self, request, pk=None):
         """Retirer un cookie (like) d'un post"""
-        post = self.get_object()
         user = request.user
+
+        # Permettre de retirer un cookie sur n'importe quel post publié
+        post_qs = Post.objects.filter(is_published=True)
+        post = get_object_or_404(post_qs, pk=pk)
         
         try:
             cookie = PostCookie.objects.get(user=user, post=post)

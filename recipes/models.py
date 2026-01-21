@@ -1,5 +1,8 @@
 import uuid
+import random
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 from django.conf import settings
 from pgvector.django import VectorField
 
@@ -182,6 +185,11 @@ class RecipeBatch(models.Model):
         related_name='recipe_batches'
     )
     is_cooked = models.BooleanField(default=False, help_text="Au moins un meal plan lié est cuisiné")
+    photo_step_orders = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Liste des step.order qui auront des étapes photo (ex: [3, 5])"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -194,6 +202,75 @@ class RecipeBatch(models.Model):
     def __str__(self):
         label = self.name or f"Batch {self.id}"
         return f"{label} - {self.recipe.title}"
+
+
+def generate_photo_step_orders(recipe):
+    """
+    Génère les positions des étapes photo "during_cooking" pour un batch.
+
+    Objectif produit : en moyenne ~1 photo toutes les 7 étapes,
+    en excluant la première et la dernière étape (la photo finale est gérée séparément).
+    """
+    steps = list(recipe.steps.all().order_by('order'))
+    total_steps = len(steps)
+    
+    if total_steps < 2:
+        return []
+    
+    # Nombre théorique total de "blocs" de 7 étapes.
+    # Exemple : 21 étapes => 3 blocs de 7 => 3 photos au total.
+    # La photo finale étant toujours présente, on ne garde que (blocs - 1) photos intermédiaires,
+    # mais on impose au moins 1 photo intermédiaire dès qu'il y a suffisamment d'étapes.
+    # Quelques exemples :
+    # - 21 étapes => 3 blocs => 2 photos intermédiaires + 1 finale
+    # - 14 étapes => 2 blocs => 1 photo intermédiaire + 1 finale
+    # - 5 étapes  => 0 bloc complet => 1 photo intermédiaire (min) + 1 finale
+    num_intermediate_photos = max(1, (total_steps // 7) - 1)
+    
+    # Éviter la première et dernière étape
+    if total_steps <= 2:
+        available_orders = []
+    else:
+        available_orders = [s.order for s in steps[1:-1]]
+    
+    if not available_orders:
+        return []
+    
+    # Si on a moins d'étapes disponibles que de photos souhaitées,
+    # on met une photo sur chaque étape disponible.
+    if len(available_orders) <= num_intermediate_photos:
+        return sorted(available_orders)
+    
+    # Répartir de manière régulière les photos sur les étapes disponibles.
+    # On calcule des indices "équidistants" dans la liste available_orders.
+    # Exemple : 10 étapes disponibles, 2 photos => indices proches de 3 et 7.
+    step_size = len(available_orders) / float(num_intermediate_photos + 1)
+    selected_indices = []
+    for i in range(1, num_intermediate_photos + 1):
+        # Position théorique dans la liste (1-based entre les "blocs")
+        pos = int(round(i * step_size)) - 1
+        pos = max(0, min(pos, len(available_orders) - 1))
+        selected_indices.append(pos)
+    
+    # Supprimer les doublons éventuels tout en conservant l'ordre
+    seen = set()
+    selected_orders = []
+    for idx in selected_indices:
+        order = available_orders[idx]
+        if order not in seen:
+            seen.add(order)
+            selected_orders.append(order)
+    
+    return sorted(selected_orders)
+
+
+@receiver(post_save, sender=RecipeBatch)
+def generate_photo_steps_for_batch(sender, instance, created, **kwargs):
+    """Génère aléatoirement les positions photo à la création d'un batch"""
+    if created and not instance.photo_step_orders:
+        instance.photo_step_orders = generate_photo_step_orders(instance.recipe)
+        # Utiliser update pour éviter de déclencher le signal à nouveau
+        RecipeBatch.objects.filter(pk=instance.pk).update(photo_step_orders=instance.photo_step_orders)
 
 
 class Step(models.Model):
@@ -619,7 +696,7 @@ class PostPhoto(models.Model):
         ('imported_after_cooking', 'Importée après la recette'),
     ]
 
-    UNIQUE_TYPES = ('during_cooking', 'after_cooking', 'at_meal_time')
+    UNIQUE_TYPES = ('at_meal_time',)  # during_cooking et after_cooking peuvent avoir plusieurs photos
     
     post = models.ForeignKey(
         Post,
@@ -642,8 +719,13 @@ class PostPhoto(models.Model):
         choices=PHOTO_TYPE_CHOICES,
         help_text="Type de photo"
     )
+    is_draft = models.BooleanField(
+        default=False,
+        help_text="Photo en cours de capture (pas encore uploadée)"
+    )
     image_path = models.CharField(
         max_length=500,
+        blank=True,
         help_text="Chemin relatif de la photo dans S3 (ex: meal_plans/70/6096a520a71247229f1cae315fc2bd84.jpg)"
     )
     step = models.ForeignKey(
@@ -675,16 +757,17 @@ class PostPhoto(models.Model):
     
     class Meta:
         ordering = ['order', 'created_at']
-        # Un seul photo de chaque type par post ou batch (sauf spontaneous)
+        # Un seul photo "at_meal_time" par post ou batch.
+        # Les types "during_cooking" et "after_cooking" peuvent avoir plusieurs photos.
         constraints = [
             models.UniqueConstraint(
                 fields=['post', 'photo_type'],
-                condition=models.Q(photo_type__in=['during_cooking', 'after_cooking', 'at_meal_time']) & models.Q(post__isnull=False),
+                condition=models.Q(photo_type='at_meal_time') & models.Q(post__isnull=False),
                 name='unique_photo_type_per_post'
             ),
             models.UniqueConstraint(
                 fields=['recipe_batch', 'photo_type'],
-                condition=models.Q(photo_type__in=['during_cooking', 'after_cooking', 'at_meal_time']) & models.Q(recipe_batch__isnull=False),
+                condition=models.Q(photo_type='at_meal_time') & models.Q(recipe_batch__isnull=False),
                 name='unique_photo_type_per_batch'
             ),
         ]

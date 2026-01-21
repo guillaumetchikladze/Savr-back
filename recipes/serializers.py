@@ -333,7 +333,7 @@ class RecipeBatchLightSerializer(serializers.ModelSerializer):
             'total_servings_batch_accessible', 'servings_breakdown_accessible',
             'groupedDates',
             'meal_plan_ids', 'meals', 'is_cooked',
-            'steps',
+            'steps', 'photo_step_orders',
             'created_at', 'updated_at'
         ]
 
@@ -360,8 +360,8 @@ class RecipeBatchSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = RecipeBatch
-        fields = ['id', 'name', 'notes', 'recipe', 'recipe_id', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = ['id', 'name', 'notes', 'recipe', 'recipe_id', 'photo_step_orders', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'photo_step_orders']
 
 
 class MealPlanRecipeSerializer(serializers.ModelSerializer):
@@ -1318,7 +1318,7 @@ class PostPhotoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'photo_type', 'photo_type_display', 'image_path', 'image_url', 'presigned_url',
             'step', 'step_order', 'step_title', 'captured_label',
-            'time_display', 'recipe_batch_id', 'post_id', 'editable', 'order', 'created_at'
+            'time_display', 'recipe_batch_id', 'post_id', 'editable', 'order', 'is_draft', 'created_at'
         ]
         read_only_fields = ['created_at']
     

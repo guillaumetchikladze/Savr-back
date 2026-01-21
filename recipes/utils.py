@@ -12,3 +12,4 @@ def get_accessible_meal_plan_filter(user):
         Q(invitations__invitee=user, invitations__status='accepted')  # Invité accepté
     )
 
+
