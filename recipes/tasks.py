@@ -95,17 +95,17 @@ def process_recipe_import_from_url(self, request_id: str):
     try:
         # Étape 1 : Extraire la recette depuis l'URL
         logger.info("[RecipeImportURLTask] Step 1/5: Extracting recipe from URL: %s", url)
-        raw_recipe_data, source_type = import_recipe_from_url(url)
+        raw_recipe_data, used_source = import_recipe_from_url(url)
         
         logger.info(
-            "[RecipeImportURLTask] Extraction result - source_type=%s, has_data=%s, title=%s",
-            source_type,
+            "[RecipeImportURLTask] Extraction result - source=%s, has_data=%s, title=%s",
+            used_source,
             bool(raw_recipe_data),
             raw_recipe_data.get('title', 'N/A') if raw_recipe_data else 'N/A'
         )
         
         if not raw_recipe_data:
-            error_msg = f"Impossible d'extraire la recette depuis cette URL (source: {source_type or 'unknown'}). Vérifiez que l'URL est valide et accessible."
+            error_msg = f"Impossible d'extraire la recette depuis cette URL (source: {used_source or 'unknown'}). Vérifiez que l'URL est valide et accessible."
             logger.warning("[RecipeImportURLTask] Extraction failed: %s", error_msg)
             import_request.status = RecipeImportRequest.STATUS_ERROR
             import_request.error_message = error_msg
@@ -122,6 +122,7 @@ def process_recipe_import_from_url(self, request_id: str):
         payload.update({
             **raw_recipe_data,
             'import_source_url': url,
+            'source_type': used_source or payload.get('source_type') or 'generic',
         })
         import_request.payload = payload
         import_request.save(update_fields=['payload'])

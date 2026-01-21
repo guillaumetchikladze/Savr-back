@@ -23,8 +23,20 @@ EMBEDDING_API_SECRET = config('EMBEDDING_API_SECRET', default='')
 # Seuil de similarité pour considérer deux ingrédients comme identiques
 # Note: CosineDistance retourne une distance (0 = identique, 2 = opposé)
 # On convertit en similarité: similarity = 1 - (distance / 2)
-# Donc distance < 0.3 correspond à similarity > 0.85
-SIMILARITY_DISTANCE_THRESHOLD = 0.3  # Distance cosinus max (correspond à ~0.85 de similarité)
+# Donc distance < 0.2 correspond à similarity > 0.90
+SIMILARITY_DISTANCE_THRESHOLD = 0.2  # Distance cosinus max (plus strict pour limiter les faux positifs)
+
+# Termes très génériques qu'on ne veut pas utiliser seuls pour fusionner des ingrédients
+GENERIC_INGREDIENT_HEADS = {
+    "creme",
+    "crème",
+    "sauce",
+    "huile",
+    "fromage",
+    "lait",
+    "sucre",
+    "farine",
+}
 
 
 def normalize_ingredient_name(name: str) -> str:
@@ -134,6 +146,26 @@ def get_embedding(text: str) -> Optional[list]:
         return None
 
 
+def _are_ingredient_names_compatible(name_a: str, name_b: str) -> bool:
+    """
+    Vérifie rapidement si deux noms d'ingrédients peuvent raisonnablement
+    désigner la même chose, pour éviter des fusions absurdes du type
+    'crème végétale' -> 'crème anglaise'.
+    """
+    norm_a = normalize_ingredient_name(name_a)
+    norm_b = normalize_ingredient_name(name_b)
+
+    tokens_a = [t for t in norm_a.split() if t and t not in GENERIC_INGREDIENT_HEADS]
+    tokens_b = [t for t in norm_b.split() if t and t not in GENERIC_INGREDIENT_HEADS]
+
+    # Si on n'a aucun token spécifique (tout est générique), ne pas fusionner automatiquement
+    if not tokens_a or not tokens_b:
+        return False
+
+    # On exige au moins un token "spécifique" en commun
+    return bool(set(tokens_a) & set(tokens_b))
+
+
 def find_similar_ingredient(ingredient_name: str, embedding: list) -> Optional[Ingredient]:
     """
     Trouve un ingrédient similaire en utilisant la recherche vectorielle PostgreSQL (pgvector)
@@ -157,7 +189,26 @@ def find_similar_ingredient(ingredient_name: str, embedding: list) -> Optional[I
             # Calculer la similarité pour le log (1 - distance/2)
             distance_value = float(best_match.distance)
             similarity = 1.0 - (distance_value / 2.0)
-            logger.info(f"Ingrédient '{ingredient_name}' correspond à '{best_match.name}' (similarité: {similarity:.3f}, distance: {distance_value:.3f})")
+
+            # Garde-fou lexical pour éviter les fusions absurdes
+            if not _are_ingredient_names_compatible(ingredient_name, best_match.name):
+                logger.info(
+                    "Ingrédient '%s' proche de '%s' mais bloqué par le garde-fou lexical "
+                    "(similarité: %.3f, distance: %.3f)",
+                    ingredient_name,
+                    best_match.name,
+                    similarity,
+                    distance_value,
+                )
+                return None
+
+            logger.info(
+                "Ingrédient '%s' correspond à '%s' (similarité: %.3f, distance: %.3f)",
+                ingredient_name,
+                best_match.name,
+                similarity,
+                distance_value,
+            )
             return best_match
         
         return None
