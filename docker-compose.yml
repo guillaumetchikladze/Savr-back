@@ -64,6 +64,8 @@ services:
       - SECRET_KEY=${SECRET_KEY:-django-insecure-change-me}
       - DEBUG=${DEBUG:-False}
       - SENTRY_DSN=${SENTRY_DSN:-}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
     depends_on:
       redis:
         condition: service_healthy
@@ -101,6 +103,8 @@ services:
       - SECRET_KEY=${SECRET_KEY:-django-insecure-change-me}
       - DEBUG=${DEBUG:-True}
       - SENTRY_DSN=${SENTRY_DSN:-}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
     depends_on:
       redis:
         condition: service_healthy
