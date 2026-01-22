@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Literal, Optional, cast
 from decouple import config
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UserError as PydanticAIUserError
+from pydantic_ai.exceptions import UserError as PydanticAIUserError, UnexpectedModelBehavior
 from pydantic_ai.models.google import GoogleModel, GoogleModelName
 from pydantic_ai.models.gemini import GeminiModel, GeminiModelName
 
@@ -272,11 +272,18 @@ async def formalize_recipe(
     try:
         start_time = time.perf_counter()
         logger.info("[AI] Début de l'appel agent.run() pour '%s'", title)
-        # Exécuter l'agent
+        # Exécuter l'agent avec retries augmentés pour la validation de sortie
         # Note: PydanticAI peut faire plusieurs appels API si la validation échoue
-        result = await agent.run(prompt)
+        # On augmente les retries à 3 pour gérer les cas où le modèle a besoin de plusieurs tentatives
+        # Le paramètre retries contrôle le nombre de tentatives pour la validation de sortie
+        try:
+            result = await agent.run(prompt, retries=3)
+        except TypeError:
+            # Si retries n'est pas supporté comme paramètre direct, essayer sans
+            logger.warning("[AI] Le paramètre retries n'est pas supporté, utilisation de la valeur par défaut")
+            result = await agent.run(prompt)
         api_call_duration = time.perf_counter() - start_time
-        logger.info("[AI] agent.run() terminé pour '%s' en %.2fs (appels API possibles: 1-2 selon validation)", title, api_call_duration)
+        logger.info("[AI] agent.run() terminé pour '%s' en %.2fs (appels API possibles: 1-4 selon validation)", title, api_call_duration)
         
         # Récupérer le résultat structuré (PydanticAI utilise .output pour le résultat typé)
         formalized_recipe = result.output
@@ -292,13 +299,34 @@ async def formalize_recipe(
         
         return formalized_recipe
     
-    except Exception as e:
+    except UnexpectedModelBehavior as e:
         duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
         logger.error(
-            "[AI] Erreur pendant la formalisation de '%s' (%.2fs): %s",
+            "[AI] Erreur de validation de sortie pour '%s' (%.2fs): %s. "
+            "Le modèle n'a pas réussi à générer une réponse valide après plusieurs tentatives. "
+            "Cela peut être dû à un schéma trop complexe ou à une réponse du modèle inattendue.",
             title,
             duration,
             e
+        )
+        raise
+    except PydanticAIUserError as e:
+        duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
+        logger.error(
+            "[AI] Erreur PydanticAI pour '%s' (%.2fs): %s",
+            title,
+            duration,
+            e
+        )
+        raise
+    except Exception as e:
+        duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
+        logger.error(
+            "[AI] Erreur inattendue pendant la formalisation de '%s' (%.2fs): %s (type: %s)",
+            title,
+            duration,
+            e,
+            type(e).__name__
         )
         raise
 
