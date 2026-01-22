@@ -1,6 +1,7 @@
 """
 Service IA pour formaliser les recettes en utilisant PydanticAI et une intégration Google Gemini
 """
+import asyncio
 import copy
 import logging
 import os
@@ -272,39 +273,71 @@ async def formalize_recipe(
     try:
         start_time = time.perf_counter()
         logger.info("[AI] Début de l'appel agent.run() pour '%s'", title)
-        # Exécuter l'agent avec retries augmentés pour la validation de sortie
-        # Note: PydanticAI peut faire plusieurs appels API si la validation échoue
-        # On augmente les retries à 3 pour gérer les cas où le modèle a besoin de plusieurs tentatives
-        # Le paramètre retries contrôle le nombre de tentatives pour la validation de sortie
-        try:
-            result = await agent.run(prompt, retries=3)
-        except TypeError:
-            # Si retries n'est pas supporté comme paramètre direct, essayer sans
-            logger.warning("[AI] Le paramètre retries n'est pas supporté, utilisation de la valeur par défaut")
-            result = await agent.run(prompt)
-        api_call_duration = time.perf_counter() - start_time
-        logger.info("[AI] agent.run() terminé pour '%s' en %.2fs (appels API possibles: 1-4 selon validation)", title, api_call_duration)
         
-        # Récupérer le résultat structuré (PydanticAI utilise .output pour le résultat typé)
-        formalized_recipe = result.output
+        # Implémentation manuelle de retries pour la validation de sortie
+        # PydanticAI a un retry interne par défaut (1), mais on veut plus de tentatives
+        # On fait une boucle de retry manuelle pour gérer UnexpectedModelBehavior
+        max_retries = 3
+        last_error = None
         
-        duration = time.perf_counter() - start_time
-        logger.info(
-            "[AI] Formalisation terminée pour '%s' en %.2fs (%d ingrédients, %d étapes)",
-            title,
-            duration,
-            len(formalized_recipe.recipe_ingredients),
-            len(formalized_recipe.steps)
-        )
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = await agent.run(prompt)
+                api_call_duration = time.perf_counter() - start_time
+                logger.info(
+                    "[AI] agent.run() terminé pour '%s' en %.2fs (tentative %d/%d)",
+                    title,
+                    api_call_duration,
+                    attempt,
+                    max_retries
+                )
+                
+                # Récupérer le résultat structuré (PydanticAI utilise .output pour le résultat typé)
+                formalized_recipe = result.output
+                
+                duration = time.perf_counter() - start_time
+                logger.info(
+                    "[AI] Formalisation terminée pour '%s' en %.2fs (%d ingrédients, %d étapes)",
+                    title,
+                    duration,
+                    len(formalized_recipe.recipe_ingredients),
+                    len(formalized_recipe.steps)
+                )
+                
+                return formalized_recipe
+                
+            except UnexpectedModelBehavior as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning(
+                        "[AI] Erreur de validation de sortie pour '%s' (tentative %d/%d): %s. Nouvelle tentative...",
+                        title,
+                        attempt,
+                        max_retries,
+                        e
+                    )
+                    # Petite pause avant de réessayer
+                    await asyncio.sleep(0.5)
+                else:
+                    # Dernière tentative échouée
+                    logger.error(
+                        "[AI] Erreur de validation de sortie pour '%s' après %d tentatives: %s",
+                        title,
+                        max_retries,
+                        e
+                    )
+                    raise
         
-        return formalized_recipe
+        # Ne devrait jamais arriver ici, mais au cas où
+        if last_error:
+            raise last_error
     
     except UnexpectedModelBehavior as e:
+        # Cette exception devrait normalement être gérée dans la boucle ci-dessus
+        # Mais on la garde comme filet de sécurité au cas où
         duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
         logger.error(
-            "[AI] Erreur de validation de sortie pour '%s' (%.2fs): %s. "
-            "Le modèle n'a pas réussi à générer une réponse valide après plusieurs tentatives. "
-            "Cela peut être dû à un schéma trop complexe ou à une réponse du modèle inattendue.",
+            "[AI] Erreur de validation de sortie pour '%s' (%.2fs): %s",
             title,
             duration,
             e
