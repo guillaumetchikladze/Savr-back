@@ -37,6 +37,26 @@ services:
       timeout: 20s
       retries: 3
 
+  # Service d'embeddings pour la génération d'embeddings de texte
+  embedding:
+    build:
+      context: ../embeding
+      dockerfile: Dockerfile
+    container_name: savr-embedding
+    restart: unless-stopped
+    environment:
+      - EMBEDDING_API_SECRET=${EMBEDDING_API_SECRET}
+      - PORT=8001
+      - HOST=0.0.0.0
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   # Django avec Gunicorn
   django:
     build:
@@ -66,10 +86,14 @@ services:
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-http://embedding:8001}
+      - EMBEDDING_API_SECRET=${EMBEDDING_API_SECRET:-}
     depends_on:
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      embedding:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/').read()"]
@@ -105,10 +129,14 @@ services:
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-http://embedding:8001}
+      - EMBEDDING_API_SECRET=${EMBEDDING_API_SECRET:-}
     depends_on:
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      embedding:
         condition: service_healthy
     volumes:
       - .:/app

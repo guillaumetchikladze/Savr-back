@@ -972,11 +972,10 @@ class RecipeViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def my_imports(self, request):
-        """Récupérer les recettes de l'utilisateur (créées + importées)"""
+        """Récupérer uniquement les recettes importées de l'utilisateur"""
         recipes = Recipe.objects.filter(
-            created_by=request.user
-        ).filter(
-            Q(source_type='user_created') | Q(source_type='imported')
+            created_by=request.user,
+            source_type='imported'
         )
         summary_only = request.query_params.get('summary')
         if summary_only:
@@ -986,6 +985,8 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 'count': count,
                 'last_activity': last_recipe.updated_at if last_recipe else None,
             })
+        # Trier par date de mise à jour (plus récentes en premier)
+        recipes = recipes.order_by('-updated_at')
         page = self.paginate_queryset(recipes)
         serializer = self.get_serializer(page if page is not None else recipes, many=True)
         if page is not None:
