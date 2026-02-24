@@ -807,17 +807,16 @@ class RecipeViewSet(viewsets.ModelViewSet):
         date_start = target_date - timedelta(days=max_days)
         date_end = target_date + timedelta(days=max_days)
         
-        # Récupérer les meal plans non cuisinés dans la plage
-        # Inclure :
-        # 1. Même meal_time ET date différente (passé ou futur)
-        # 2. Autre meal_time ET même date (jour même)
+        # Récupérer les meal plans non cuisinés dans la plage.
+        # Nouvelle logique : proposer tous les batches des jours proches,
+        # quel que soit le meal_time, à l’exception du meal plan du créneau courant.
         meal_plans = MealPlan.objects.filter(
             user=user,
             date__gte=date_start,
             date__lte=date_end,
-        ).filter(
-            (Q(meal_time=meal_time) & ~Q(date=target_date)) |  # Même meal_time, date différente
-            (~Q(meal_time=meal_time) & Q(date=target_date))    # Autre meal_time, même date
+        ).exclude(
+            date=target_date,
+            meal_time=meal_time,  # on ne suggère pas le meal plan exact du créneau courant
         ).filter(
             meal_plan_recipe_batches__recipe_batch__is_cooked=False
         ).exclude(
