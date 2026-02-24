@@ -48,7 +48,6 @@ def set_google_env_from_api_key():
     """S'assure que les variables attendues par google-genai / GeminiModel sont renseignées"""
     if AI_API_KEY:
         os.environ.setdefault('GOOGLE_API_KEY', AI_API_KEY)
-        os.environ.setdefault('GEMINI_API_KEY', AI_API_KEY)
 
 
 def flatten_schema(schema: dict) -> dict:

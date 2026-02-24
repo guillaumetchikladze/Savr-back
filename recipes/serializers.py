@@ -17,6 +17,7 @@ from .models import (
     PostPhoto,
     ShoppingList,
     ShoppingListItem,
+    ShoppingListInvitation,
     Collection,
     CollectionRecipe,
     CollectionMember,
@@ -357,6 +358,7 @@ class RecipeBatchLightSerializer(serializers.ModelSerializer):
             'total_servings_batch_accessible', 'servings_breakdown_accessible',
             'groupedDates',
             'meal_plan_ids', 'meals', 'is_cooked',
+            'shopping_done',
             'steps', 'photo_step_orders',
             'created_at', 'updated_at'
         ]
@@ -1742,67 +1744,228 @@ class PostCreateUpdateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class ShoppingListMealPlanSerializer(serializers.ModelSerializer):
-    """Serializer léger pour les meal plans dans une shopping list"""
-    recipe = RecipeLightSerializer(read_only=True)
-    meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
-    
-    class Meta:
-        model = MealPlan
-        fields = ['id', 'date', 'meal_time', 'meal_time_display', 'recipe']
-
-
 class ShoppingListSerializer(serializers.ModelSerializer):
-    """Serializer pour une liste de courses"""
-    recipe_batches = RecipeBatchLightSerializer(many=True, read_only=True)
-    recipe_batch_ids = serializers.PrimaryKeyRelatedField(
-        queryset=RecipeBatch.objects.all(),
-        source='recipe_batches',
-        many=True,
-        write_only=True,
-        required=False
-    )
+    """Serializer pour une liste de courses (V2)"""
+    members = serializers.SerializerMethodField()
     items_count = serializers.SerializerMethodField()
-    
+    batches_count = serializers.SerializerMethodField()
+    is_complete = serializers.SerializerMethodField()
+
     class Meta:
         model = ShoppingList
         fields = [
-            'id', 'name', 'recipe_batches', 'recipe_batch_ids', 'is_active', 'is_archived',
-            'items_count', 'created_at', 'updated_at'
+            'id', 'name', 'color', 'is_archived',
+            'members', 'items_count', 'batches_count', 'is_complete',
+            'created_at', 'updated_at',
         ]
-        read_only_fields = ['user', 'created_at', 'updated_at']
-    
+        read_only_fields = ['created_at', 'updated_at', 'members', 'items_count', 'batches_count', 'is_complete']
+
+    def get_members(self, obj):
+        try:
+            members = obj.members.select_related('user').all()
+        except Exception:
+            members = []
+        return [
+            {
+                'id': m.id,
+                'role': m.role,
+                'user': UserLightSerializer(m.user).data if m.user else None,
+            }
+            for m in members
+        ]
+
     def get_items_count(self, obj):
-        return obj.items.count()
-    
+        try:
+            from decimal import Decimal
+            items = obj.items.prefetch_related('quantities').all()
+            count = 0
+            for item in items:
+                pantry_qty = Decimal(str(item.pantry_quantity or 0))
+                total_qty = sum(Decimal(str(q.quantity or 0)) for q in item.quantities.all())
+                total_checked = sum(Decimal(str(q.checked_quantity or 0)) for q in item.quantities.all())
+                remaining = total_qty - total_checked - pantry_qty
+                if remaining > 0:
+                    count += 1
+            return count
+        except Exception:
+            return 0
+
+    def get_batches_count(self, obj):
+        try:
+            return obj.batches.count()
+        except Exception:
+            return 0
+
+    def get_is_complete(self, obj):
+        """Vérifie si tous les ingrédients sont cochés (remaining <= 0 pour tous les items)"""
+        try:
+            from decimal import Decimal
+            items = obj.items.prefetch_related('quantities').all()
+            if not items.exists():
+                return False  # Liste vide = pas complète
+            
+            for item in items:
+                pantry_qty = Decimal(str(item.pantry_quantity or 0))
+                total_qty = sum(Decimal(str(q.quantity or 0)) for q in item.quantities.all())
+                total_checked = sum(Decimal(str(q.checked_quantity or 0)) for q in item.quantities.all())
+                remaining = total_qty - total_checked - pantry_qty
+                if remaining > 0:
+                    return False
+            return True
+        except Exception:
+            return False
+
     def create(self, validated_data):
-        validated_data['user'] = self.context['request'].user
-        # Désactiver les autres listes actives de l'utilisateur
-        ShoppingList.objects.filter(
-            user=validated_data['user'],
-            is_active=True
-        ).update(is_active=False)
-        return super().create(validated_data)
+        """
+        Crée la liste puis crée automatiquement le membre owner pour l'utilisateur courant.
+        """
+        request = self.context.get('request')
+        if not request or request.user.is_anonymous:
+            raise serializers.ValidationError("Authentication required")
+        shopping_list = super().create(validated_data)
+        from .models import ShoppingListMember
+        ShoppingListMember.objects.create(
+            shopping_list=shopping_list,
+            user=request.user,
+            role='owner',
+        )
+        return shopping_list
 
 
-class ShoppingListItemSerializer(serializers.ModelSerializer):
-    """Serializer pour les items de liste de courses"""
-    ingredient = IngredientSerializer(read_only=True)
-    ingredient_id = serializers.PrimaryKeyRelatedField(
-        queryset=Ingredient.objects.all(),
-        source='ingredient',
-        write_only=True
-    )
+class ShoppingListInvitationSerializer(serializers.ModelSerializer):
+    """Serializer pour les invitations aux listes de courses"""
+    from accounts.serializers import UserSerializer
+    inviter = UserSerializer(read_only=True)
+    invitee = UserSerializer(read_only=True)
+    shopping_list = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     
     class Meta:
+        model = ShoppingListInvitation
+        fields = [
+            'id',
+            'inviter',
+            'invitee',
+            'shopping_list',
+            'status',
+            'status_display',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+    
+    def get_shopping_list(self, obj):
+        """Utiliser ShoppingListSerializer pour éviter la référence circulaire"""
+        return ShoppingListSerializer(obj.shopping_list, context=self.context).data
+
+
+class ShoppingListItemSerializer(serializers.ModelSerializer):
+    """Serializer pour les items de liste de courses (V2)"""
+    ingredient = IngredientSerializer(read_only=True)
+    checked_by = UserLightSerializer(read_only=True)
+    total_quantity = serializers.SerializerMethodField()
+    total_checked_quantity = serializers.SerializerMethodField()
+    unit = serializers.SerializerMethodField()
+    remaining_quantity = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+
+    class Meta:
         model = ShoppingListItem
         fields = [
-            'id', 'ingredient', 'ingredient_id', 'shopping_list',
-            'status', 'status_display', 'pantry_quantity', 'pantry_unit',
-            'created_at', 'updated_at'
+            'id',
+            'shopping_list',
+            'ingredient',
+            'unit_group',
+            'pantry_quantity',
+            'pantry_unit',
+            'checked_at',
+            'checked_by',
+            'total_quantity',
+            'total_checked_quantity',
+            'unit',
+            'remaining_quantity',
+            'status',
+            'status_display',
+            'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['shopping_list', 'created_at', 'updated_at']
+        read_only_fields = [
+            'shopping_list',
+            'ingredient',
+            'unit_group',
+            'checked_at',
+            'checked_by',
+            'total_quantity',
+            'total_checked_quantity',
+            'unit',
+            'remaining_quantity',
+            'status',
+            'status_display',
+            'created_at',
+            'updated_at',
+        ]
+
+    def _sum_field(self, obj, field):
+        try:
+            qs = obj.quantities.all()
+            return float(sum(getattr(q, field) or 0 for q in qs))
+        except Exception:
+            return 0.0
+
+    def get_total_quantity(self, obj):
+        return self._sum_field(obj, 'quantity')
+
+    def get_total_checked_quantity(self, obj):
+        return self._sum_field(obj, 'checked_quantity')
+
+    def get_unit(self, obj):
+        try:
+            q = obj.quantities.first()
+            if q and q.unit:
+                return q.unit
+        except Exception:
+            pass
+        return obj.pantry_unit or ''
+
+    def get_remaining_quantity(self, obj):
+        total = self.get_total_quantity(obj)
+        checked = self.get_total_checked_quantity(obj)
+        pantry = float(obj.pantry_quantity or 0)
+        remaining = total - checked - pantry
+        return float(remaining) if remaining > 0 else 0.0
+
+    def get_status(self, obj):
+        remaining = self.get_remaining_quantity(obj)
+        if remaining <= 0:
+            return 'purchased'
+        if float(obj.pantry_quantity or 0) > 0:
+            return 'in_pantry'
+        return 'to_buy'
+
+    def get_status_display(self, obj):
+        mapping = {
+            'to_buy': 'À acheter',
+            'in_pantry': 'Dans les placards',
+            'purchased': 'Acheté',
+        }
+        return mapping.get(self.get_status(obj), 'À acheter')
+
+
+class ShoppingListItemCreateSerializer(serializers.Serializer):
+    """Serializer pour créer un item de liste de courses manuellement"""
+    shopping_list_id = serializers.IntegerField(required=True)
+    ingredient_name = serializers.CharField(max_length=200, required=True, help_text="Nom de l'ingrédient (sera créé si n'existe pas)")
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2, default=1.0, required=False)
+    unit = serializers.CharField(max_length=20, default='piece', required=False)
+    category_id = serializers.IntegerField(required=False, allow_null=True, help_text="ID de catégorie (optionnel, sera déterminé automatiquement si non fourni)")
+    
+    def validate_unit(self, value):
+        """Valider que l'unité est valide"""
+        valid_units = ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'piece', 'pinch', 'clove']
+        if value and value.lower() not in valid_units:
+            raise serializers.ValidationError(f"Unité invalide. Unités valides: {', '.join(valid_units)}")
+        return value.lower() if value else 'piece'
 
 
 # Serializers pour Collections

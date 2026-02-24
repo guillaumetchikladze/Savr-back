@@ -9,9 +9,11 @@ from time import perf_counter
 from django.conf import settings
 from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from urllib.parse import urlparse
 from pgvector.django import CosineDistance
 from pydantic_ai.exceptions import UserError as PydanticAIUserError
+from typing import Optional
 import uuid
 import logging
 import traceback
@@ -20,7 +22,9 @@ from .services.ingredient_matcher import get_batch_embeddings
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
     MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie,
-    ShoppingList, ShoppingListItem, Collection, CollectionRecipe, CollectionMember,
+    ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListItem, ShoppingListItemQuantity,
+    ShoppingListInvitation,
+    Collection, CollectionRecipe, CollectionMember,
     RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch
 )
 from accounts.models import Follow
@@ -39,7 +43,8 @@ from .serializers import (
     CollectionSerializer, CollectionCreateSerializer, CollectionUpdateSerializer,
     CollectionRecipeSerializer, CollectionMemberSerializer,
     RecipeFormalizeSerializer, RecipeImportRequestSerializer,
-    RecipeBatchLightSerializer
+    RecipeBatchLightSerializer,
+    UserLightSerializer
 )
 from .tasks import process_recipe_import
 from .utils import get_accessible_meal_plan_filter
@@ -225,6 +230,15 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         
         from .serializers import StepSerializer
         serializer = StepSerializer(steps, many=True, context={'request': request})
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'], url_path='mark_shopping_done')
+    def mark_shopping_done(self, request, pk=None):
+        """Marque les courses comme terminées pour ce batch (ex. « J'ai déjà fait les courses »)."""
+        batch = self.get_object()
+        batch.shopping_done = True
+        batch.save(update_fields=['shopping_done', 'updated_at'])
+        serializer = RecipeBatchLightSerializer(batch, context={'request': request})
         return Response(serializer.data)
     
     @action(detail=True, methods=['get'])
@@ -1271,6 +1285,25 @@ class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
         ingredients = Ingredient.objects.filter(name__icontains=query)[:10]
         serializer = self.get_serializer(ingredients, many=True)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def frequent(self, request):
+        """
+        Récupère les ingrédients fréquemment ajoutés par l'utilisateur.
+        Basé sur les ShoppingListItem créés par l'utilisateur (via checked_by ou shopping_list owner).
+        """
+        user = request.user
+        limit = int(request.query_params.get('limit', 10))
+        
+        # Récupérer les ingrédients les plus fréquents dans les listes de l'utilisateur
+        frequent_ingredients = Ingredient.objects.filter(
+            shopping_list_items__shopping_list__members__user=user
+        ).annotate(
+            usage_count=Count('shopping_list_items', distinct=True)
+        ).order_by('-usage_count', 'name')[:limit]
+        
+        serializer = self.get_serializer(frequent_ingredients, many=True)
+        return Response(serializer.data)
 
 
 class MealPlanViewSet(viewsets.ModelViewSet):
@@ -1319,7 +1352,11 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         # Exclure les meal plans déjà dans une shopping list non archivée
         exclude_in_shopping_list = self.request.query_params.get('exclude_in_shopping_list')
         if exclude_in_shopping_list == 'true':
-            qs = qs.exclude(shopping_lists__is_archived=False)
+            # V2: un meal plan est considéré "dans une liste" si l'un de ses recipe_batches
+            # est associé à une shopping list non archivée
+            qs = qs.exclude(
+                meal_plan_recipe_batches__recipe_batch__shopping_list_batch__shopping_list__is_archived=False
+            )
         
         # Exclure les meal plans déjà cuisinés
         exclude_cooked = self.request.query_params.get('exclude_cooked')
@@ -3231,6 +3268,16 @@ class PostViewSet(viewsets.ModelViewSet):
         except PostCookie.DoesNotExist:
             return Response({'error': 'Cookie not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    @action(detail=True, methods=['get'], url_path='cookie-users')
+    def cookie_users(self, request, pk=None):
+        """Liste des utilisateurs qui ont donné un Miam (cookie) à ce post."""
+        post_qs = Post.objects.filter(is_published=True)
+        post = get_object_or_404(post_qs, pk=pk)
+        cookies = PostCookie.objects.filter(post=post).select_related('user').order_by('-created_at')
+        users = [c.user for c in cookies]
+        serializer = UserLightSerializer(users, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class ShoppingListViewSet(viewsets.ModelViewSet):
     """ViewSet pour les listes de courses"""
@@ -3238,28 +3285,24 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filtrer par utilisateur"""
-        from django.db.models import Prefetch
-        
-        queryset = ShoppingList.objects.filter(user=self.request.user)
-        
-        # Filtrer par liste active
-        is_active = self.request.query_params.get('is_active')
-        if is_active == 'true':
-            queryset = queryset.filter(is_active=True)
-        
-        # Filtrer les listes archivées (par défaut, ne pas les afficher)
+        """V2: filtrer par membership (owner/collaborator)"""
         include_archived = self.request.query_params.get('include_archived')
+        recipe_batch_id = self.request.query_params.get('recipe_batch_id')
+
+        qs = ShoppingList.objects.filter(members__user=self.request.user).distinct()
         if include_archived != 'true':
-            queryset = queryset.filter(is_archived=False)
-        
-        # Optimisation : précharger toutes les relations nécessaires
-        return queryset.prefetch_related(
-            Prefetch('recipe_batches', queryset=RecipeBatch.objects.select_related('recipe').prefetch_related(
-                Prefetch('recipe__recipe_ingredients', queryset=RecipeIngredient.objects.select_related('ingredient__category'))
-            )),
-            Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category'))
-        ).order_by('-created_at')
+            qs = qs.filter(is_archived=False)
+        if recipe_batch_id:
+            try:
+                qs = qs.filter(batches__recipe_batch_id=int(recipe_batch_id))
+            except (TypeError, ValueError):
+                pass
+
+        return qs.prefetch_related(
+            Prefetch('members', queryset=ShoppingListMember.objects.select_related('user')),
+            Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category')),
+            Prefetch('batches', queryset=ShoppingListBatch.objects.select_related('recipe_batch__recipe')),
+        ).order_by('-updated_at', '-created_at')
     
     @action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
@@ -3272,70 +3315,459 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def generate_items(self, request, pk=None):
-        """Générer automatiquement les items d'ingrédients à partir des recipe_batches"""
-        from django.db.models import Prefetch
+        """
+        V2: Rebuild items/quantities from the batches currently associated to the list.
+        Reset hard accepted, so we can regenerate deterministically.
+        """
+        shopping_list = self.get_object()
+
+        with transaction.atomic():
+            # Supprimer uniquement les quantités liées à un batch (garder les ajouts manuels)
+            ShoppingListItemQuantity.objects.filter(
+                shopping_list_item__shopping_list=shopping_list
+            ).exclude(recipe_batch__isnull=True).delete()
+            # Supprimer les items qui n'ont plus aucune quantité
+            empty_item_ids = [
+                item.id for item in ShoppingListItem.objects.filter(shopping_list=shopping_list)
+                if not item.quantities.exists()
+            ]
+            ShoppingListItem.objects.filter(id__in=empty_item_ids).delete()
+            for slb in ShoppingListBatch.objects.filter(shopping_list=shopping_list).select_related('recipe_batch__recipe'):
+                self._add_batch_ingredients_to_list(shopping_list, slb.recipe_batch, request.user)
+
+        items = ShoppingListItem.objects.filter(shopping_list=shopping_list).select_related('ingredient__category', 'checked_by')
+        return Response(ShoppingListItemSerializer(items, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    def _unit_group_for_unit(self, unit: str) -> str:
+        unit = (unit or '').lower()
+        if unit in ['g', 'kg']:
+            return 'weight'
+        if unit in ['ml', 'l']:
+            return 'volume'
+        if unit == 'piece':
+            return 'count'
+        if unit == 'pinch':
+            return 'pinch'
+        if unit == 'clove':
+            return 'clove'
+        return 'other'
+
+    def _canonicalize_quantity(self, quantity: float, unit: str):
+        unit = (unit or '').lower()
+        if unit == 'kg':
+            return float(quantity) * 1000.0, 'g'
+        if unit == 'l':
+            return float(quantity) * 1000.0, 'ml'
+        return float(quantity), unit
+
+    def _compute_total_servings_batch(self, batch: RecipeBatch) -> float:
+        """
+        Compute total servings for a batch by summing servings across all linked meal plans.
+        Falls back to recipe.servings.
+        """
+        recipe = batch.recipe
+        if not recipe:
+            return 1.0
+        total = 0.0
+        meal_plans = MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch).prefetch_related(
+            Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
+        ).distinct()
+        for mp in meal_plans:
+            total += float(calculate_meal_plan_servings(mp, recipe_batch_id=batch.id))
+        return total if total > 0 else float(recipe.servings or 1)
+
+    def _add_batch_ingredients_to_list(self, shopping_list: ShoppingList, batch: RecipeBatch, actor):
+        """
+        Adds all recipe ingredients for the given batch into the shopping list as:
+        - ShoppingListItem (ingredient + unit_group)
+        - ShoppingListItemQuantity per batch (canonical unit for convertible dims)
+        """
+        recipe = batch.recipe
+        if not recipe:
+            return
+
+        servings = self._compute_total_servings_batch(batch)
+        base_servings = float(recipe.servings or 1)
+        ratio = servings / base_servings if base_servings else 1.0
+
+        # Prefetch recipe ingredients if possible
+        ris = recipe.recipe_ingredients.all().select_related('ingredient__category')
+
+        for ri in ris:
+            unit_group = self._unit_group_for_unit(ri.unit)
+            qty = float(ri.quantity) * ratio
+            qty_canon, unit_canon = self._canonicalize_quantity(qty, ri.unit)
+
+            # V2 rule: only merge within same unit_group; non-convertibles become separate lines by unit_group mapping
+            item, _ = ShoppingListItem.objects.get_or_create(
+                shopping_list=shopping_list,
+                ingredient=ri.ingredient,
+                unit_group=unit_group,
+                defaults={
+                    'pantry_quantity': 0,
+                    'pantry_unit': unit_canon,
+                }
+            )
+            if not item.pantry_unit:
+                item.pantry_unit = unit_canon
+                item.save(update_fields=['pantry_unit'])
+
+            slq, created = ShoppingListItemQuantity.objects.get_or_create(
+                shopping_list_item=item,
+                recipe_batch=batch,
+                defaults={
+                    'quantity': qty_canon,
+                    'unit': unit_canon,
+                    'checked_quantity': 0,
+                }
+            )
+            if not created:
+                # merge quantities (add)
+                slq.quantity = Decimal(str(slq.quantity or 0)) + Decimal(str(qty_canon))
+                slq.unit = unit_canon or slq.unit
+                slq.save(update_fields=['quantity', 'unit', 'updated_at'])
+
+    @action(detail=True, methods=['post'])
+    def associate_batch(self, request, pk=None):
+        """Associer un RecipeBatch à cette liste (batch unique par liste)."""
+        shopping_list = self.get_object()
+        recipe_batch_id = request.data.get('recipe_batch_id')
+        if not recipe_batch_id:
+            return Response({'error': 'recipe_batch_id required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            batch = RecipeBatch.objects.select_related('recipe').get(id=int(recipe_batch_id))
+        except (RecipeBatch.DoesNotExist, ValueError, TypeError):
+            return Response({'error': 'Recipe batch not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            # If already in another list, remove from old list (and remove all ingredients from that batch)
+            existing_link = ShoppingListBatch.objects.filter(recipe_batch=batch).select_related('shopping_list').first()
+            if existing_link and existing_link.shopping_list_id != shopping_list.id:
+                old_list = existing_link.shopping_list
+                # Delete all quantities contributed by this batch in old list
+                ShoppingListItemQuantity.objects.filter(
+                    recipe_batch=batch,
+                    shopping_list_item__shopping_list=old_list
+                ).delete()
+                # Delete empty items
+                ShoppingListItem.objects.filter(shopping_list=old_list).annotate(
+                    qcount=Count('quantities')
+                ).filter(qcount=0).delete()
+                existing_link.delete()
+
+            # Create link to new list (or keep if already linked)
+            ShoppingListBatch.objects.update_or_create(
+                recipe_batch=batch,
+                defaults={'shopping_list': shopping_list},
+            )
+
+            # Add ingredients for this batch into the list
+            self._add_batch_ingredients_to_list(shopping_list, batch, request.user)
+
+        return Response(ShoppingListSerializer(shopping_list, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def remove_batch(self, request, pk=None):
+        """Retirer un batch de la liste et supprimer tous les ingrédients apportés par ce batch (V1)."""
+        shopping_list = self.get_object()
+        recipe_batch_id = request.data.get('recipe_batch_id')
+        if not recipe_batch_id:
+            return Response({'error': 'recipe_batch_id required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            batch_id_int = int(recipe_batch_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid recipe_batch_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            ShoppingListBatch.objects.filter(shopping_list=shopping_list, recipe_batch_id=batch_id_int).delete()
+            ShoppingListItemQuantity.objects.filter(
+                recipe_batch_id=batch_id_int,
+                shopping_list_item__shopping_list=shopping_list
+            ).delete()
+            ShoppingListItem.objects.filter(shopping_list=shopping_list).annotate(
+                qcount=Count('quantities')
+            ).filter(qcount=0).delete()
+
+        return Response({'ok': True}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def invite(self, request, pk=None):
+        """Inviter des utilisateurs à collaborer sur une liste de courses"""
+        from django.contrib.auth import get_user_model
+        from django.db import transaction
+        from accounts.models import Follow, Notification
+        User = get_user_model()
         
-        shopping_list = ShoppingList.objects.prefetch_related(
-            Prefetch('recipe_batches', queryset=RecipeBatch.objects.select_related(
-                'recipe'
-            ).prefetch_related(
-                Prefetch('recipe__recipe_ingredients', queryset=RecipeIngredient.objects.select_related('ingredient__category'))
-            ))
-        ).get(id=pk, user=request.user)
+        shopping_list = self.get_object()
+        invitee_ids = request.data.get('invitee_ids', [])
         
-        ingredients_map = {}
+        if not invitee_ids:
+            return Response({'error': 'invitee_ids is required'}, status=status.HTTP_400_BAD_REQUEST)
         
-        for batch in shopping_list.recipe_batches.all():
-            recipe = batch.recipe
-            if not recipe:
-                continue
-            servings = batch.total_servings_batch if hasattr(batch, 'total_servings_batch') else recipe.servings or 1
-            base_servings = recipe.servings or 1
-            ratio = servings / base_servings if base_servings else 1
-            
-            for recipe_ingredient in recipe.recipe_ingredients.all():
-                ingredient_id = recipe_ingredient.ingredient.id
-                quantity = float(recipe_ingredient.quantity) * ratio
-                unit = recipe_ingredient.unit
+        # Vérifier que l'utilisateur est owner ou collaborator
+        is_owner = shopping_list.members.filter(user=request.user, role='owner').exists()
+        is_collaborator = shopping_list.members.filter(user=request.user, role='collaborator').exists()
+        if not (is_owner or is_collaborator):
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que les utilisateurs sont des complices
+        following_ids = Follow.objects.filter(follower=request.user).values_list('following_id', flat=True)
+        followers_ids = Follow.objects.filter(following=request.user).values_list('follower_id', flat=True)
+        complice_ids = set(list(following_ids) + list(followers_ids))
+        
+        valid_invitee_ids = [user_id for user_id in invitee_ids if user_id in complice_ids]
+        
+        if not valid_invitee_ids:
+            return Response({'error': 'No valid complices found'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Précharger les utilisateurs
+        invitees = {user.id: user for user in User.objects.filter(id__in=valid_invitee_ids)}
+        
+        # Créer les invitations
+        invitations = []
+        notification_data = []
+        
+        with transaction.atomic():
+            for invitee_id in valid_invitee_ids:
+                invitee = invitees.get(invitee_id)
+                if not invitee:
+                    continue
                 
-                if ingredient_id not in ingredients_map:
-                    ingredients_map[ingredient_id] = {
-                        'quantity': 0,
-                        'unit': unit,
-                    }
+                # Ne pas inviter si déjà membre
+                if shopping_list.members.filter(user=invitee).exists():
+                    continue
                 
-                if ingredients_map[ingredient_id]['unit'] == unit:
-                    ingredients_map[ingredient_id]['quantity'] += quantity
-                else:
-                    ingredients_map[ingredient_id]['quantity'] += quantity
-        
-        created_items = []
-        items_to_create = []
-        
-        existing_items = {
-            item.ingredient_id: item 
-            for item in shopping_list.items.select_related('ingredient__category').all()
-        }
-        
-        for ingredient_id, data in ingredients_map.items():
-            if ingredient_id in existing_items:
-                continue
-            items_to_create.append(
-                ShoppingListItem(
+                invitation, created = ShoppingListInvitation.objects.get_or_create(
+                    inviter=request.user,
+                    invitee=invitee,
                     shopping_list=shopping_list,
-                    ingredient_id=ingredient_id,
-                    status='to_buy',
-                    pantry_quantity=0,
+                    defaults={'status': 'pending'}
                 )
+                if created:
+                    invitations.append(invitation)
+                    notification_data.append({
+                        'user': invitee,
+                        'notification_type': 'shopping_list_invitation',
+                        'title': f"{request.user.username} vous invite à une liste de courses",
+                        'message': f"{request.user.username} vous invite à collaborer sur '{shopping_list.name}'",
+                        'related_user': request.user
+                    })
+        
+        # Créer les notifications après commit
+        if notification_data:
+            def create_notifications():
+                for notif_data in notification_data:
+                    Notification.objects.create(**notif_data)
+            transaction.on_commit(create_notifications)
+        
+        shopping_list.refresh_from_db()
+        serializer = self.get_serializer(shopping_list, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='add_members')
+    def add_members(self, request, pk=None):
+        """Ajouter des membres directement à la liste (sans validation). Ils voient la liste dans leurs listes."""
+        from django.contrib.auth import get_user_model
+        from django.db import transaction
+        from accounts.models import Follow, Notification
+        User = get_user_model()
+
+        shopping_list = self.get_object()
+        invitee_ids = request.data.get('invitee_ids', [])
+
+        if not invitee_ids:
+            return Response({'error': 'invitee_ids is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_owner = shopping_list.members.filter(user=request.user, role='owner').exists()
+        is_collaborator = shopping_list.members.filter(user=request.user, role='collaborator').exists()
+        if not (is_owner or is_collaborator):
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        following_ids = Follow.objects.filter(follower=request.user).values_list('following_id', flat=True)
+        followers_ids = Follow.objects.filter(following=request.user).values_list('follower_id', flat=True)
+        complice_ids = set(list(following_ids) + list(followers_ids))
+        valid_invitee_ids = [uid for uid in invitee_ids if uid in complice_ids]
+
+        if not valid_invitee_ids:
+            return Response({'error': 'No valid complices found'}, status=status.HTTP_400_BAD_REQUEST)
+
+        invitees = {u.id: u for u in User.objects.filter(id__in=valid_invitee_ids)}
+        notification_data = []
+
+        with transaction.atomic():
+            for invitee_id in valid_invitee_ids:
+                invitee = invitees.get(invitee_id)
+                if not invitee or shopping_list.members.filter(user=invitee).exists():
+                    continue
+                ShoppingListMember.objects.get_or_create(
+                    shopping_list=shopping_list,
+                    user=invitee,
+                    defaults={'role': 'collaborator'}
+                )
+                notification_data.append({
+                    'user': invitee,
+                    'notification_type': 'shopping_list_invitation',
+                    'title': f"{request.user.username} vous a ajouté à une liste de courses",
+                    'message': f"{request.user.username} vous a ajouté à la liste '{shopping_list.name}'",
+                    'related_user': request.user
+                })
+
+        if notification_data:
+            def create_notifications():
+                for nd in notification_data:
+                    Notification.objects.create(**nd)
+            transaction.on_commit(create_notifications)
+
+        shopping_list.refresh_from_db()
+        serializer = self.get_serializer(shopping_list, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def remove_member(self, request, pk=None):
+        """Retirer un membre d'une liste de courses (seulement owner)"""
+        shopping_list = self.get_object()
+        user_id = request.data.get('user_id')
+        
+        if not user_id:
+            return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Vérifier que l'utilisateur est owner
+        is_owner = shopping_list.members.filter(user=request.user, role='owner').exists()
+        if not is_owner:
+            return Response({'error': 'Only owner can remove members'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Ne pas permettre de retirer le owner
+        member_to_remove = shopping_list.members.filter(user_id=user_id).first()
+        if not member_to_remove:
+            return Response({'error': 'Member not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if member_to_remove.role == 'owner':
+            return Response({'error': 'Cannot remove owner'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        member_to_remove.delete()
+        shopping_list.refresh_from_db()
+        serializer = self.get_serializer(shopping_list, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'])
+    def batch_done(self, request, pk=None):
+        """
+        Indique si les ingrédients du batch sont "couverts" (V1) dans cette liste.
+        V1 simplifié: done si pour chaque quantity du batch, checked_quantity >= quantity.
+        (Pantry non pris en compte ici pour rester simple.)
+        """
+        shopping_list = self.get_object()
+        recipe_batch_id = request.query_params.get('recipe_batch_id')
+        if not recipe_batch_id:
+            return Response({'error': 'recipe_batch_id required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            batch_id_int = int(recipe_batch_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid recipe_batch_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        qs = ShoppingListItemQuantity.objects.filter(
+            recipe_batch_id=batch_id_int,
+            shopping_list_item__shopping_list=shopping_list,
+        )
+        if not qs.exists():
+            return Response({'done': False}, status=status.HTTP_200_OK)
+
+        for q in qs:
+            if Decimal(str(q.checked_quantity or 0)) < Decimal(str(q.quantity or 0)):
+                return Response({'done': False}, status=status.HTTP_200_OK)
+        return Response({'done': True}, status=status.HTTP_200_OK)
+
+
+class ShoppingListInvitationViewSet(viewsets.ModelViewSet):
+    """ViewSet pour les invitations aux listes de courses"""
+    serializer_class = None  # À définir dans serializers.py
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        # L'utilisateur peut voir les invitations qu'il a envoyées ou reçues
+        qs = ShoppingListInvitation.objects.filter(
+            Q(inviter=self.request.user) | Q(invitee=self.request.user)
+        ).select_related('inviter', 'invitee', 'shopping_list')
+        
+        # Filtrer par shopping_list si fourni
+        shopping_list_id = self.request.query_params.get('shopping_list')
+        if shopping_list_id:
+            try:
+                qs = qs.filter(shopping_list_id=shopping_list_id)
+            except ValueError:
+                pass
+        
+        return qs
+    
+    def get_serializer_class(self):
+        # Utiliser un serializer simple pour les invitations
+        from .serializers import ShoppingListInvitationSerializer
+        return ShoppingListInvitationSerializer
+    
+    @action(detail=True, methods=['post'])
+    def accept(self, request, pk=None):
+        """Accepter une invitation"""
+        invitation = self.get_object()
+        if invitation.invitee != request.user:
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        
+        if invitation.status != 'pending':
+            return Response({'error': 'Invitation already processed'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        with transaction.atomic():
+            invitation.status = 'accepted'
+            invitation.save()
+            
+            # Créer le membre
+            ShoppingListMember.objects.get_or_create(
+                shopping_list=invitation.shopping_list,
+                user=invitation.invitee,
+                defaults={'role': 'collaborator'}
             )
         
-        if items_to_create:
-            ShoppingListItem.objects.bulk_create(items_to_create)
+        serializer = self.get_serializer(invitation)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['post'])
+    def decline(self, request, pk=None):
+        """Refuser une invitation"""
+        invitation = self.get_object()
+        if invitation.invitee != request.user:
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
         
-        all_items = shopping_list.items.select_related('ingredient__category').all()
-        created_items = [ShoppingListItemSerializer(item).data for item in all_items]
+        if invitation.status != 'pending':
+            return Response({'error': 'Invitation already processed'}, status=status.HTTP_400_BAD_REQUEST)
         
-        return Response(created_items, status=status.HTTP_200_OK)
+        invitation.status = 'declined'
+        invitation.save()
+        
+        serializer = self.get_serializer(invitation)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+def _mark_shopping_done_if_list_complete(shopping_list):
+    """
+    Si la liste est complète (tous les ingrédients achetés), marque shopping_done=True
+    sur tous les RecipeBatch associés à cette liste.
+    """
+    from decimal import Decimal
+    items = shopping_list.items.prefetch_related('quantities').all()
+    if not items.exists():
+        return
+    for item in items:
+        pantry_qty = Decimal(str(item.pantry_quantity or 0))
+        total_qty = sum(Decimal(str(q.quantity or 0)) for q in item.quantities.all())
+        total_checked = sum(Decimal(str(q.checked_quantity or 0)) for q in item.quantities.all())
+        remaining = total_qty - total_checked - pantry_qty
+        if remaining > 0:
+            return  # liste pas complète
+    batch_ids = list(
+        ShoppingListBatch.objects.filter(shopping_list=shopping_list).values_list('recipe_batch_id', flat=True)
+    )
+    if batch_ids:
+        RecipeBatch.objects.filter(id__in=batch_ids).update(shopping_done=True, updated_at=timezone.now())
 
 
 class ShoppingListItemViewSet(viewsets.ModelViewSet):
@@ -3344,146 +3776,395 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filtrer par shopping list de l'utilisateur"""
-        from django.db.models import Prefetch
-        
+        """V2: Filtrer par shopping list accessible via membership"""
         shopping_list_id = self.request.query_params.get('shopping_list_id')
         
         if shopping_list_id:
-            # Vérifier que la shopping list appartient à l'utilisateur
             try:
-                shopping_list = ShoppingList.objects.get(
-                    id=shopping_list_id,
-                    user=self.request.user
-                )
+                shopping_list = ShoppingList.objects.get(id=shopping_list_id, members__user=self.request.user)
                 queryset = ShoppingListItem.objects.filter(shopping_list=shopping_list)
             except ShoppingList.DoesNotExist:
                 return ShoppingListItem.objects.none()
         else:
-            # Retourner les items de toutes les listes de l'utilisateur
-            user_lists = ShoppingList.objects.filter(user=self.request.user)
-            queryset = ShoppingListItem.objects.filter(shopping_list__in=user_lists)
+            queryset = ShoppingListItem.objects.filter(shopping_list__members__user=self.request.user).distinct()
         
         # Filtres optionnels
         ingredient_id = self.request.query_params.get('ingredient_id')
-        status = self.request.query_params.get('status')
         
         if ingredient_id:
             queryset = queryset.filter(ingredient_id=ingredient_id)
-        if status:
-            queryset = queryset.filter(status=status)
         
         # Optimisation : précharger toutes les relations nécessaires
         return queryset.select_related(
             'ingredient__category',
-            'shopping_list'
+            'shopping_list',
+            'checked_by',
         ).order_by('-updated_at')
     
     @action(detail=False, methods=['get'])
     def with_quantities(self, request):
-        """Retourne les ingrédients avec leurs quantités calculées depuis les recipe_batches"""
-        from django.db.models import Prefetch
+        """V2: Retourne les lignes (ingredient + unit_group) avec quantités totalisées depuis ShoppingListItemQuantity."""
         
         shopping_list_id = request.query_params.get('shopping_list_id')
         
         if not shopping_list_id:
             return Response({'error': 'shopping_list_id required'}, status=status.HTTP_400_BAD_REQUEST)
         
+        from .models import MealPlan, MealPlanRecipeBatch, PostPhoto
+        from .serializers import RecipeLightSerializer
+        
         try:
-            # Optimisation maximale : précharger toutes les relations en une seule requête
-            from .models import MealPlan, MealInvitation, MealPlanRecipeBatch
             shopping_list = ShoppingList.objects.prefetch_related(
-                Prefetch(
-                    'recipe_batches',
-                    queryset=RecipeBatch.objects.select_related('recipe').prefetch_related(
-                        Prefetch(
-                            'recipe__recipe_ingredients',
-                            queryset=RecipeIngredient.objects.select_related('ingredient__category')
-                        ),
-                        Prefetch(
-                            'meal_plan_recipe_batches',
-                            queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').prefetch_related(
-                                Prefetch(
-                                    'meal_plan__invitations',
-                                    queryset=MealInvitation.objects.select_related('invitee')
-                                )
-                            )
-                        )
-                    )
-                ),
-                Prefetch(
-                    'items',
-                    queryset=ShoppingListItem.objects.select_related('ingredient__category')
-                )
-            ).get(id=shopping_list_id, user=request.user)
+                Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category', 'checked_by').prefetch_related(
+                    Prefetch('quantities', queryset=ShoppingListItemQuantity.objects.select_related(
+                        'recipe_batch__recipe', 'checked_by'
+                    ).prefetch_related(
+                        Prefetch('recipe_batch__meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan'))
+                    ))
+                ))
+            ).get(id=shopping_list_id, members__user=request.user)
         except ShoppingList.DoesNotExist:
             return Response({'error': 'Shopping list not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        # Agréger les ingrédients depuis les recipe_batches
-        ingredients_map = {}
-        
-        for batch in shopping_list.recipe_batches.all():
-            recipe = batch.recipe
-            if not recipe:
-                continue
-            
-            # Calculer total_servings_batch en sommant les servings de tous les meal plans du batch
-            total_servings_batch = 0
-            all_meal_plans = MealPlan.objects.filter(
-                meal_plan_recipe_batches__recipe_batch=batch
-            ).prefetch_related(
-                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
-            ).distinct()
-            
-            for mp in all_meal_plans:
-                total_servings_batch += calculate_meal_plan_servings(mp)
-            
-            # Utiliser total_servings_batch ou fallback sur servings de la recette
-            servings = total_servings_batch if total_servings_batch > 0 else (recipe.servings or 1)
-            base_servings = recipe.servings or 1
-            ratio = servings / base_servings if base_servings else 1
-            
-            # Parcourir les ingrédients de la recette
-            for recipe_ingredient in recipe.recipe_ingredients.all():
-                ingredient = recipe_ingredient.ingredient
-                ingredient_id = ingredient.id
-                quantity = float(recipe_ingredient.quantity) * ratio
-                unit = recipe_ingredient.unit
-                
-                if ingredient_id not in ingredients_map:
-                    ingredients_map[ingredient_id] = {
-                        'id': ingredient_id,
-                        'name': ingredient.name,
-                        'quantity': 0,
-                        'unit': unit,
-                        'category': {
-                            'id': ingredient.category.id if ingredient.category else None,
-                            'name': ingredient.category.name if ingredient.category else 'Autres',
-                        } if ingredient.category else {'id': None, 'name': 'Autres'},
-                        'item': None,
-                    }
-                
-                if ingredients_map[ingredient_id]['unit'] == unit:
-                    ingredients_map[ingredient_id]['quantity'] += quantity
-                else:
-                    # Unités différentes : additionner quand même (pour l'instant)
-                    ingredients_map[ingredient_id]['quantity'] += quantity
-        
-        # Enrichir avec les items existants (statut, pantry_quantity)
+        result = []
+        now = timezone.now()
+        from datetime import timedelta as _timedelta_24h  # alias to avoid confusion with other imports
         for item in shopping_list.items.all():
-            ingredient_id = item.ingredient.id
-            if ingredient_id in ingredients_map:
-                ingredients_map[ingredient_id]['item'] = {
-                    'id': item.id,
-                    'status': item.status,
-                    'pantry_quantity': float(item.pantry_quantity) if item.pantry_quantity else 0,
-                    'pantry_unit': item.pantry_unit or '',
+            total_qty = float(sum((q.quantity or 0) for q in item.quantities.all()))
+            total_checked = float(sum((q.checked_quantity or 0) for q in item.quantities.all()))
+            unit = ''
+            first_q = item.quantities.first()
+            if first_q and first_q.unit:
+                unit = first_q.unit
+            elif item.pantry_unit:
+                unit = item.pantry_unit
+
+            category = item.ingredient.category
+
+            # Filtrer côté backend les lignes "tout acheté" depuis plus de 24h
+            pantry_qty = float(item.pantry_quantity or 0)
+            remaining = total_qty - total_checked - pantry_qty
+            if remaining <= 0 and item.checked_at:
+                try:
+                    if now - item.checked_at > _timedelta_24h(days=1):
+                        # Ignorer complètement cette ligne dans la réponse
+                        continue
+                except Exception:
+                    # En cas de problème de timezone/valeur, ne pas filtrer agressivement
+                    pass
+            
+            # Collecter les batches avec leurs détails (recipe_batch=None = ajout manuel)
+            batches_data = []
+            batch_ids = []
+            has_manual = False
+            manual_qty = 0.0
+            manual_checked = 0.0
+            for q in item.quantities.all():
+                batch = q.recipe_batch
+                if batch is None:
+                    # Quantité manuelle (pas de recette liée)
+                    has_manual = True
+                    manual_qty += float(q.quantity or 0)
+                    manual_checked += float(q.checked_quantity or 0)
+                    continue
+                if batch.id in batch_ids:
+                    continue
+                batch_ids.append(batch.id)
+                
+                dates = []
+                for mprb in batch.meal_plan_recipe_batches.all():
+                    if mprb.meal_plan:
+                        dates.append(mprb.meal_plan.date.isoformat())
+                dates = sorted(list(set(dates)))
+                
+                photo_url = None
+                if batch.recipe:
+                    first_photo = PostPhoto.objects.filter(recipe_batch=batch).order_by('-created_at').first()
+                    if first_photo:
+                        try:
+                            from savr_back.settings import build_presigned_get_url
+                            photo_url = build_presigned_get_url(first_photo.image_path, expires_in=3600)
+                        except Exception:
+                            pass
+                
+                recipe_data = None
+                if batch.recipe:
+                    try:
+                        recipe_data = RecipeLightSerializer(batch.recipe, context={'request': request}).data
+                    except Exception:
+                        recipe_data = {
+                            'id': batch.recipe.id,
+                            'title': batch.recipe.title or '',
+                            'image_url': None,
+                        }
+                
+                batches_data.append({
+                    'batch_id': batch.id,
+                    'recipe': recipe_data,
+                    'quantity': float(q.quantity or 0),
+                    'checked_quantity': float(q.checked_quantity or 0),
+                    'unit': q.unit or unit,
+                    'dates': dates,
+                    'photo_url': photo_url,
+                    'is_manual': False,
+                })
+            
+            if has_manual:
+                batches_data.append({
+                    'batch_id': None,
+                    'recipe': None,
+                    'quantity': manual_qty,
+                    'checked_quantity': manual_checked,
+                    'unit': unit,
+                    'dates': [],
+                    'photo_url': None,
+                    'is_manual': True,
+                })
+            
+            result.append({
+                'item_id': item.id,
+                'ingredient_id': item.ingredient.id,
+                'unit_group': item.unit_group,
+                'name': item.ingredient.name,
+                'quantity': total_qty,
+                'checked_quantity': total_checked,
+                'unit': unit,
+                'category': {
+                    'id': category.id if category else None,
+                    'name': category.name if category else 'Autres',
+                },
+                'pantry_quantity': float(item.pantry_quantity or 0),
+                'pantry_unit': item.pantry_unit or unit or '',
+                'checked_at': item.checked_at,
+                'checked_by': UserLightSerializer(item.checked_by).data if item.checked_by else None,
+                'batches': batches_data,
+                'recipes_count': len(batches_data),
+            })
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def check(self, request, pk=None):
+        """Cocher la totalité restante (V1) pour cette ligne."""
+        item = self.get_object()
+        with transaction.atomic():
+            # total remaining = sum(q.quantity - q.checked_quantity) - pantry
+            pantry = Decimal(str(item.pantry_quantity or 0))
+            qs = item.quantities.select_for_update().all()
+            # remaining before pantry
+            remaining_total = sum((Decimal(str(q.quantity or 0)) - Decimal(str(q.checked_quantity or 0))) for q in qs)
+            remaining_after_pantry = remaining_total - pantry
+            if remaining_after_pantry < 0:
+                remaining_after_pantry = Decimal('0')
+
+            # Cocher tout le restant, réparti proportionnellement (simple: cocher chaque q à fond tant qu'il reste)
+            to_allocate = remaining_after_pantry
+            for q in qs:
+                if to_allocate <= 0:
+                    break
+                q_remaining = Decimal(str(q.quantity or 0)) - Decimal(str(q.checked_quantity or 0))
+                if q_remaining <= 0:
+                    continue
+                add = q_remaining if q_remaining <= to_allocate else to_allocate
+                q.checked_quantity = Decimal(str(q.checked_quantity or 0)) + add
+                q.checked_at = timezone.now()
+                q.checked_by = request.user
+                q.save(update_fields=['checked_quantity', 'checked_at', 'checked_by', 'updated_at'])
+                to_allocate -= add
+
+            item.checked_at = timezone.now()
+            item.checked_by = request.user
+            item.save(update_fields=['checked_at', 'checked_by', 'updated_at'])
+
+        _mark_shopping_done_if_list_complete(item.shopping_list)
+        return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def uncheck(self, request, pk=None):
+        """Décocher (restore full) : remet checked_quantity à 0 sur toutes les quantités."""
+        item = self.get_object()
+        with transaction.atomic():
+            item.quantities.update(checked_quantity=0, checked_at=None, checked_by=None)
+            item.checked_at = None
+            item.checked_by = None
+            item.save(update_fields=['checked_at', 'checked_by', 'updated_at'])
+        return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='set_manual_quantity')
+    def set_manual_quantity(self, request, pk=None):
+        """Définir la quantité manuelle (recipe_batch=None) pour cet item. Crée la ligne si besoin."""
+        item = self.get_object()
+        quantity = request.data.get('quantity', 0)
+        manual_q = item.quantities.filter(recipe_batch__isnull=True).first()
+        unit = request.data.get('unit') or (manual_q.unit if manual_q else None) or item.pantry_unit or 'g'
+        try:
+            qty_val = Decimal(str(quantity))
+        except (TypeError, ValueError):
+            qty_val = Decimal('0')
+        with transaction.atomic():
+            qty_obj, _ = ShoppingListItemQuantity.objects.get_or_create(
+                shopping_list_item=item,
+                recipe_batch=None,
+                defaults={'quantity': qty_val, 'unit': unit}
+            )
+            if not _:
+                qty_obj.quantity = qty_val
+                qty_obj.unit = unit
+                qty_obj.save(update_fields=['quantity', 'unit', 'updated_at'])
+        _mark_shopping_done_if_list_complete(item.shopping_list)
+        return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    def _unit_group_for_unit(self, unit: str) -> str:
+        """Détermine le unit_group à partir d'une unité"""
+        unit = (unit or '').lower()
+        if unit in ['g', 'kg']:
+            return 'weight'
+        if unit in ['ml', 'l']:
+            return 'volume'
+        if unit == 'piece':
+            return 'count'
+        if unit == 'pinch':
+            return 'pinch'
+        if unit == 'clove':
+            return 'clove'
+        return 'other'
+
+    def _canonicalize_quantity(self, quantity: float, unit: str):
+        """Canonicalise une quantité (convertit kg->g, l->ml)"""
+        unit = (unit or '').lower()
+        if unit == 'kg':
+            return float(quantity) * 1000.0, 'g'
+        if unit == 'l':
+            return float(quantity) * 1000.0, 'ml'
+        return float(quantity), unit
+
+    def get_serializer_class(self):
+        """Utiliser ShoppingListItemCreateSerializer pour la création manuelle"""
+        if self.action == 'create':
+            from .serializers import ShoppingListItemCreateSerializer
+            return ShoppingListItemCreateSerializer
+        return ShoppingListItemSerializer
+
+    def create(self, request, *args, **kwargs):
+        """
+        Créer un item de liste de courses manuellement.
+        Crée l'ingrédient s'il n'existe pas et détermine la catégorie automatiquement.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        shopping_list_id = serializer.validated_data['shopping_list_id']
+        ingredient_name = serializer.validated_data['ingredient_name'].strip()
+        quantity = serializer.validated_data.get('quantity', 1.0)
+        unit = serializer.validated_data.get('unit', 'piece')
+        category_id = serializer.validated_data.get('category_id')
+        
+        # Vérifier que l'utilisateur a accès à la liste
+        try:
+            shopping_list = ShoppingList.objects.get(id=shopping_list_id, members__user=request.user)
+        except ShoppingList.DoesNotExist:
+            return Response(
+                {'error': 'Shopping list not found or access denied'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        with transaction.atomic():
+            # Récupérer ou créer l'ingrédient
+            from .services.ingredient_matcher import get_or_create_ingredient
+            ingredient, created = get_or_create_ingredient(ingredient_name)
+            
+            # Déterminer la catégorie si non fournie
+            if not category_id and not ingredient.category:
+                category = self._categorize_ingredient(ingredient_name, ingredient)
+                if category:
+                    ingredient.category = category
+                    ingredient.save(update_fields=['category'])
+            
+            # Déterminer le unit_group à partir de l'unité
+            unit_group = self._unit_group_for_unit(unit)
+            
+            # Créer ou récupérer le ShoppingListItem
+            item, item_created = ShoppingListItem.objects.get_or_create(
+                shopping_list=shopping_list,
+                ingredient=ingredient,
+                unit_group=unit_group,
+                defaults={
+                    'pantry_unit': unit,
                 }
+            )
+            
+            # Quantité manuelle = pas de recipe_batch (recipe_batch=None en DB)
+            canonical_qty, canonical_unit = self._canonicalize_quantity(float(quantity), unit)
+            quantity_obj, qty_created = ShoppingListItemQuantity.objects.get_or_create(
+                shopping_list_item=item,
+                recipe_batch=None,
+                defaults={
+                    'quantity': Decimal(str(canonical_qty)),
+                    'unit': canonical_unit,
+                }
+            )
+            if not qty_created:
+                quantity_obj.quantity = Decimal(str(quantity_obj.quantity)) + Decimal(str(canonical_qty))
+                quantity_obj.save(update_fields=['quantity', 'updated_at'])
+            
+            # Touch la liste pour que updated_at reflète bien la dernière modification
+            shopping_list.updated_at = timezone.now()
+            shopping_list.save(update_fields=['updated_at'])
         
-        # Convertir en liste
-        ingredients_list = list(ingredients_map.values())
+        return Response(
+            ShoppingListItemSerializer(item, context={'request': request}).data,
+            status=status.HTTP_201_CREATED if item_created else status.HTTP_200_OK
+        )
+    
+    def _categorize_ingredient(self, ingredient_name: str, ingredient: Ingredient) -> Optional[Category]:
+        """
+        Catégorise un ingrédient en utilisant d'abord l'embedding pour trouver des ingrédients similaires,
+        puis une logique simple basée sur les mots-clés.
+        TODO: Ajouter fallback LLM si nécessaire.
+        """
+        # Si l'ingrédient a déjà une catégorie, la retourner
+        if ingredient.category:
+            return ingredient.category
         
-        return Response(ingredients_list, status=status.HTTP_200_OK)
+        # Essayer de trouver un ingrédient similaire avec catégorie via embedding
+        # Vérifier si l'embedding existe (VectorField peut être None ou un array numpy)
+        if ingredient.embedding is not None:
+            try:
+                # Convertir l'embedding en liste si c'est un array numpy
+                embedding_list = list(ingredient.embedding) if hasattr(ingredient.embedding, '__iter__') else ingredient.embedding
+                if embedding_list:
+                    from .services.ingredient_matcher import find_similar_ingredient
+                    similar = find_similar_ingredient(ingredient_name, embedding_list)
+                    if similar and similar.category:
+                        return similar.category
+            except Exception:
+                # Si la recherche par embedding échoue, continuer avec le fallback
+                pass
+        
+        # Fallback: catégorisation basique par mots-clés
+        name_lower = ingredient_name.lower()
+        
+        # Mapping simple de mots-clés vers catégories
+        category_keywords = {
+            'Fruits': ['pomme', 'banane', 'orange', 'fraise', 'cerise', 'raisin', 'citron', 'kiwi', 'mangue', 'ananas', 'pêche', 'poire', 'abricot', 'melon', 'pastèque'],
+            'Légumes': ['tomate', 'carotte', 'courgette', 'aubergine', 'poivron', 'oignon', 'ail', 'salade', 'chou', 'brocoli', 'haricot', 'petit pois', 'épinard', 'poireau', 'céleri'],
+            'Viandes & Poissons': ['poulet', 'boeuf', 'porc', 'agneau', 'saumon', 'thon', 'cabillaud', 'crevette', 'moule', 'steak', 'jambon', 'bacon'],
+            'Produits laitiers': ['lait', 'fromage', 'yaourt', 'crème', 'beurre', 'fromage blanc', 'mozzarella', 'cheddar'],
+            'Pain & Pâtisserie': ['pain', 'baguette', 'brioche', 'croissant', 'gâteau', 'tarte', 'pizza'],
+            'Épicerie': ['riz', 'pâtes', 'farine', 'sucre', 'sel', 'poivre', 'huile', 'vinaigre', 'moutarde', 'ketchup'],
+        }
+        
+        for category_name, keywords in category_keywords.items():
+            if any(keyword in name_lower for keyword in keywords):
+                try:
+                    return Category.objects.get(name=category_name)
+                except Category.DoesNotExist:
+                    pass
+        
+        # Par défaut, retourner "Autres"
+        try:
+            return Category.objects.get(name='Autres')
+        except Category.DoesNotExist:
+            return None
 
 
 class CollectionViewSet(viewsets.ModelViewSet):

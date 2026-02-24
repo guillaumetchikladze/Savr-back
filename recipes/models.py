@@ -185,6 +185,10 @@ class RecipeBatch(models.Model):
         related_name='recipe_batches'
     )
     is_cooked = models.BooleanField(default=False, help_text="Au moins un meal plan lié est cuisiné")
+    shopping_done = models.BooleanField(
+        default=False,
+        help_text="Courses terminées pour ce batch (soit utilisateur a tout coché, soit a choisi « J'ai déjà fait les courses »)"
+    )
     photo_step_orders = models.JSONField(
         default=list,
         blank=True,
@@ -806,51 +810,106 @@ class PostCookie(models.Model):
 
 
 class ShoppingList(models.Model):
-    """Liste de courses créée par un utilisateur"""
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='shopping_lists'
-    )
+    """
+    Liste de courses persistante (Maison, Appart, etc.).
+    V2: collaboration + association de batches via ShoppingListBatch, et items multi-lignes via unit_group.
+    """
     name = models.CharField(
         max_length=200,
         blank=True,
-        help_text="Nom de la liste (optionnel, par défaut date de création)"
+        help_text="Nom de la liste (ex: Maison, Appart, etc.)"
     )
-    recipe_batches = models.ManyToManyField(
-        RecipeBatch,
-        related_name='shopping_lists',
-        help_text="Batches inclus dans cette liste"
+    color = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Couleur optionnelle (hex ou token)"
     )
-    is_active = models.BooleanField(
-        default=True,
-        help_text="Liste active (une seule liste active par utilisateur à la fois)"
-    )
-    is_archived = models.BooleanField(
-        default=False,
-        help_text="Liste archivée"
-    )
+    is_archived = models.BooleanField(default=False, help_text="Liste archivée")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.name or f"Liste du {self.created_at.strftime('%d/%m/%Y')}"
+
+
+class ShoppingListMember(models.Model):
+    """Membre d'une liste de courses (collaboration)"""
+    ROLE_CHOICES = [
+        ('owner', 'Propriétaire'),
+        ('collaborator', 'Collaborateur'),
+    ]
+    shopping_list = models.ForeignKey(
+        ShoppingList,
+        on_delete=models.CASCADE,
+        related_name='members'
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='shopping_list_memberships'
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=ROLE_CHOICES,
+        default='collaborator'
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ['shopping_list', 'user']
+        ordering = ['joined_at']
+        indexes = [
+            models.Index(fields=['shopping_list', 'role'], name='shoplistmember_role_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.shopping_list} ({self.get_role_display()})"
+
+
+class ShoppingListBatch(models.Model):
+    """
+    Association d'un RecipeBatch à une ShoppingList.
+    V1: un batch ne peut être associé qu'à UNE seule liste (OneToOne).
+    """
+    shopping_list = models.ForeignKey(
+        ShoppingList,
+        on_delete=models.CASCADE,
+        related_name='batches'
+    )
+    recipe_batch = models.OneToOneField(
+        RecipeBatch,
+        on_delete=models.CASCADE,
+        related_name='shopping_list_batch'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['user', 'is_active'], name='shoppinglist_user_active_idx'),
+            models.Index(fields=['shopping_list', 'created_at'], name='shoplistbatch_list_created_idx'),
         ]
-    
+
     def __str__(self):
-        return f"{self.user.username} - {self.name or f'Liste du {self.created_at.strftime("%d/%m/%Y")}'}"
+        return f"{self.shopping_list} - batch {self.recipe_batch_id}"
 
 
 class ShoppingListItem(models.Model):
-    """Item de liste de courses pour un ingrédient dans une liste"""
-    STATUS_CHOICES = [
-        ('to_buy', 'À acheter'),
-        ('in_pantry', 'Dans les placards'),
-        ('purchased', 'Acheté'),
+    """
+    Ligne d'ingrédient dans une liste.
+    V2: un même ingredient peut apparaître plusieurs fois si unités non convertibles (unit_group).
+    """
+    UNIT_GROUP_CHOICES = [
+        ('weight', 'Poids (g/kg)'),
+        ('volume', 'Volume (ml/l)'),
+        ('count', 'Pièce'),
+        ('pinch', 'Pincée'),
+        ('clove', 'Gousse'),
+        ('other', 'Autre'),
     ]
-    
+
     shopping_list = models.ForeignKey(
         ShoppingList,
         on_delete=models.CASCADE,
@@ -861,34 +920,124 @@ class ShoppingListItem(models.Model):
         on_delete=models.CASCADE,
         related_name='shopping_list_items'
     )
-    status = models.CharField(
+    unit_group = models.CharField(
         max_length=20,
-        choices=STATUS_CHOICES,
-        default='to_buy'
+        choices=UNIT_GROUP_CHOICES,
+        default='other',
+        help_text="Regroupement d'unité pour permettre plusieurs lignes par ingrédient"
     )
     pantry_quantity = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         default=0,
-        help_text="Quantité déjà disponible dans les placards"
+        help_text="Quantité déjà disponible dans les placards (par ligne)"
     )
     pantry_unit = models.CharField(
         max_length=20,
         blank=True,
-        help_text="Unité de la quantité dans les placards"
+        help_text="Unité de la quantité dans les placards (doit correspondre au groupe d'unité)"
+    )
+    checked_at = models.DateTimeField(null=True, blank=True, help_text="Dernière validation (ligne)")
+    checked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='shopping_list_item_checks'
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         ordering = ['-updated_at']
-        unique_together = ['shopping_list', 'ingredient']
+        unique_together = ['shopping_list', 'ingredient', 'unit_group']
         indexes = [
-            models.Index(fields=['shopping_list', 'status'], name='shoplistitem_status_idx'),
+            models.Index(fields=['shopping_list', 'unit_group'], name='shoplistitem_group_idx'),
+            models.Index(fields=['shopping_list', 'checked_at'], name='shoplistitem_checked_idx'),
         ]
-    
+
     def __str__(self):
-        return f"{self.shopping_list} - {self.ingredient.name} - {self.get_status_display()}"
+        return f"{self.shopping_list} - {self.ingredient.name} ({self.unit_group})"
+
+
+class ShoppingListItemQuantity(models.Model):
+    """Quantité nécessaire (et cochée) pour un ingrédient, par batch. recipe_batch=None = ajout manuel."""
+    shopping_list_item = models.ForeignKey(
+        ShoppingListItem,
+        on_delete=models.CASCADE,
+        related_name='quantities'
+    )
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
+        on_delete=models.CASCADE,
+        related_name='shopping_list_item_quantities',
+        null=True,
+        blank=True,
+        help_text="Null = quantité ajoutée manuellement (pas liée à une recette)"
+    )
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    unit = models.CharField(max_length=20, blank=True)
+    checked_quantity = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    checked_at = models.DateTimeField(null=True, blank=True)
+    checked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='shopping_list_item_quantity_checks'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['shopping_list_item', 'recipe_batch']
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['recipe_batch', 'updated_at'], name='shopliq_batch_updated_idx'),
+        ]
+
+    def __str__(self):
+        if self.recipe_batch_id:
+            return f"{self.shopping_list_item} - batch {self.recipe_batch_id}"
+        return f"{self.shopping_list_item} - manuel"
+
+
+class ShoppingListInvitation(models.Model):
+    """Invitation à collaborer sur une liste (pattern MealInvitation)."""
+    STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('accepted', 'Acceptée'),
+        ('declined', 'Refusée'),
+    ]
+
+    inviter = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='sent_shopping_list_invitations'
+    )
+    invitee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='received_shopping_list_invitations'
+    )
+    shopping_list = models.ForeignKey(
+        ShoppingList,
+        on_delete=models.CASCADE,
+        related_name='invitations'
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = ['invitee', 'shopping_list']
+        indexes = [
+            models.Index(fields=['shopping_list', 'status'], name='shoplistinv_list_status_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.inviter.username} invite {self.invitee.username} - {self.shopping_list}"
 
 
 class Collection(models.Model):
