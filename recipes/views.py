@@ -3283,6 +3283,62 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
     serializer_class = ShoppingListSerializer
     permission_classes = [IsAuthenticated]
     
+    def list(self, request, *args, **kwargs):
+        """
+        Liste les shopping lists accessibles par l'utilisateur.
+        Cas particulier:
+        - si recipe_batch_id est fourni
+        - et que l'utilisateur n'a AUCUNE liste liée à ce batch
+        - mais qu'une liste existe pour ce batch côté hôte
+        
+        => retourner une entrée minimale qui signale l'existence d'une liste
+           sans exposer ses détails (nom custom, membres, etc.).
+        """
+        response = super().list(request, *args, **kwargs)
+
+        recipe_batch_id = request.query_params.get('recipe_batch_id')
+        # On ne fait le traitement spécial que si on filtre par batch
+        try:
+            recipe_batch_id_int = int(recipe_batch_id) if recipe_batch_id is not None else None
+        except (TypeError, ValueError):
+            recipe_batch_id_int = None
+
+        if (
+            recipe_batch_id_int is not None
+            and isinstance(response.data, dict)
+            and response.data.get('count', 0) == 0
+        ):
+            # Aucun résultat accessible, mais on vérifie s'il existe au moins une liste liée à ce batch
+            slb = (
+                ShoppingListBatch.objects
+                .filter(recipe_batch_id=recipe_batch_id_int)
+                .select_related('shopping_list')
+                .first()
+            )
+            if slb and slb.shopping_list:
+                # Construire une réponse minimale, sans exposer les membres ni le nom custom
+                shopping_list = slb.shopping_list
+                # Option: ne pas exposer le vrai nom, utiliser un label générique
+                minimal = {
+                    'id': shopping_list.id,
+                    'name': 'Pas accès',
+                    'color': '',
+                    'is_archived': shopping_list.is_archived,
+                    # Informations minimales mais utiles pour l’UI
+                    'items_count': 0,
+                    'batches_count': 1,
+                    'is_complete': False,
+                    'has_access': False,
+                }
+                response.data = {
+                    'count': 1,
+                    'next': None,
+                    'previous': None,
+                    'results': [minimal],
+                }
+
+        return response
+    
     def get_queryset(self):
         """V2: filtrer par membership (owner/collaborator)"""
         include_archived = self.request.query_params.get('include_archived')

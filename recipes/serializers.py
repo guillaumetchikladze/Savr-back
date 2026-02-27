@@ -1310,15 +1310,52 @@ class TimerSerializer(serializers.ModelSerializer):
     recipe_title = serializers.CharField(source='recipe_batch.recipe.title', read_only=True)
     step_title = serializers.CharField(source='step.title', read_only=True)
     step_order = serializers.IntegerField(source='step.order', read_only=True)
+    # Identifiants pratiques pour le front
+    recipe = serializers.IntegerField(source='recipe_batch.recipe_id', read_only=True)
+    meal_plan = serializers.SerializerMethodField()
     
     class Meta:
         model = Timer
         fields = [
-            'id', 'user', 'cooking_progress', 'step', 'step_title', 'step_order',
-            'recipe_batch', 'recipe_title', 'duration_minutes', 'remaining_seconds',
-            'started_at', 'expires_at', 'is_completed', 'created_at', 'updated_at'
+            'id',
+            'user',
+            'cooking_progress',
+            'step',
+            'step_title',
+            'step_order',
+            'recipe_batch',
+            'recipe',
+            'recipe_title',
+            'meal_plan',
+            'duration_minutes',
+            'remaining_seconds',
+            'started_at',
+            'expires_at',
+            'is_completed',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['user', 'started_at', 'expires_at', 'created_at', 'updated_at']
+
+    def get_meal_plan(self, obj):
+        """
+        Retourne un meal_plan associé à ce timer (via RecipeBatch) si disponible.
+        Utile pour la navigation depuis un timer vers la recette.
+        """
+        from .models import MealPlanRecipeBatch
+
+        if not obj.recipe_batch_id:
+            return None
+
+        mprb = (
+            MealPlanRecipeBatch.objects.filter(
+                recipe_batch=obj.recipe_batch
+            )
+            .select_related('meal_plan')
+            .order_by('id')
+            .first()
+        )
+        return mprb.meal_plan_id if mprb else None
 
 
 class TimerCreateSerializer(serializers.ModelSerializer):
@@ -1330,6 +1367,16 @@ class TimerCreateSerializer(serializers.ModelSerializer):
             'cooking_progress', 'step', 'recipe_batch', 'duration_minutes', 'remaining_seconds'
         ]
     
+    def validate(self, attrs):
+        """
+        Empêche la création de timers sans batch.
+        """
+        if not attrs.get('recipe_batch'):
+            raise serializers.ValidationError(
+                {'recipe_batch': 'Un recipe_batch est requis pour créer un minuteur.'}
+            )
+        return super().validate(attrs)
+
     def create(self, validated_data):
         from django.utils import timezone
         validated_data['user'] = self.context['request'].user
