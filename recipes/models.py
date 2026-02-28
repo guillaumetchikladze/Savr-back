@@ -809,6 +809,31 @@ class PostCookie(models.Model):
         return f"{self.user.username} cookie on {self.post.id}"
 
 
+class PostComment(models.Model):
+    """Commentaire laissé par un utilisateur sur un post"""
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name='comments'
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='post_comments'
+    )
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['post', 'created_at'], name='postcomment_post_created_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} on post {self.post.id}"
+
+
 class ShoppingList(models.Model):
     """
     Liste de courses persistante (Maison, Appart, etc.).
@@ -1146,3 +1171,25 @@ class CollectionMember(models.Model):
     
     def __str__(self):
         return f"{self.user.username} - {self.collection.name} ({self.get_role_display()})"
+
+
+class CollectionFollower(models.Model):
+    """Utilisateur qui suit un livre de recettes (pour l'avoir dans "Mes livres")"""
+    collection = models.ForeignKey(
+        Collection,
+        on_delete=models.CASCADE,
+        related_name='followers'
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='followed_collections'
+    )
+    followed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ['collection', 'user']
+        ordering = ['-followed_at']
+
+    def __str__(self):
+        return f"{self.user.username} suit {self.collection.name}"

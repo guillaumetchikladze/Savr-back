@@ -10,10 +10,21 @@ from celery import shared_task
 from .models import RecipeImportRequest
 from .services.ai_service import formalize_recipe
 from .services.formalization_pipeline import create_recipe_from_formalized
-from .services.recipe_importer import import_recipe_from_url
+from .services.recipe_importer import import_recipe_from_url, is_ingredients_suspicious
 from .services.image_uploader import download_and_upload_image
 
 logger = logging.getLogger(__name__)
+
+def _update_import_progress(import_request: RecipeImportRequest, step: str, percent: int, *, used_source: str | None = None):
+    payload = import_request.payload or {}
+    payload['import_progress'] = {
+        'step': step,
+        'percent': max(0, min(int(percent), 100)),
+    }
+    if used_source:
+        payload['import_extractor'] = used_source
+    import_request.payload = payload
+    import_request.save(update_fields=['payload', 'updated_at'])
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
@@ -82,6 +93,7 @@ def process_recipe_import_from_url(self, request_id: str):
     import_request.status = RecipeImportRequest.STATUS_PROCESSING
     import_request.error_message = ''
     import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+    _update_import_progress(import_request, step='EXTRACTING', percent=10)
 
     payload = import_request.payload
     url = payload.get('url', '')
@@ -96,6 +108,7 @@ def process_recipe_import_from_url(self, request_id: str):
         # Étape 1 : Extraire la recette depuis l'URL
         logger.info("[RecipeImportURLTask] Step 1/5: Extracting recipe from URL: %s", url)
         raw_recipe_data, used_source = import_recipe_from_url(url)
+        _update_import_progress(import_request, step='EXTRACTED', percent=25, used_source=used_source)
         
         logger.info(
             "[RecipeImportURLTask] Extraction result - source=%s, has_data=%s, title=%s",
@@ -110,11 +123,30 @@ def process_recipe_import_from_url(self, request_id: str):
             import_request.status = RecipeImportRequest.STATUS_ERROR
             import_request.error_message = error_msg
             import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+            _update_import_progress(import_request, step='ERROR', percent=100, used_source=used_source)
             return
 
-        # Étape 2 : Les données d'import sont déjà structurées, pas besoin de prétraitement
+        # Étape 2 : Vérifier la complétude minimale des ingrédients (strict_block)
+        suspicious, reason = is_ingredients_suspicious(raw_recipe_data.get('ingredients_text', ''))
+        if suspicious:
+            error_msg = (
+                "Import bloqué: impossible de garantir la complétude des ingrédients. "
+                f"Raison: {reason}"
+            )
+            logger.warning(
+                "[RecipeImportURLTask] Ingredient completeness check failed (source=%s): %s",
+                used_source,
+                error_msg,
+            )
+            import_request.status = RecipeImportRequest.STATUS_ERROR
+            import_request.error_message = error_msg
+            import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+            _update_import_progress(import_request, step='ERROR', percent=100, used_source=used_source)
+            return
+
+        # Étape 3 : Les données d'import sont déjà structurées, pas besoin de prétraitement
         # On met juste à jour le payload avec les données extraites
-        logger.info("[RecipeImportURLTask] Step 2/5: Using extracted data directly (no preprocessing needed): %s", raw_recipe_data.get('title', ''))
+        logger.info("[RecipeImportURLTask] Step 3/5: Using extracted data directly (no preprocessing needed): %s", raw_recipe_data.get('title', ''))
         
         # Sauvegarder l'URL externe de l'image temporairement
         external_image_url = raw_recipe_data.get('image_path', '')
@@ -126,9 +158,11 @@ def process_recipe_import_from_url(self, request_id: str):
         })
         import_request.payload = payload
         import_request.save(update_fields=['payload'])
+        _update_import_progress(import_request, step='READY_FOR_AI', percent=35, used_source=used_source)
 
-        # Étape 3 : Formaliser avec l'IA (données déjà structurées)
-        logger.info("[RecipeImportURLTask] Step 3/5: Formalizing recipe with AI: %s", raw_recipe_data.get('title', ''))
+        # Étape 4 : Formaliser avec l'IA (données déjà structurées)
+        logger.info("[RecipeImportURLTask] Step 4/5: Formalizing recipe with AI: %s", raw_recipe_data.get('title', ''))
+        _update_import_progress(import_request, step='FORMALIZING', percent=55, used_source=used_source)
         formalized_recipe = asyncio.run(
             formalize_recipe(
                 raw_recipe_data['title'],
@@ -141,13 +175,15 @@ def process_recipe_import_from_url(self, request_id: str):
             )
         )
 
-        # Étape 4 : Créer la recette en DB
-        logger.info("[RecipeImportURLTask] Step 4/5: Creating recipe in database")
+        # Étape 5 : Créer la recette en DB
+        logger.info("[RecipeImportURLTask] Step 5/5: Creating recipe in database")
+        _update_import_progress(import_request, step='SAVING', percent=80, used_source=used_source)
         recipe = create_recipe_from_formalized(formalized_recipe, payload, import_request.user)
         
-        # Étape 5 : Télécharger et uploader l'image vers S3 si elle existe
+        # Étape 6 : Télécharger et uploader l'image vers S3 si elle existe
         if external_image_url and external_image_url.startswith('http'):
-            logger.info("[RecipeImportURLTask] Step 5/5: Downloading and uploading image to S3: %s", external_image_url)
+            logger.info("[RecipeImportURLTask] Step 6/6: Downloading and uploading image to S3: %s", external_image_url)
+            _update_import_progress(import_request, step='UPLOADING_IMAGE', percent=90, used_source=used_source)
             s3_image_path = download_and_upload_image(
                 external_image_url,
                 import_request.user.id,
@@ -163,11 +199,12 @@ def process_recipe_import_from_url(self, request_id: str):
                 recipe.image_path = external_image_url
                 recipe.save(update_fields=['image_path'])
         else:
-            logger.info("[RecipeImportURLTask] Step 5/5: No external image URL to download")
+            logger.info("[RecipeImportURLTask] Step 6/6: No external image URL to download")
 
         import_request.status = RecipeImportRequest.STATUS_SUCCESS
         import_request.recipe = recipe
         import_request.save(update_fields=['status', 'recipe', 'updated_at'])
+        _update_import_progress(import_request, step='DONE', percent=100, used_source=used_source)
         logger.info(
             "[RecipeImportURLTask] Request %s completed successfully - recipe_id=%s, title='%s'",
             request_id,
@@ -180,5 +217,6 @@ def process_recipe_import_from_url(self, request_id: str):
         import_request.status = RecipeImportRequest.STATUS_ERROR
         import_request.error_message = str(exc)
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+        _update_import_progress(import_request, step='ERROR', percent=100)
         raise
 

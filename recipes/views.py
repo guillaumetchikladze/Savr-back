@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from pgvector.django import CosineDistance
 from pydantic_ai.exceptions import UserError as PydanticAIUserError
 from typing import Optional
+import re
 import uuid
 import logging
 import traceback
@@ -21,28 +22,30 @@ from savr_back.settings import build_s3_client, build_s3_url, build_presigned_ge
 from .services.ingredient_matcher import get_batch_embeddings
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
-    MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie,
+    MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment,
     ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListItem, ShoppingListItemQuantity,
     ShoppingListInvitation,
-    Collection, CollectionRecipe, CollectionMember,
+    Collection, CollectionRecipe, CollectionMember, CollectionFollower,
     RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch
 )
-from accounts.models import Follow
+from accounts.models import Follow, Notification
+from django.contrib.auth import get_user_model
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 from .serializers import (
     RecipeSerializer, RecipeDetailSerializer, RecipeCreateSerializer, RecipeLightSerializer,
     StepSerializer, IngredientSerializer, CategorySerializer,
-    MealPlanSerializer, MealPlanDetailSerializer, MealInvitationSerializer,
+    MealPlanSerializer, MealPlanDetailSerializer, MealInvitationSerializer, MealInvitationListSerializer,
     MealPlanListSerializer, MealPlanRangeListSerializer, MealPlanByDateSerializer,
     MealPlanMinimalListSerializer,
     CookingProgressSerializer, CookingProgressCreateUpdateSerializer,
     TimerSerializer, TimerCreateSerializer,
     PostSerializer, PostCreateUpdateSerializer, PostPhotoSerializer,
+    PostCommentSerializer, PostCommentCreateSerializer,
     ShoppingListSerializer, ShoppingListItemSerializer,
     CollectionSerializer, CollectionCreateSerializer, CollectionUpdateSerializer,
     CollectionRecipeSerializer, CollectionMemberSerializer,
-    RecipeFormalizeSerializer, RecipeImportRequestSerializer,
+    RecipeFormalizeSerializer, RecipeImportRequestSerializer, RecipeImportRequestLightSerializer,
     RecipeBatchLightSerializer,
     UserLightSerializer
 )
@@ -104,7 +107,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             all_meal_plans = MealPlan.objects.filter(
                 meal_plan_recipe_batches__recipe_batch=batch
             ).prefetch_related(
-                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
+                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee', 'inviter'))
             ).distinct()
             
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
@@ -123,17 +126,38 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 total_servings_accessible += adjusted
                 servings_breakdown_accessible.extend(breakdown)
             
+            # Préparer un mapping des invitations acceptées pour l'utilisateur courant,
+            # indexées par meal_plan_id pour enrichir les métadonnées côté front.
+            accepted_invitations_for_user = MealInvitation.objects.filter(
+                meal_plan__in=meal_plans_accessible,
+                invitee=request.user,
+                status='accepted',
+            ).select_related('inviter')
+            invitations_by_meal_plan_id = {
+                inv.meal_plan_id: inv for inv in accepted_invitations_for_user
+            }
+            
             meals = []
             meal_plan_ids = []
             any_cooked = False
             # Mais ne retourner que les meal plans accessibles dans meals et meal_plan_ids
             for mp in meal_plans_accessible:
                 meal_plan_ids.append(mp.id)
+                invitation = invitations_by_meal_plan_id.get(mp.id)
+                is_guest = invitation is not None
+                inviter_name = None
+                if invitation and invitation.inviter:
+                    inviter_name = (
+                        getattr(invitation.inviter, 'username', None)
+                        or getattr(invitation.inviter, 'email', None)
+                    )
                 meals.append({
                     'id': mp.id,
                     'date': mp.date,
                     'meal_time': mp.meal_time,
                     'is_cooked': False,
+                    'is_guest': is_guest,
+                    'inviter_name': inviter_name,
                 })
             payload = RecipeBatchLightSerializer(batch, context={'request': request}).data
             payload['groupedDates'] = grouped_dates
@@ -986,10 +1010,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def my_imports(self, request):
         """Récupérer uniquement les recettes importées de l'utilisateur"""
-        recipes = Recipe.objects.filter(
-            created_by=request.user,
-            source_type='imported'
-        )
+        recipes = Recipe.objects.filter(created_by=request.user)
         summary_only = request.query_params.get('summary')
         if summary_only:
             count = recipes.count()
@@ -1114,7 +1135,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='formalize/requests')
     def formalize_requests(self, request):
         qs = RecipeImportRequest.objects.filter(user=request.user).order_by('-created_at')[:20]
-        serializer = RecipeImportRequestSerializer(qs, many=True, context={'request': request})
+        serializer = RecipeImportRequestLightSerializer(qs, many=True, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=False, methods=['post'], url_path='import_from_url')
@@ -2259,15 +2280,40 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
     """ViewSet pour les invitations à des repas"""
     serializer_class = MealInvitationSerializer
     permission_classes = [IsAuthenticated]
-    
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return MealInvitationListSerializer
+        return MealInvitationSerializer
+
     def get_queryset(self):
-        # L'utilisateur peut voir les invitations qu'il a envoyées ou reçues
+        """
+        L'utilisateur peut voir les invitations qu'il a envoyées ou reçues.
+        On expose quelques filtres pour alléger les réponses côté frontend :
+        - status : filtrer par statut (ex: pending)
+        - date__gte / date__lte : filtrer par plage de dates sur meal_plan.date
+        - meal_plan : filtrer sur un meal_plan précis
+        """
         qs = MealInvitation.objects.filter(
             Q(inviter=self.request.user) | Q(invitee=self.request.user)
         ).select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
         
+        params = self.request.query_params
+        
+        status_param = params.get('status')
+        if status_param:
+          qs = qs.filter(status=status_param)
+        
+        date_gte = params.get('date__gte')
+        if date_gte:
+            qs = qs.filter(meal_plan__date__gte=date_gte)
+        
+        date_lte = params.get('date__lte')
+        if date_lte:
+            qs = qs.filter(meal_plan__date__lte=date_lte)
+        
         # Filtrer par meal_plan si fourni dans les query params
-        meal_plan_id = self.request.query_params.get('meal_plan')
+        meal_plan_id = params.get('meal_plan')
         if meal_plan_id:
             try:
                 qs = qs.filter(meal_plan_id=meal_plan_id)
@@ -2332,6 +2378,28 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(invitation)
         return Response(serializer.data)
     
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """
+        Annuler une invitation déjà acceptée par l'utilisateur invité.
+        
+        Concrètement, on passe le statut de 'accepted' à 'declined', ce qui
+        retire l'accès au meal plan partagé via get_accessible_meal_plan_filter.
+        """
+        invitation = self.get_object()
+        
+        if invitation.invitee != request.user:
+            return Response({'error': 'You can only cancel invitations sent to you'}, status=status.HTTP_403_FORBIDDEN)
+        
+        if invitation.status != 'accepted':
+            return Response({'error': 'Only accepted invitations can be cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        invitation.status = 'declined'
+        invitation.save()
+        
+        serializer = self.get_serializer(invitation)
+        return Response(serializer.data)
+    
     @action(detail=False, methods=['get'])
     def pending(self, request):
         """Récupérer les invitations en attente pour l'utilisateur connecté"""
@@ -2339,6 +2407,15 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
             invitee=request.user,
             status='pending'
         ).select_related('inviter', 'meal_plan', 'meal_plan__user')
+
+        # Optionnellement filtrer par plage de dates (sur meal_plan.date)
+        date_gte = request.query_params.get('date__gte')
+        date_lte = request.query_params.get('date__lte')
+        if date_gte:
+            invitations = invitations.filter(meal_plan__date__gte=date_gte)
+        if date_lte:
+            invitations = invitations.filter(meal_plan__date__lte=date_lte)
+
         serializer = self.get_serializer(invitations, many=True)
         return Response(serializer.data)
 
@@ -2551,6 +2628,12 @@ class PostViewSet(viewsets.ModelViewSet):
         return False
     
     def get_queryset(self):
+        # Pour retrieve (GET /posts/{id}/), autoriser tout post publié (ex: depuis une notification)
+        if self.action == 'retrieve':
+            return Post.objects.filter(is_published=True).select_related(
+                'user', 'recipe_batch', 'recipe_batch__recipe'
+            ).prefetch_related('photos', 'cookies', 'comments').order_by('-created_at')
+
         # Si on demande les posts publiés, montrer tous les posts publiés de tous les utilisateurs
         # Sinon, montrer uniquement les posts de l'utilisateur connecté
         is_published = self.request.query_params.get('is_published')
@@ -2600,7 +2683,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 'recipe_batch',
                 'recipe_batch__recipe'
             ).prefetch_related(
-                'photos', 'cookies',
+                'photos', 'cookies', 'comments',
                 Prefetch(
                     'recipe_batch__meal_plan_recipe_batches',
                     queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only('meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time')
@@ -2611,7 +2694,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 'user',
                 'recipe_batch',
                 'recipe_batch__recipe'
-            ).prefetch_related('photos', 'cookies').order_by('-created_at')
+            ).prefetch_related('photos', 'cookies', 'comments').order_by('-created_at')
         
         return queryset
     
@@ -3236,6 +3319,16 @@ class PostViewSet(viewsets.ModelViewSet):
         
         serializer = PostSerializer(post, context={'request': request})
         if created:
+            # Notification pour le propriétaire du post (sauf si c'est soi-même)
+            if post.user_id != user.id:
+                Notification.objects.create(
+                    user=post.user,
+                    notification_type='post_miam',
+                    title='Nouveau Miam !',
+                    message=f'{user.username} a mis un Miam sur votre publication.',
+                    related_user=user,
+                    related_post_id=post.id,
+                )
             return Response({
                 'message': 'Cookie sent successfully',
                 'post': serializer.data
@@ -3276,6 +3369,64 @@ class PostViewSet(viewsets.ModelViewSet):
         users = [c.user for c in cookies]
         serializer = UserLightSerializer(users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get', 'post'], url_path='comments')
+    def comments(self, request, pk=None):
+        """Liste des commentaires d'un post (GET) ou création d'un commentaire (POST)."""
+        post_qs = Post.objects.filter(is_published=True)
+        post = get_object_or_404(post_qs, pk=pk)
+
+        if request.method == 'GET':
+            comments = PostComment.objects.filter(post=post).select_related('user').order_by('created_at')
+            serializer = PostCommentSerializer(comments, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # POST
+        create_serializer = PostCommentCreateSerializer(
+            data=request.data,
+            context={'request': request, 'post': post}
+        )
+        if create_serializer.is_valid():
+            comment = create_serializer.save()
+            commenter = request.user
+            text = (comment.text or '').strip()
+
+            # 1. Notification au propriétaire du post (sauf si c'est le commentateur)
+            if post.user_id != commenter.id:
+                Notification.objects.create(
+                    user=post.user,
+                    notification_type='post_comment',
+                    title='Nouveau commentaire',
+                    message=f'{commenter.username} a commenté votre publication.',
+                    related_user=commenter,
+                    related_post_id=post.id,
+                )
+
+            # 2. Parser les @mentions et notifier chaque utilisateur mentionné
+            User = get_user_model()
+            mention_pattern = r'@([a-zA-Z0-9_]+)'
+            mentioned_usernames = set(re.findall(mention_pattern, text))
+            notified_user_ids = {post.user_id, commenter.id}  # Éviter doublons avec propriétaire et commentateur
+
+            for username in mentioned_usernames:
+                try:
+                    mentioned_user = User.objects.get(username__iexact=username)
+                    if mentioned_user.id not in notified_user_ids:
+                        Notification.objects.create(
+                            user=mentioned_user,
+                            notification_type='post_comment_mention',
+                            title='Vous êtes mentionné',
+                            message=f'{commenter.username} vous a mentionné dans un commentaire.',
+                            related_user=commenter,
+                            related_post_id=post.id,
+                        )
+                        notified_user_ids.add(mentioned_user.id)
+                except User.DoesNotExist:
+                    pass  # Username invalide, ignorer
+
+            serializer = PostCommentSerializer(comment, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(create_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ShoppingListViewSet(viewsets.ModelViewSet):
@@ -4310,12 +4461,12 @@ class CollectionViewSet(viewsets.ModelViewSet):
         collection = self.get_object()
         user = request.user
         
-        # Vérifier les permissions
+        # Vérifier les permissions : créateur OU membre collaborateur (si collection collaborative)
         is_owner = collection.owner == user
-        is_member = collection.members.filter(user=user).exists()
-        is_public = collection.is_public
-        
-        if not (is_owner or (is_member and collection.is_collaborative) or is_public):
+        is_collaborator = collection.members.filter(user=user, role='collaborator').exists()
+        can_add = is_owner or (collection.is_collaborative and is_collaborator)
+
+        if not can_add:
             return Response(
                 {'error': 'Vous n\'avez pas la permission d\'ajouter des recettes à cette collection'},
                 status=status.HTTP_403_FORBIDDEN
@@ -4483,20 +4634,78 @@ class CollectionViewSet(viewsets.ModelViewSet):
         
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def follow(self, request, pk=None):
+        """Suivre un livre de recettes (l'ajouter à "Mes livres")"""
+        collection = self.get_object()
+        user = request.user
+
+        if collection.owner == user:
+            return Response(
+                {'error': 'Vous possédez déjà ce livre'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not collection.is_public:
+            return Response(
+                {'error': 'Ce livre est privé'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        _, created = CollectionFollower.objects.get_or_create(
+            collection=collection,
+            user=user
+        )
+        serializer = self.get_serializer(collection)
+        return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def unfollow(self, request, pk=None):
+        """Ne plus suivre un livre de recettes"""
+        collection = self.get_object()
+        user = request.user
+
+        deleted, _ = CollectionFollower.objects.filter(
+            collection=collection,
+            user=user
+        ).delete()
+        serializer = self.get_serializer(collection)
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=False, methods=['get'])
     def my_collections(self, request):
-        """Récupérer les collections de l'utilisateur connecté"""
+        """Récupérer les collections de l'utilisateur : ses livres + livres suivis"""
         try:
-            collections = Collection.objects.filter(
+            from django.db.models import Prefetch
+            # Livres créés par l'utilisateur
+            owned = Collection.objects.filter(
                 owner=request.user
             ).select_related('owner').prefetch_related(
+                Prefetch('followers', CollectionFollower.objects.filter(user=request.user)),
                 'collection_recipes__recipe'
             ).annotate(
                 total_recipes=Count('collection_recipes', distinct=True),
                 last_activity=Max('collection_recipes__added_at')
-            ).order_by('-last_activity', '-updated_at')
-            
+            )
+            # Livres suivis (d'autres utilisateurs)
+            followed = Collection.objects.filter(
+                followers__user=request.user
+            ).select_related('owner').prefetch_related(
+                Prefetch('followers', CollectionFollower.objects.filter(user=request.user)),
+                'collection_recipes__recipe'
+            ).annotate(
+                total_recipes=Count('collection_recipes', distinct=True),
+                last_activity=Max('collection_recipes__added_at')
+            )
+
+            # Fusionner et dédupliquer (owned a priorité)
+            owned_ids = set(owned.values_list('id', flat=True))
+            followed_excluding_owned = followed.exclude(id__in=owned_ids)
+
+            collections = list(owned) + list(followed_excluding_owned)
+            # Trier par last_activity
+            collections.sort(key=lambda c: (c.last_activity or c.updated_at or c.created_at) or '', reverse=True)
+
             serializer = self.get_serializer(collections, many=True)
             return Response(serializer.data)
         except Exception as e:

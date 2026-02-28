@@ -10,11 +10,226 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from decouple import config
+from recipe_scrapers import SCRAPERS, scrape_html
 
 logger = logging.getLogger(__name__)
 
 # Timeout pour les requêtes HTTP
 REQUEST_TIMEOUT = 10
+
+
+RECIPE_SCRAPERS_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/121.0.0.0 Safari/537.36"
+)
+
+
+def _netloc_host(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ''
+    if host.startswith('www.'):
+        host = host[4:]
+    return host
+
+
+def _is_recipe_scrapers_supported(url: str) -> bool:
+    """
+    `recipe-scrapers` expose SCRAPERS (mapping domain->scraper class).
+    On accepte une correspondance exacte ou suffixe (sous-domaines).
+    """
+    host = _netloc_host(url)
+    if not host:
+        return False
+    for domain in SCRAPERS.keys():
+        d = (domain or '').lower()
+        if d.startswith('www.'):
+            d = d[4:]
+        if host == d or host.endswith('.' + d):
+            return True
+    return False
+
+
+def _parse_first_int(val: object) -> Optional[int]:
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    s = str(val).strip()
+    m = re.search(r'(\d+)', s)
+    return int(m.group(1)) if m else None
+
+
+def _normalize_multiline_steps(text: str) -> str:
+    """
+    Transforme une string d'instructions potentiellement multi-lignes en format
+    1. ..., 2. ... pour aider le parsing IA.
+    """
+    raw = (text or '').strip()
+    if not raw:
+        return ''
+    lines = [ln.strip() for ln in re.split(r'[\r\n]+', raw) if ln.strip()]
+    if len(lines) <= 1:
+        return raw
+    return '\n'.join([f"{i+1}. {ln}" for i, ln in enumerate(lines)])
+
+
+def extract_with_recipe_scrapers(url: str) -> Optional[Dict]:
+    """
+    Extraction via `recipe-scrapers` (HTML parsing). On fetch nous-mêmes le HTML
+    (headers, timeout) puis on appelle `scrape_html(..., wild_mode=True)` pour
+    maximiser les chances de support.
+    """
+    if not url or not url.startswith(('http://', 'https://')):
+        return None
+
+    # Si la lib ne supporte pas le domaine, `wild_mode=True` peut encore marcher
+    # (schema.org), mais c’est plus coûteux; on log uniquement.
+    supported = _is_recipe_scrapers_supported(url)
+    logger.info(
+        "[RecipeScrapers] Starting extraction (supported=%s) for url=%s",
+        supported,
+        url,
+    )
+
+    try:
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={
+                'User-Agent': RECIPE_SCRAPERS_UA,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+        )
+        response.raise_for_status()
+        html = response.text or ''
+        if not html.strip():
+            return None
+
+        scraper = scrape_html(html, url, wild_mode=True)
+
+        # Champs essentiels
+        title = (scraper.title() or '').strip()
+        image = ''
+        try:
+            image = (scraper.image() or '').strip()
+        except Exception:
+            image = ''
+
+        ingredients_list = []
+        try:
+            ingredients_list = scraper.ingredients() or []
+        except Exception:
+            ingredients_list = []
+        ingredients_lines = []
+        for ing in ingredients_list:
+            s = str(ing).strip()
+            if s:
+                ingredients_lines.append(f"- {s}" if not s.startswith('-') else s)
+        ingredients_text = '\n'.join(ingredients_lines).strip()
+
+        instructions_raw = ''
+        try:
+            instructions_raw = scraper.instructions() or ''
+        except Exception:
+            instructions_raw = ''
+        instructions_text = _normalize_multiline_steps(instructions_raw)
+
+        # Champs optionnels
+        description = ''
+        if hasattr(scraper, 'description'):
+            try:
+                description = (scraper.description() or '').strip()  # type: ignore[operator]
+            except Exception:
+                description = ''
+
+        servings = None
+        if hasattr(scraper, 'yields'):
+            try:
+                servings = _parse_first_int(scraper.yields())  # type: ignore[operator]
+            except Exception:
+                servings = None
+
+        # Temps (en minutes si possible)
+        prep_time = None
+        cook_time = None
+        total_time = None
+        if hasattr(scraper, 'prep_time'):
+            try:
+                prep_time = _parse_first_int(scraper.prep_time())  # type: ignore[operator]
+            except Exception:
+                prep_time = None
+        if hasattr(scraper, 'cook_time'):
+            try:
+                cook_time = _parse_first_int(scraper.cook_time())  # type: ignore[operator]
+            except Exception:
+                cook_time = None
+        if hasattr(scraper, 'total_time'):
+            try:
+                total_time = _parse_first_int(scraper.total_time())  # type: ignore[operator]
+            except Exception:
+                total_time = None
+
+        # Si on n'a que total_time, on le met en cook_time (fallback) pour rester compatible
+        if cook_time is None and total_time is not None:
+            cook_time = total_time
+
+        extracted = {
+            'title': title,
+            'description': description,
+            'ingredients_text': ingredients_text,
+            'instructions_text': instructions_text,
+            'prep_time': prep_time,
+            'cook_time': cook_time,
+            'servings': servings,
+            'image_path': image,
+        }
+
+        # On considère l'extraction valable si on a au moins un titre et de la matière
+        if extracted.get('title') and (ingredients_text or instructions_text):
+            return extracted
+        if ingredients_text or instructions_text:
+            # Titre manquant parfois: on laisse passer, l'IA peut en déduire un titre minimal
+            return extracted
+
+        return None
+    except Exception as e:
+        logger.warning("[RecipeScrapers] Extraction failed for url=%s: %s", url, e)
+        return None
+
+
+def count_ingredients_lines(ingredients_text: str) -> int:
+    lines = []
+    for ln in (ingredients_text or '').splitlines():
+        cleaned = ln.strip()
+        cleaned = re.sub(r'^[-*•\s]+', '', cleaned).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return len(lines)
+
+
+def is_ingredients_suspicious(ingredients_text: str) -> tuple[bool, str]:
+    """
+    Heuristiques minimales et conservatrices.
+    Objectif: bloquer les imports quand on n'a pas une liste d'ingrédients exploitable.
+    """
+    min_lines = int(config('RECIPE_IMPORT_MIN_INGREDIENT_LINES', default=2))
+    min_chars = int(config('RECIPE_IMPORT_MIN_INGREDIENT_CHARS', default=10))
+
+    txt = (ingredients_text or '').strip()
+    if not txt:
+        return True, "Aucun ingrédient extrait."
+
+    if len(txt) < min_chars:
+        return True, f"Texte d'ingrédients trop court ({len(txt)} caractères)."
+
+    n = count_ingredients_lines(txt)
+    if n < min_lines:
+        return True, f"Nombre d'ingrédients trop faible ({n} < {min_lines})."
+
+    return False, ""
 
 
 def detect_source_type(url: str) -> Optional[str]:
@@ -675,18 +890,33 @@ def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
         logger.info("[RecipeImporter] Trying extractor=bergamot")
         recipe_data = extract_bergamot_recipe(url)
         used_source = 'bergamot' if recipe_data else None
-    elif source_type == 'marmiton':
-        logger.info("[RecipeImporter] Trying extractor=marmiton")
-        recipe_data = extract_marmiton_recipe(url)
-        used_source = 'marmiton' if recipe_data else None
-    elif source_type == 'cuisineaz':
-        logger.info("[RecipeImporter] Trying extractor=cuisineaz")
-        recipe_data = extract_cuisineaz_recipe(url)
-        used_source = 'cuisineaz' if recipe_data else None
-    elif source_type == 'jow':
-        logger.info("[RecipeImporter] Trying extractor=jow")
-        recipe_data = extract_jow_recipe(url)
-        used_source = 'jow' if recipe_data else None
+    else:
+        # Tous les autres sites passent d'abord par recipe-scrapers
+        logger.info("[RecipeImporter] Trying extractor=recipe-scrapers")
+        recipe_data = extract_with_recipe_scrapers(url)
+        # Si la lib renvoie un résultat mais sans ingrédients / instructions, on tente nos fallbacks
+        if recipe_data and not (recipe_data.get('ingredients_text') and recipe_data.get('instructions_text')):
+            logger.warning(
+                "[RecipeImporter] recipe-scrapers returned partial data (has_ingredients=%s, has_instructions=%s); falling back",
+                bool(recipe_data.get('ingredients_text')),
+                bool(recipe_data.get('instructions_text')),
+            )
+            recipe_data = None
+        used_source = 'recipe-scrapers' if recipe_data else None
+
+        # Fallback legacy extractors (pour les domaines historiques)
+        if not recipe_data and source_type == 'marmiton':
+            logger.info("[RecipeImporter] Fallback extractor=marmiton_legacy")
+            recipe_data = extract_marmiton_recipe(url)
+            used_source = 'marmiton' if recipe_data else None
+        if not recipe_data and source_type == 'cuisineaz':
+            logger.info("[RecipeImporter] Fallback extractor=cuisineaz_legacy")
+            recipe_data = extract_cuisineaz_recipe(url)
+            used_source = 'cuisineaz' if recipe_data else None
+        if not recipe_data and source_type == 'jow':
+            logger.info("[RecipeImporter] Fallback extractor=jow_legacy")
+            recipe_data = extract_jow_recipe(url)
+            used_source = 'jow' if recipe_data else None
     
     # Fallback Jina (scraping générique)
     if not recipe_data:

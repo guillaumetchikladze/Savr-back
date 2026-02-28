@@ -374,3 +374,32 @@ def complices_view(request):
     serializer = UserSerializer(complices, many=True, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def users_search_view(request):
+    """Recherche d'utilisateurs pour autocomplete @mention (retourne id, username, avatar_url)"""
+    from recipes.serializers import UserLightSerializer
+    query = (request.query_params.get('q') or '').strip()
+    if len(query) < 2:
+        return Response([], status=status.HTTP_200_OK)
+    users = User.objects.filter(
+        Q(username__icontains=query) | Q(username__istartswith=query)
+    ).exclude(id=request.user.id).order_by('username')[:15]
+    serializer = UserLightSerializer(users, many=True, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_by_username_view(request):
+    """Récupérer un utilisateur par son username exact (pour les liens @mention)"""
+    username = (request.query_params.get('username') or '').strip()
+    if not username:
+        return Response({'error': 'username requis'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        user = User.objects.get(username__iexact=username)
+        return Response({'id': user.id, 'username': user.username}, status=status.HTTP_200_OK)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+

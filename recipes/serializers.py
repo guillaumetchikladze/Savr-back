@@ -15,6 +15,7 @@ from .models import (
     Timer,
     Post,
     PostPhoto,
+    PostComment,
     ShoppingList,
     ShoppingListItem,
     ShoppingListInvitation,
@@ -319,12 +320,20 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
 class RecipeLightSerializer(serializers.ModelSerializer):
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     
     class Meta:
         model = Recipe
-        fields = ['id', 'title', 'image_path', 'image_url', 'meal_type', 'meal_type_display', 'difficulty', 'difficulty_display', 'prep_time', 'cook_time', 'servings', 'is_author']
+        fields = [
+            'id', 'title', 'image_path', 'image_url', 'meal_type', 'meal_type_display',
+            'difficulty', 'difficulty_display', 'prep_time', 'cook_time', 'servings',
+            'source_type', 'source_type_display', 'import_source_url',
+            'created_by', 'created_by_username', 'created_at',
+            'is_author'
+        ]
     
     def get_image_url(self, obj):
         return obj.image_url
@@ -951,6 +960,38 @@ class MealPlanListSerializer(serializers.ModelSerializer):
             else:
                 dates.add(obj.date.isoformat())
         return sorted(list(dates)) if dates else [obj.date.isoformat()]
+
+
+class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
+    """
+    Serializer ultra-léger pour meal_plan dans la liste d'invitations.
+    Pas de recipes, participants, ni SerializerMethodField coûteux.
+    """
+    meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
+    meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    user = UserLightSerializer(read_only=True)
+
+    class Meta:
+        model = MealPlan
+        fields = ['id', 'date', 'meal_time', 'meal_time_display', 'meal_type', 'meal_type_display', 'user']
+
+
+class MealInvitationListSerializer(serializers.ModelSerializer):
+    """
+    Serializer léger pour la liste des invitations (GET /meal-invitations/).
+    Évite MealPlanSerializer (recettes, participants, etc.) et UserSerializer (is_following, etc.).
+    """
+    inviter = UserLightSerializer(read_only=True)
+    invitee = UserLightSerializer(read_only=True)
+    meal_plan = MealPlanLightForInvitationSerializer(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = MealInvitation
+        fields = [
+            'id', 'inviter', 'invitee', 'meal_plan', 'status', 'status_display',
+            'created_at', 'updated_at',
+        ]
 
 
 class MealInvitationSerializer(serializers.ModelSerializer):
@@ -1664,6 +1705,29 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
             return self.get_image_url(obj)
 
 
+class PostCommentSerializer(serializers.ModelSerializer):
+    """Serializer pour les commentaires sur un post"""
+    user = UserLightSerializer(read_only=True)
+
+    class Meta:
+        model = PostComment
+        fields = ['id', 'user', 'text', 'created_at']
+        read_only_fields = ['user', 'created_at']
+
+
+class PostCommentCreateSerializer(serializers.ModelSerializer):
+    """Serializer pour créer un commentaire"""
+
+    class Meta:
+        model = PostComment
+        fields = ['text']
+
+    def create(self, validated_data):
+        validated_data['post'] = self.context['post']
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
 class PostListSerializer(serializers.ModelSerializer):
     """Serializer minimal pour la liste des posts (feed)."""
     user = UserLightSerializer(read_only=True)
@@ -1672,6 +1736,7 @@ class PostListSerializer(serializers.ModelSerializer):
     recipe_batch = serializers.SerializerMethodField()
     cookies_count = serializers.SerializerMethodField()
     has_cookie_from_user = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Post
@@ -1679,7 +1744,7 @@ class PostListSerializer(serializers.ModelSerializer):
             'id', 'user',
             'comment', 'is_published',
             'photos',
-            'cookies_count', 'has_cookie_from_user',
+            'cookies_count', 'has_cookie_from_user', 'comments_count',
             'recipe', 'recipe_batch',
             'created_at',
         ]
@@ -1769,6 +1834,11 @@ class PostListSerializer(serializers.ModelSerializer):
         if hasattr(obj, '_prefetched_objects_cache') and 'cookies' in obj._prefetched_objects_cache:
             return any(cookie.user_id == request.user.id for cookie in obj._prefetched_objects_cache['cookies'])
         return obj.cookies.filter(user=request.user).exists()
+
+    def get_comments_count(self, obj):
+        if hasattr(obj, '_prefetched_objects_cache') and 'comments' in obj._prefetched_objects_cache:
+            return len(obj._prefetched_objects_cache['comments'])
+        return obj.comments.count()
 
 
 class PostCreateUpdateSerializer(serializers.ModelSerializer):
@@ -2053,15 +2123,22 @@ class CollectionSerializer(serializers.ModelSerializer):
     owner = UserLightSerializer(read_only=True)
     recipes_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
-    
+    is_following = serializers.SerializerMethodField()
+
     class Meta:
         model = Collection
         fields = [
             'id', 'name', 'description', 'owner', 'is_public', 'is_collaborative',
-            'cover_image_path', 'cover_image_url', 'recipes_count',
+            'cover_image_path', 'cover_image_url', 'recipes_count', 'is_following',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'created_at', 'updated_at']
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return obj.followers.filter(user=request.user).exists()
     
     def get_recipes_count(self, obj):
         """Compter les recettes de manière optimisée"""
@@ -2099,15 +2176,29 @@ class CollectionListSerializer(serializers.ModelSerializer):
     cover_image_url = serializers.SerializerMethodField()
     collection_recipes = serializers.SerializerMethodField()
     last_activity_at = serializers.SerializerMethodField()
-    
+    is_owner = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
+
     class Meta:
         model = Collection
         fields = [
             'id', 'name', 'description', 'owner', 'is_public', 'is_collaborative',
             'cover_image_path', 'cover_image_url', 'recipes_count', 'collection_recipes',
-            'last_activity_at', 'created_at', 'updated_at'
+            'last_activity_at', 'is_owner', 'is_following', 'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'created_at', 'updated_at']
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return obj.owner_id == request.user.id
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return obj.followers.filter(user=request.user).exists()
     
     def get_recipes_count(self, obj):
         """Compter les recettes"""
@@ -2292,7 +2383,82 @@ class RecipeFormalizeSerializer(serializers.Serializer):
 
 class RecipeImportRequestSerializer(serializers.ModelSerializer):
     recipe = RecipeSerializer(read_only=True)
+    recipe_id = serializers.SerializerMethodField()
+    import_progress = serializers.SerializerMethodField()
+    import_extractor = serializers.SerializerMethodField()
+    url = serializers.SerializerMethodField()
 
     class Meta:
         model = RecipeImportRequest
-        fields = ['id', 'status', 'recipe', 'error_message', 'created_at', 'updated_at']
+        fields = [
+            'id',
+            'status',
+            'recipe',
+            'recipe_id',
+            'url',
+            'import_extractor',
+            'import_progress',
+            'error_message',
+            'created_at',
+            'updated_at',
+        ]
+
+    def get_recipe_id(self, obj):
+        return obj.recipe_id
+
+    def get_import_progress(self, obj):
+        payload = obj.payload or {}
+        return payload.get('import_progress')
+
+    def get_import_extractor(self, obj):
+        payload = obj.payload or {}
+        return payload.get('import_extractor')
+
+    def get_url(self, obj):
+        payload = obj.payload or {}
+        return payload.get('url') or payload.get('import_source_url')
+
+
+class RecipeImportRequestLightSerializer(serializers.ModelSerializer):
+    """
+    Version allégée pour le polling (bulle + écran imports).
+    Ne retourne pas la recette complète pour limiter la taille du payload.
+    """
+    recipe_id = serializers.SerializerMethodField()
+    recipe_title = serializers.SerializerMethodField()
+    import_progress = serializers.SerializerMethodField()
+    import_extractor = serializers.SerializerMethodField()
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecipeImportRequest
+        fields = [
+            'id',
+            'status',
+            'recipe_id',
+            'recipe_title',
+            'url',
+            'import_extractor',
+            'import_progress',
+            'error_message',
+            'created_at',
+            'updated_at',
+        ]
+
+    def get_recipe_id(self, obj):
+        return obj.recipe_id
+
+    def get_recipe_title(self, obj):
+        return getattr(obj.recipe, 'title', None)
+
+    def get_import_progress(self, obj):
+        payload = obj.payload or {}
+        return payload.get('import_progress')
+
+    def get_import_extractor(self, obj):
+        payload = obj.payload or {}
+        return payload.get('import_extractor')
+
+    def get_url(self, obj):
+        payload = obj.payload or {}
+        return payload.get('url') or payload.get('import_source_url')

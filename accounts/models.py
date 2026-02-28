@@ -79,6 +79,9 @@ class Notification(models.Model):
         ('photo_during_cooking', 'Photo pendant la cuisine'),
         ('photo_after_cooking', 'Photo après la cuisine'),
         ('photo_at_meal_time', 'Photo à l\'heure du repas'),
+        ('post_miam', 'Miam sur votre post'),
+        ('post_comment', 'Commentaire sur votre post'),
+        ('post_comment_mention', 'Vous êtes mentionné dans un commentaire'),
     ]
     
     user = models.ForeignKey(
@@ -103,6 +106,7 @@ class Notification(models.Model):
         verbose_name='Utilisateur lié'
     )
     is_read = models.BooleanField(default=False, verbose_name='Lu')
+    related_post_id = models.IntegerField(null=True, blank=True, verbose_name='ID du post lié')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Créé le')
     
     class Meta:

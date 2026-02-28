@@ -9,6 +9,7 @@ urlpatterns = [
     path('profile/upload-avatar/', views.upload_avatar_view, name='upload_avatar'),
     path('profile/confirm-avatar-upload/', views.confirm_avatar_upload_view, name='confirm_avatar_upload'),
     path('search/', views.search_view, name='search'),
+    path('users/by-username/', views.user_by_username_view, name='user_by_username'),
     path('users/<int:user_id>/', views.user_detail_view, name='user_detail'),
     path('users/<int:user_id>/follow/', views.follow_user_view, name='follow_user'),
     path('notifications/', views.notifications_view, name='notifications'),
@@ -16,6 +17,7 @@ urlpatterns = [
     path('notifications/<int:notification_id>/read/', views.mark_notification_read_view, name='mark_notification_read'),
     path('notifications/read-all/', views.mark_all_notifications_read_view, name='mark_all_notifications_read'),
     path('complices/', views.complices_view, name='complices'),
+    path('users/search/', views.users_search_view, name='users_search'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
 

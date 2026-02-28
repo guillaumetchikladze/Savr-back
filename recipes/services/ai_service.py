@@ -9,6 +9,7 @@ import time
 from decimal import Decimal
 from typing import Literal, Optional, cast
 from decouple import config
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UserError as PydanticAIUserError, UnexpectedModelBehavior
 from pydantic_ai.models.google import GoogleModel, GoogleModelName
@@ -19,8 +20,9 @@ from .pydantic_models import RecipeFormalized
 logger = logging.getLogger(__name__)
 
 # Configuration du modèle IA
-AI_MODEL = config('AI_MODEL', default='gemini-2.5-flash')
+AI_MODEL = config('AI_MODEL', default='gemini-3-flash-preview')
 AI_API_KEY = config('AI_API_KEY', default='')
+print(AI_API_KEY)
 GoogleProvider = Literal['google-gla', 'google-vertex', 'gateway']
 
 DEFAULT_GOOGLE_PROVIDER: GoogleProvider = 'google-gla'
@@ -47,6 +49,9 @@ def sanitize_model_string(name: str) -> str:
 def set_google_env_from_api_key():
     """S'assure que les variables attendues par google-genai / GeminiModel sont renseignées"""
     if AI_API_KEY:
+        # `pydantic-ai` (Google GLA provider) attend GEMINI_API_KEY.
+        # D'autres libs (google-genai) utilisent souvent GOOGLE_API_KEY.
+        os.environ.setdefault('GEMINI_API_KEY', AI_API_KEY)
         os.environ.setdefault('GOOGLE_API_KEY', AI_API_KEY)
 
 
@@ -159,6 +164,7 @@ Ton rôle est de formaliser des recettes brutes en données structurées.
 
 Instructions importantes:
 1. Extrais et structure les ingrédients depuis le texte libre (séparé par sauts de ligne)
+   - IMPORTANT: ne supprime jamais un ingrédient. Chaque ligne d'ingrédient fournie en entrée doit être représentée dans `recipe_ingredients` (au pire en mettant une quantité approximative).
    - Identifie le nom de l'ingrédient (normalise-le)
    - Extrais la quantité (décimal)
    - Identifie l'unité (g, kg, ml, l, tsp, tbsp, cup, piece, pinch, clove)
@@ -206,6 +212,97 @@ Sois précis et structuré dans tes réponses."""
                 tool_def.parameters_json_schema = flatten_schema(copy.deepcopy(tool_def.parameters_json_schema))
     
     return agent
+
+
+class IngredientNormalizationItem(BaseModel):
+    original: str = Field(..., description="Nom d'ingrédient en entrée (exactement tel que reçu)")
+    normalized: str = Field(..., description="Nom normalisé/canonique, sans quantité ni unité")
+
+
+class IngredientNormalizationResult(BaseModel):
+    items: list[IngredientNormalizationItem] = Field(
+        default_factory=list,
+        description="Liste des ingrédients normalisés (bijection: 1 entrée -> 1 sortie)",
+    )
+
+
+def create_ingredient_normalization_agent() -> Agent:
+    """
+    Agent dédié: normalise uniquement les noms d'ingrédients, sans changer la liste.
+    """
+    if not AI_API_KEY:
+        raise ValueError("AI_API_KEY doit être configuré dans .env")
+
+    model = resolve_model(AI_MODEL)
+
+    agent = Agent(
+        model=model,
+        output_type=IngredientNormalizationResult,
+        system_prompt="""Tu es un expert en normalisation d'ingrédients pour une application de recettes.
+
+Objectif:
+- Normaliser uniquement les NOMS d'ingrédients.
+- IMPORTANT: ne supprime rien, ne fusionne pas les éléments, et ne ré-ordonne pas.
+- Pour chaque `original`, retourne exactement un `normalized`.
+
+Règles:
+- Retire quantités, unités, parenthèses et qualificatifs inutiles.
+- Garde le nom le plus commun en français (singulier/pluriel cohérent).
+- Exemple: "2 oignons jaunes" -> normalized="oignon".
+- Exemple: "huile d'olive (pour la poêle)" -> normalized="huile d'olive".
+
+Retourne STRICTEMENT le schéma attendu.""",
+    )
+
+    agent_model = agent.model
+    if isinstance(agent_model, GeminiModel):
+        object_def = agent._output_schema.object_def  # type: ignore[attr-defined]
+        original_schema = copy.deepcopy(object_def.json_schema)
+        object_def.json_schema = flatten_schema(original_schema)
+
+        toolset = getattr(agent._output_schema, 'toolset', None)  # type: ignore[attr-defined]
+        if toolset and hasattr(toolset, '_tool_defs'):
+            for tool_def in toolset._tool_defs:
+                tool_def.parameters_json_schema = flatten_schema(copy.deepcopy(tool_def.parameters_json_schema))
+
+    return agent
+
+
+async def normalize_ingredient_names(names: list[str]) -> dict[str, str]:
+    names_clean = [n.strip() for n in (names or []) if (n or '').strip()]
+    if not names_clean:
+        return {}
+
+    agent = create_ingredient_normalization_agent()
+    prompt = "\n".join(
+        [
+            "Voici une liste d'ingrédients (noms seulement).",
+            "Retourne un mapping 1:1 sans perdre d'éléments.",
+            "",
+            "Ingrédients:",
+            *[f"- {n}" for n in names_clean],
+        ]
+    )
+
+    try:
+        result = await agent.run(prompt)
+        out: IngredientNormalizationResult = result.output
+        mapping: dict[str, str] = {}
+        for item in out.items:
+            orig = (item.original or '').strip()
+            norm = (item.normalized or '').strip()
+            if not orig:
+                continue
+            mapping[orig] = norm or orig
+
+        # Garantir l'identité pour les manquants
+        for n in names_clean:
+            mapping.setdefault(n, n)
+
+        return mapping
+    except Exception as e:
+        logger.warning("[AI] Ingredient normalization failed, fallback to original names: %s", e)
+        return {n: n for n in names_clean}
 
 
 async def formalize_recipe(
@@ -303,6 +400,22 @@ async def formalize_recipe(
                     len(formalized_recipe.steps)
                 )
                 
+                # Post-traitement: normaliser les noms d'ingrédients via un agent dédié (sans perte)
+                all_names = set()
+                for ri in formalized_recipe.recipe_ingredients:
+                    all_names.add(ri.ingredient_name)
+                for step in formalized_recipe.steps:
+                    for si in step.step_ingredients:
+                        all_names.add(si.ingredient_name)
+
+                if all_names:
+                    mapping = await normalize_ingredient_names(sorted(all_names))
+                    for ri in formalized_recipe.recipe_ingredients:
+                        ri.ingredient_name = mapping.get(ri.ingredient_name, ri.ingredient_name)
+                    for step in formalized_recipe.steps:
+                        for si in step.step_ingredients:
+                            si.ingredient_name = mapping.get(si.ingredient_name, si.ingredient_name)
+
                 return formalized_recipe
                 
             except UnexpectedModelBehavior as e:

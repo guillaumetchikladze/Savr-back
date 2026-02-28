@@ -19,6 +19,7 @@ requests>=2.32.3,<3.0.0
 pgvector==0.3.4
 beautifulsoup4==4.12.3
 lxml==5.3.0
+recipe-scrapers==15.11.0
 nest-asyncio==1.6.0
 sentry-sdk[django]==2.20.0
 

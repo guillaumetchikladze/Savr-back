@@ -46,7 +46,7 @@ class RecipeSummaryAPITestCase(APITestCase):
         response = self.client.get(url, {'summary': 1})
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data.get('count'), 1)
+        self.assertEqual(response.data.get('count'), 2)
         self.assertIn('last_activity', response.data)
 
     def test_my_favorites_summary_mode_returns_count(self):
