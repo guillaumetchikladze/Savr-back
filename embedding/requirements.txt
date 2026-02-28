@@ -1,0 +1,18 @@
+# Framework web
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+
+# Configuration
+python-decouple==3.8
+
+# Modèle d'embedding
+sentence-transformers==3.3.1
+
+# Dépendances du modèle
+torch==2.5.1
+numpy==2.1.1
+
+# Validation des données
+pydantic==2.9.2
+
