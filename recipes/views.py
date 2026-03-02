@@ -1142,7 +1142,10 @@ class RecipeViewSet(viewsets.ModelViewSet):
     def import_from_url(self, request):
         """
         Importe une recette depuis une URL externe (Bergamot, Marmiton, etc.)
-        L'extraction et la formalisation sont faites de manière asynchrone via Celery
+        L'extraction et la formalisation sont faites de manière asynchrone via Celery.
+
+        Avant de lancer un nouvel import, on vérifie si une recette importée depuis
+        la même URL (normalisée) existe déjà et est accessible pour l'utilisateur.
         """
         logger = logging.getLogger(__name__)
         url = request.data.get('url', '').strip()
@@ -1151,7 +1154,41 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 {'error': 'URL requise'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
+        from .utils import canonicalize_import_url
+
+        # Normaliser l'URL pour la déduplication
+        canonical_url = canonicalize_import_url(url)
+
+        # Gérer les anciennes valeurs import_source_url qui peuvent contenir ou non un slash final
+        candidate_urls = {canonical_url, url}
+        if canonical_url.endswith('/'):
+            candidate_urls.add(canonical_url.rstrip('/'))
+        else:
+            candidate_urls.add(canonical_url + '/')
+
+        # Chercher une recette déjà importée depuis cette URL, accessible par l'utilisateur
+        existing_recipe = (
+            Recipe.objects.filter(
+                Q(is_public=True) | Q(created_by=request.user),
+            )
+            .filter(import_source_url__in=list(candidate_urls))
+            .order_by('-created_at')
+            .first()
+        )
+
+        if existing_recipe:
+            from .serializers import RecipeDetailSerializer
+            serializer = RecipeDetailSerializer(existing_recipe, context={'request': request})
+            return Response(
+                {
+                    'already_imported': True,
+                    'recipe_id': existing_recipe.id,
+                    'recipe': serializer.data,
+                },
+                status=status.HTTP_200_OK
+            )
+
         try:
             # Créer une demande d'import avec l'URL (l'extraction sera faite par Celery)
             from .models import RecipeImportRequest
@@ -1163,19 +1200,19 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 },
                 status=RecipeImportRequest.STATUS_PENDING
             )
-            
+
             # Lancer la tâche Celery qui fait l'extraction + formalisation
             from .tasks import process_recipe_import_from_url
             task = process_recipe_import_from_url.delay(str(import_request.id))
             import_request.task_id = task.id
             import_request.save(update_fields=['task_id'])
-            
+
             logger.info(
                 "[RecipeImportURL] Import depuis %s - request_id=%s",
                 url,
                 import_request.id
             )
-            
+
             return Response(
                 {
                     'request_id': import_request.id,
@@ -1183,7 +1220,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_202_ACCEPTED
             )
-            
+
         except Exception as e:
             logger.error(f"Erreur lors de la soumission de l'import depuis URL: {e}", exc_info=True)
             return Response(

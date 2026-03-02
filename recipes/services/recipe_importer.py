@@ -1011,6 +1011,9 @@ def extract_with_jina(url: str) -> Optional[Dict]:
         return None
 
 
+from ..utils import canonicalize_import_url
+
+
 def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
     """
     Importe une recette depuis une URL
@@ -1078,7 +1081,9 @@ def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
             used_source = used_source or 'generic'
     
     if recipe_data:
-        recipe_data['import_source_url'] = url
+        # Stocker la version canonique de l'URL pour faciliter la déduplication
+        canonical_url = canonicalize_import_url(url)
+        recipe_data['import_source_url'] = canonical_url
         return recipe_data, used_source or source_type or 'generic'
     
     return None, source_type

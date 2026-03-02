@@ -10,6 +10,7 @@ from recipes.services.recipe_importer import (
     extract_instagram_recipe,
     InstagramImportError,
 )
+from recipes.utils import canonicalize_import_url
 from recipes.tasks import process_recipe_import_from_url
 
 
@@ -33,6 +34,26 @@ class RecipeImportFromUrlTests(APITestCase):
             password="password123",
         )
         self.client.force_authenticate(self.user)
+
+    def _create_imported_recipe(self, url: str, is_public: bool = True, source_type: str = "imported"):
+        """
+        Helper pour créer une recette importée avec import_source_url canonique.
+        """
+        canonical = canonicalize_import_url(url)
+        return Recipe.objects.create(
+            title="Déjà importée",
+            description="",
+            steps_summary="",
+            meal_type="lunch",
+            difficulty="easy",
+            prep_time=0,
+            cook_time=0,
+            servings=1,
+            created_by=self.user,
+            source_type=source_type,
+            is_public=is_public,
+            import_source_url=canonical,
+        )
 
     def test_is_ingredients_suspicious_flags_empty(self):
         suspicious, reason = is_ingredients_suspicious("")
@@ -143,4 +164,122 @@ class RecipeImportFromUrlTests(APITestCase):
         self.assertEqual(req.payload.get("import_extractor"), "recipe-scrapers")
         self.assertEqual(req.payload.get("import_progress", {}).get("step"), "DONE")
         self.assertEqual(req.payload.get("import_progress", {}).get("percent"), 100)
+
+    def test_canonicalize_import_url_normalizes_basic_parts(self):
+        url = "HTTPS://Example.com/Recette/Test/?b=2&a=1&utm_source=newsletter#section"
+        canonical = canonicalize_import_url(url)
+        # Schéma et host en minuscules, fragment supprimé, utm_* supprimé, query triée
+        self.assertEqual(
+            canonical,
+            "https://example.com/Recette/Test?a=1&b=2",
+        )
+
+    def test_canonicalize_import_url_keeps_business_params(self):
+        url = "https://example.com/recipe?id=123&recipeId=456&utm_medium=email"
+        canonical = canonicalize_import_url(url)
+        # Les paramètres métier doivent rester présents
+        self.assertEqual(
+            canonical,
+            "https://example.com/recipe?id=123&recipeId=456",
+        )
+
+    def test_canonicalize_import_url_strips_tracking_ids(self):
+        url = "https://example.com/recipe?gclid=test123&fbclid=abc&utm_campaign=x"
+        canonical = canonicalize_import_url(url)
+        # Tous les paramètres de tracking doivent être supprimés
+        self.assertEqual(
+            canonical,
+            "https://example.com/recipe",
+        )
+
+    def test_canonicalize_instagram_reel_and_post_are_equal(self):
+        url_reel = "https://www.instagram.com/reel/DUJNIgZjKQr/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ=="
+        url_post = "https://www.instagram.com/p/DUJNIgZjKQr/"
+
+        canonical_reel = canonicalize_import_url(url_reel)
+        canonical_post = canonicalize_import_url(url_post)
+
+        self.assertEqual(canonical_reel, canonical_post)
+
+    def test_import_from_url_sets_canonical_import_source_url(self):
+        url = "https://example.com/recipe?id=123&utm_source=news"
+
+        with patch("recipes.services.recipe_importer.extract_with_recipe_scrapers") as scrapers_mock:
+            scrapers_mock.return_value = dict(SAMPLE_RECIPE)
+            data, used = import_recipe_from_url(url)
+
+        self.assertIsNotNone(data)
+        self.assertEqual(used, "recipe-scrapers")
+        # import_source_url doit être la version canonique
+        self.assertEqual(
+            data.get("import_source_url"),
+            canonicalize_import_url(url),
+        )
+
+    def test_import_from_url_view_returns_existing_recipe_when_already_imported(self):
+        """
+        Si une recette importée existe déjà pour cette URL (normalisée) et est accessible,
+        la vue doit renvoyer directement cette recette sans créer de RecipeImportRequest.
+        """
+        from recipes.models import RecipeImportRequest
+
+        url = "https://example.com/recipe?id=123&utm_source=news"
+        recipe = self._create_imported_recipe(url, is_public=True)
+
+        response = self.client.post(
+            "/api/recipes/import_from_url/",
+            {"url": url},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get("already_imported"))
+        self.assertEqual(data.get("recipe_id"), recipe.id)
+        self.assertIn("recipe", data)
+
+        # Vérifier qu'aucune nouvelle demande d'import n'a été créée
+        self.assertEqual(RecipeImportRequest.objects.count(), 0)
+
+    def test_import_from_url_view_ignores_tracking_params_for_deduplication(self):
+        """
+        Deux URLs qui ne diffèrent que par des paramètres de tracking
+        doivent pointer vers la même recette importée.
+        """
+        url_original = "https://example.com/recipe?id=123"
+        url_with_tracking = "https://example.com/recipe?id=123&utm_source=newsletter&utm_medium=email"
+
+        recipe = self._create_imported_recipe(url_original, is_public=True)
+
+        response = self.client.post(
+            "/api/recipes/import_from_url/",
+            {"url": url_with_tracking},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get("already_imported"))
+        self.assertEqual(data.get("recipe_id"), recipe.id)
+
+    def test_import_from_url_view_deduplicates_even_for_instagram_source_type(self):
+        """
+        La déduplication ne doit pas dépendre de source_type ('instagram', 'marmiton', etc.).
+        """
+        from recipes.models import RecipeImportRequest
+
+        url = "https://www.instagram.com/p/DUJNIgZjKQr/"
+        recipe = self._create_imported_recipe(url, is_public=True, source_type="instagram")
+
+        response = self.client.post(
+            "/api/recipes/import_from_url/",
+            {"url": url},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get("already_imported"))
+        self.assertEqual(data.get("recipe_id"), recipe.id)
+        self.assertEqual(RecipeImportRequest.objects.count(), 0)
 

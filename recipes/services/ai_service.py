@@ -190,6 +190,8 @@ Instructions importantes:
    - prep_time: temps de préparation en minutes (extrait ou calculé)
    - cook_time: temps de cuisson en minutes (extrait ou calculé)
    - servings: nombre de portions (extrait ou default 4)
+     - Si le texte dit "pour 15 crêpes" ou "donne 24 cookies", estime un nombre de personnes réaliste (par ex. 4 personnes) en te basant sur les quantités totales et les usages habituels.
+     - Si le texte dit explicitement "pour 4 personnes", utilise ce nombre tel quel.
 
 5. Génère un résumé des étapes (steps_summary)
    - 2-3 phrases concises résumant les étapes principales
