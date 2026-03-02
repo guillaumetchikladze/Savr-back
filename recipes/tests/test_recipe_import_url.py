@@ -4,7 +4,12 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from recipes.models import Recipe, RecipeImportRequest
-from recipes.services.recipe_importer import import_recipe_from_url, is_ingredients_suspicious
+from recipes.services.recipe_importer import (
+    import_recipe_from_url,
+    is_ingredients_suspicious,
+    extract_instagram_recipe,
+    InstagramImportError,
+)
 from recipes.tasks import process_recipe_import_from_url
 
 
@@ -33,6 +38,13 @@ class RecipeImportFromUrlTests(APITestCase):
         suspicious, reason = is_ingredients_suspicious("")
         self.assertTrue(suspicious)
         self.assertIn("Aucun ingrédient", reason)
+
+    def test_extract_instagram_recipe_without_token_raises(self):
+        # On ne teste ici que le comportement de garde-fou sur l'absence de token,
+        # sans appeler réellement Apify.
+        with self.assertRaises(InstagramImportError) as ctx:
+            extract_instagram_recipe("https://www.instagram.com/p/DTQdIJoDJRI/")
+        self.assertEqual(ctx.exception.code, "apify_not_configured")
 
     @patch("recipes.services.recipe_importer.extract_with_recipe_scrapers")
     @patch("recipes.services.recipe_importer.extract_marmiton_recipe")

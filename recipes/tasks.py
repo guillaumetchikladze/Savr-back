@@ -10,7 +10,7 @@ from celery import shared_task
 from .models import RecipeImportRequest
 from .services.ai_service import formalize_recipe
 from .services.formalization_pipeline import create_recipe_from_formalized
-from .services.recipe_importer import import_recipe_from_url, is_ingredients_suspicious
+from .services.recipe_importer import import_recipe_from_url, is_ingredients_suspicious, InstagramImportError
 from .services.image_uploader import download_and_upload_image
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,45 @@ def process_recipe_import_from_url(self, request_id: str):
     try:
         # Étape 1 : Extraire la recette depuis l'URL
         logger.info("[RecipeImportURLTask] Step 1/5: Extracting recipe from URL: %s", url)
-        raw_recipe_data, used_source = import_recipe_from_url(url)
+        try:
+            raw_recipe_data, used_source = import_recipe_from_url(url)
+        except InstagramImportError as ie:
+            used_source = 'instagram'
+            logger.warning(
+                "[RecipeImportURLTask] Instagram import failed early for url=%s (code=%s, message=%s)",
+                url,
+                ie.code,
+                ie.message,
+            )
+            if ie.code in {'apify_not_configured', 'apify_failed', 'post_not_found'}:
+                error_msg = (
+                    "Nous n’arrivons pas à accéder à ce post Instagram pour le moment. "
+                    "Le profil est peut-être privé, le contenu n’est plus disponible "
+                    "ou notre service d’import est temporairement indisponible."
+                )
+            elif ie.code in {'no_recipe', 'no_recipe_text'}:
+                error_msg = (
+                    "Ce post Instagram ne semble pas contenir de recette détaillée "
+                    "(ingrédients et étapes) exploitable automatiquement. "
+                    "Essayez avec un autre lien."
+                )
+            elif ie.code == 'no_ingredients':
+                error_msg = (
+                    "Nous n’avons pas réussi à identifier une liste d’ingrédients suffisamment claire "
+                    "à partir de ce post Instagram. Les informations sont trop vagues."
+                )
+            else:
+                error_msg = (
+                    "Une erreur est survenue lors de l’import depuis Instagram. "
+                    "Réessayez plus tard ou avec un autre lien."
+                )
+
+            import_request.status = RecipeImportRequest.STATUS_ERROR
+            import_request.error_message = error_msg
+            import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+            _update_import_progress(import_request, step='ERROR', percent=100, used_source=used_source)
+            return
+
         _update_import_progress(import_request, step='EXTRACTED', percent=25, used_source=used_source)
         
         logger.info(
@@ -118,7 +156,17 @@ def process_recipe_import_from_url(self, request_id: str):
         )
         
         if not raw_recipe_data:
-            error_msg = f"Impossible d'extraire la recette depuis cette URL (source: {used_source or 'unknown'}). Vérifiez que l'URL est valide et accessible."
+            if used_source == 'instagram':
+                error_msg = (
+                    "Nous n’avons pas pu extraire de recette exploitable depuis ce lien Instagram. "
+                    "Le contenu ne semble pas contenir suffisamment d’informations pour reconstruire une recette."
+                )
+            else:
+                error_msg = (
+                    f"Impossible d'extraire la recette depuis cette URL (source: {used_source or 'unknown'}). "
+                    "Vérifiez que l'URL est valide et accessible."
+                )
+
             logger.warning("[RecipeImportURLTask] Extraction failed: %s", error_msg)
             import_request.status = RecipeImportRequest.STATUS_ERROR
             import_request.error_message = error_msg
@@ -129,10 +177,16 @@ def process_recipe_import_from_url(self, request_id: str):
         # Étape 2 : Vérifier la complétude minimale des ingrédients (strict_block)
         suspicious, reason = is_ingredients_suspicious(raw_recipe_data.get('ingredients_text', ''))
         if suspicious:
-            error_msg = (
-                "Import bloqué: impossible de garantir la complétude des ingrédients. "
-                f"Raison: {reason}"
-            )
+            if used_source == 'instagram':
+                error_msg = (
+                    "Nous n’avons pas pu reconstruire une liste d’ingrédients suffisamment complète "
+                    "à partir de ce post Instagram. Les quantités ou les ingrédients sont trop vagues."
+                )
+            else:
+                error_msg = (
+                    "Import bloqué: impossible de garantir la complétude des ingrédients. "
+                    f"Raison: {reason}"
+                )
             logger.warning(
                 "[RecipeImportURLTask] Ingredient completeness check failed (source=%s): %s",
                 used_source,

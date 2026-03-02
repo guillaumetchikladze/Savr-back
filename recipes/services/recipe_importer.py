@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from decouple import config
 from recipe_scrapers import SCRAPERS, scrape_html
+from apify_client import ApifyClient
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +238,8 @@ def detect_source_type(url: str) -> Optional[str]:
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
     
+    if 'instagram.com' in domain or 'instagr.am' in domain:
+        return 'instagram'
     if 'bergamot.app' in domain or 'dashboard.bergamot.app' in domain:
         return 'bergamot'
     elif 'marmiton.org' in domain:
@@ -253,6 +256,144 @@ def detect_source_type(url: str) -> Optional[str]:
         return 'jow'
     
     return None
+
+
+class InstagramImportError(Exception):
+    def __init__(self, code: str, message: str = ''):
+        self.code = code
+        self.message = message or ''
+        super().__init__(self.message or code)
+
+
+def extract_instagram_recipe(url: str) -> Optional[Dict]:
+    """
+    Extraction d'une recette depuis un post Instagram public en utilisant Apify.
+    - Récupère la légende + premier commentaire
+    - Laisse l'IA détecter s'il s'agit bien d'une recette et structurer ingrédients/étapes
+    """
+    token = config('APIFY_API_TOKEN', default='')
+    if not token:
+        logger.error("[InstagramExtractor] APIFY_API_TOKEN n'est pas configuré")
+        raise InstagramImportError(
+            code='apify_not_configured',
+            message="APIFY_API_TOKEN n'est pas configuré côté serveur.",
+        )
+
+    try:
+        client = ApifyClient(token)
+        run_input = {
+            "directUrls": [url],
+            "resultsType": "posts",
+            "resultsLimit": 1,
+        }
+        logger.info("[InstagramExtractor] Lancement actor apify/instagram-scraper pour url=%s", url)
+        run = client.actor("apify/instagram-scraper").call(run_input=run_input)
+        dataset_id = run.get("defaultDatasetId")
+        if not dataset_id:
+            logger.warning("[InstagramExtractor] Aucun datasetId retourné par Apify pour url=%s", url)
+            raise InstagramImportError(
+                code='apify_failed',
+                message="Aucun résultat retourné par l'API Apify.",
+            )
+
+        items_iter = client.dataset(dataset_id).iterate_items()
+        first_item = next(items_iter, None)
+    except InstagramImportError:
+        raise
+    except Exception as e:
+        logger.error("[InstagramExtractor] Erreur lors de l'appel Apify pour url=%s: %s", url, e, exc_info=True)
+        raise InstagramImportError(
+            code='apify_failed',
+            message=str(e),
+        )
+
+    if not first_item:
+        logger.info("[InstagramExtractor] Dataset Apify vide pour url=%s", url)
+        raise InstagramImportError(
+            code='post_not_found',
+            message="Aucun post trouvé pour cette URL Instagram.",
+        )
+
+    caption = (first_item.get("caption") or "").strip()
+    first_comment = (first_item.get("firstComment") or "").strip()
+    full_text_parts = []
+    if caption:
+        full_text_parts.append(caption)
+    if first_comment:
+        full_text_parts.append(first_comment)
+    full_text = "\n\n".join(full_text_parts).strip()
+
+    if not full_text:
+        logger.info("[InstagramExtractor] Aucun texte exploitable (caption/firstComment) pour url=%s", url)
+        raise InstagramImportError(
+            code='no_recipe_text',
+            message="Aucune description de recette trouvée dans ce post Instagram.",
+        )
+
+    # Appel IA pour parser la légende et structurer ingrédients/instructions
+    from .ai_service import parse_instagram_caption  # import local pour éviter les cycles
+
+    parsed = parse_instagram_caption(full_text)
+    if not parsed.get("is_recipe"):
+        logger.info(
+            "[InstagramExtractor] Post identifié comme non-recette (code=no_recipe) pour url=%s, reason=%s",
+            url,
+            parsed.get("reason", ""),
+        )
+        raise InstagramImportError(
+            code='no_recipe',
+            message=parsed.get("reason", "Ce post ne semble pas contenir de recette exploitable."),
+        )
+
+    ingredients_text = (parsed.get("ingredients_text") or "").strip()
+    instructions_text = (parsed.get("instructions_text") or "").strip()
+
+    if not ingredients_text:
+        logger.info(
+            "[InstagramExtractor] Aucune liste d'ingrédients structurée après parsing IA pour url=%s",
+            url,
+        )
+        raise InstagramImportError(
+            code='no_ingredients',
+            message="Impossible d'identifier une liste d'ingrédients exploitable dans ce post Instagram.",
+        )
+
+    image_url = first_item.get("displayUrl") or first_item.get("display_url") or ""
+    image_url = (image_url or "").strip()
+
+    title = (parsed.get("title") or "").strip()
+    if not title:
+        owner_username = (first_item.get("ownerUsername") or first_item.get("owner_username") or "").strip()
+        short_code = (first_item.get("shortCode") or first_item.get("short_code") or "").strip()
+        title_parts = []
+        if owner_username:
+            title_parts.append(owner_username)
+        title_parts.append("Recette Instagram")
+        if short_code:
+            title_parts.append(short_code)
+        title = " - ".join(title_parts)
+
+    description = (caption or full_text)[:600]
+
+    recipe_data: Dict[str, object] = {
+        "title": title,
+        "description": description,
+        "ingredients_text": ingredients_text,
+        "instructions_text": instructions_text,
+        "prep_time": parsed.get("prep_time"),
+        "cook_time": parsed.get("cook_time"),
+        "servings": parsed.get("servings"),
+        "image_path": image_url,
+        "instagram_meta": {
+            "id": first_item.get("id"),
+            "shortCode": first_item.get("shortCode") or first_item.get("short_code"),
+            "ownerUsername": first_item.get("ownerUsername") or first_item.get("owner_username"),
+            "type": first_item.get("type"),
+            "timestamp": first_item.get("timestamp"),
+        },
+    }
+
+    return recipe_data
 
 
 def _extract_recipe_from_json_ld(data, title_fallback: str = '') -> Optional[Dict]:
@@ -886,7 +1027,11 @@ def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
     recipe_data = None
     used_source = None
     
-    if source_type == 'bergamot':
+    if source_type == 'instagram':
+        logger.info("[RecipeImporter] Trying extractor=instagram")
+        recipe_data = extract_instagram_recipe(url)
+        used_source = 'instagram' if recipe_data else None
+    elif source_type == 'bergamot':
         logger.info("[RecipeImporter] Trying extractor=bergamot")
         recipe_data = extract_bergamot_recipe(url)
         used_source = 'bergamot' if recipe_data else None

@@ -268,6 +268,151 @@ Retourne STRICTEMENT le schéma attendu.""",
     return agent
 
 
+class InstagramCaptionParsed(BaseModel):
+    is_recipe: bool = Field(..., description="True si le texte décrit une recette exploitable.")
+    reason: str = Field(
+        default="",
+        description="Explication courte si ce n'est pas une recette exploitable ou si des informations manquent.",
+    )
+    title: str = Field(
+        default="",
+        description="Titre proposé pour la recette, si applicable.",
+    )
+    ingredients_text: str = Field(
+        default="",
+        description="Liste d'ingrédients, une ligne par ingrédient, idéalement préfixée par '- '.",
+    )
+    instructions_text: str = Field(
+        default="",
+        description="Étapes de la recette, une ligne par étape, idéalement numérotée '1. ...'. Peut être générée à partir du titre + ingrédients.",
+    )
+    servings: Optional[int] = Field(
+        default=None,
+        description="Nombre de portions si inférable.",
+    )
+    prep_time: Optional[int] = Field(
+        default=None,
+        description="Temps de préparation en minutes si inférable.",
+    )
+    cook_time: Optional[int] = Field(
+        default=None,
+        description="Temps de cuisson en minutes si inférable.",
+    )
+
+
+def create_instagram_caption_parser_agent() -> Agent:
+    if not AI_API_KEY:
+        raise ValueError("AI_API_KEY doit être configuré dans .env pour utiliser l'IA Instagram")
+
+    model = resolve_model(AI_MODEL)
+
+    agent = Agent(
+        model=model,
+        output_type=InstagramCaptionParsed,
+        system_prompt="""
+Tu es un assistant spécialisé dans l'analyse de posts Instagram pour une application de recettes.
+
+Ton objectif est de déterminer si le texte correspond à une VRAIE recette de cuisine et,
+si oui, d'en extraire une liste d'ingrédients + des étapes de préparation suffisamment complètes
+pour que quelqu'un puisse cuisiner le plat.
+
+CONDITIONS POUR is_recipe=true :
+- Le texte doit clairement décrire une préparation de plat, boisson ou dessert.
+- Il doit contenir une liste d'ingrédients reconnaissables (même sans quantités parfaites).
+- Idéalement, il contient aussi des indications d'étapes (préparation/cuisson).
+
+Si le texte est plutôt :
+- du storytelling, de la motivation, des conseils santé très génériques,
+- une simple liste d'aliments sans lien clair avec une recette,
+- ou trop vague pour cuisiner concrètement,
+ALORS mets is_recipe=false et explique la raison dans 'reason'.
+
+INGRÉDIENTS (ingredients_text) :
+- Extrais une liste d'ingrédients à partir du texte (caption + premier commentaire).
+- Une ligne par ingrédient, au format libre, idéalement : "- 200 g de farine".
+- Tu peux compléter légèrement les quantités si nécessaire, mais ne dois pas inventer une recette entière si rien n'est précisé.
+
+ÉTAPES (instructions_text) :
+- Si le texte fournit déjà des étapes, réécris-les proprement, une étape par ligne, numérotée "1. ...".
+- Si le texte contient clairement une liste d'ingrédients mais presque pas d'étapes,
+  GÉNÈRE une proposition réaliste d'étapes cohérentes avec le titre et les ingrédients.
+- Ne génère PAS d'étapes si tu n'es pas sûr du type de plat (par ex. texte très vague ou sans ingrédients).
+
+LANGUE :
+- Si le texte est en français, garde la sortie en français.
+- Sinon, reste dans la langue principale du texte.
+
+IMPORTANT :
+- Si tu n'es pas sûr que ce soit une recette exploitable, mets is_recipe=false
+  et utilise 'reason' pour expliquer pourquoi (pas d'ingrédients, pas d'étapes, texte trop vague, etc.).
+""",
+    )
+
+    agent_model = agent.model
+    if isinstance(agent_model, GeminiModel):
+        object_def = agent._output_schema.object_def  # type: ignore[attr-defined]
+        original_schema = copy.deepcopy(object_def.json_schema)
+        object_def.json_schema = flatten_schema(original_schema)
+
+        toolset = getattr(agent._output_schema, "toolset", None)  # type: ignore[attr-defined]
+        if toolset and hasattr(toolset, "_tool_defs"):
+            for tool_def in toolset._tool_defs:
+                tool_def.parameters_json_schema = flatten_schema(copy.deepcopy(tool_def.parameters_json_schema))
+
+    return agent
+
+
+def parse_instagram_caption(text: str) -> dict:
+    """
+    Wrapper synchrone pour parser une légende Instagram avec l'IA.
+    Retourne un dict sérialisable contenant les champs d'InstagramCaptionParsed.
+    """
+    if not (text or "").strip():
+        return {
+            "is_recipe": False,
+            "reason": "Texte vide.",
+            "title": "",
+            "ingredients_text": "",
+            "instructions_text": "",
+            "servings": None,
+            "prep_time": None,
+            "cook_time": None,
+        }
+
+    agent = create_instagram_caption_parser_agent()
+
+    async def _run():
+        result = await agent.run(text)
+        parsed: InstagramCaptionParsed = result.output
+        return parsed
+
+    try:
+        parsed = asyncio.run(_run())
+    except Exception as e:
+        logger.error("[AI] Échec du parsing de légende Instagram: %s", e, exc_info=True)
+        return {
+            "is_recipe": False,
+            "reason": "Erreur technique lors de l'analyse de la légende Instagram.",
+            "title": "",
+            "ingredients_text": "",
+            "instructions_text": "",
+            "servings": None,
+            "prep_time": None,
+            "cook_time": None,
+        }
+
+    return {
+        "is_recipe": parsed.is_recipe,
+        "reason": parsed.reason,
+        "title": parsed.title,
+        "ingredients_text": parsed.ingredients_text,
+        "instructions_text": parsed.instructions_text,
+        "servings": parsed.servings,
+        "prep_time": parsed.prep_time,
+        "cook_time": parsed.cook_time,
+    }
+
+
 async def normalize_ingredient_names(names: list[str]) -> dict[str, str]:
     names_clean = [n.strip() for n in (names or []) if (n or '').strip()]
     if not names_clean:
