@@ -30,7 +30,7 @@ python manage.py migrate --noinput
 
 echo "✅ Migrations appliquées avec succès !"
 
-# Exécuter la commande passée en argument (gunicorn par défaut)
-echo "🎯 Démarrage de Gunicorn..."
+# Exécuter la commande passée en argument (daphne par défaut pour HTTP + WebSocket)
+echo "🎯 Démarrage du serveur ASGI (Daphne)..."
 exec "$@"
 

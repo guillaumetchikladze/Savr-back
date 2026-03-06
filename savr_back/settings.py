@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
+    'channels',
     'accounts',
     'recipes',
 ]
@@ -101,6 +102,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'savr_back.wsgi.application'
+ASGI_APPLICATION = 'savr_back.asgi.application'
 
 
 # Database
@@ -244,7 +246,17 @@ CELERY_TASK_TIME_LIMIT = 60 * 10  # 10 minutes
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
-    
+
+# Channels configuration (WebSocket)
+CHANNEL_REDIS_URL = config('CHANNEL_REDIS_URL', default='redis://localhost:6379/1')
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [CHANNEL_REDIS_URL],
+        },
+    },
+}
 
 
 def build_s3_url(image_path):

@@ -55,14 +55,14 @@ services:
       retries: 3
       start_period: 60s
 
-  # Django avec Gunicorn
+  # Django avec Daphne (ASGI : HTTP + WebSocket pour la synchro shopping list)
   django:
     build:
       context: .
       dockerfile: docker/Dockerfile.django
     container_name: savr-django
     restart: unless-stopped
-    command: gunicorn savr_back.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 120 --log-level error --access-logfile - --error-logfile -
+    command: daphne -b 0.0.0.0 -p 8000 savr_back.asgi:application
     volumes:
       - .:/app
     environment:
@@ -73,6 +73,7 @@ services:
       - DB_PORT=5432
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CHANNEL_REDIS_URL=redis://redis:6379/1
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
       - AWS_BUCKET=${AWS_BUCKET:-savr}

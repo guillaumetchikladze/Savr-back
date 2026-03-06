@@ -18,6 +18,8 @@ import re
 import uuid
 import logging
 import traceback
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
 from .services.ingredient_matcher import get_batch_embeddings
 from .models import (
@@ -3581,6 +3583,80 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         items = ShoppingListItem.objects.filter(shopping_list=shopping_list).select_related('ingredient__category', 'checked_by')
         return Response(ShoppingListItemSerializer(items, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='conflict-notice')
+    def conflict_notice(self, request, pk=None):
+        """
+        Receive an offline-sync conflict notice from a client and broadcast it
+        to the shopping list WebSocket group.
+
+        Payload:
+        {
+          "items": [{"item_id": 123, "name": "Tomates", "target_user_id": 42}, ...]
+        }
+
+        Note: the server remains source of truth (we keep first checker).
+        This endpoint only notifies relevant users for UX/coordination.
+        """
+        shopping_list = self.get_object()  # enforces membership through queryset
+        items = request.data.get('items') or []
+        if not isinstance(items, list) or not items:
+            return Response({"ok": True, "broadcasted": False}, status=status.HTTP_200_OK)
+
+        sanitized_items = []
+        target_user_ids = set()
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            item_id = it.get('item_id')
+            name = (it.get('name') or '').strip()
+            target_user_id = it.get('target_user_id')
+            try:
+                item_id_int = int(item_id)
+            except (TypeError, ValueError):
+                continue
+            try:
+                target_user_id_int = int(target_user_id) if target_user_id is not None else None
+            except (TypeError, ValueError):
+                target_user_id_int = None
+
+            if not name:
+                name = f"Item #{item_id_int}"
+
+            sanitized_items.append(
+                {"item_id": item_id_int, "name": name, "target_user_id": target_user_id_int}
+            )
+            if target_user_id_int is not None:
+                target_user_ids.add(target_user_id_int)
+
+        if not sanitized_items:
+            return Response({"ok": True, "broadcasted": False}, status=status.HTTP_200_OK)
+
+        member_ids = set(
+            ShoppingListMember.objects.filter(shopping_list=shopping_list).values_list('user_id', flat=True)
+        )
+        target_user_ids = sorted(list(target_user_ids.intersection(member_ids)))
+
+        try:
+            channel_layer = get_channel_layer()
+            if channel_layer is not None:
+                group_name = f"shopping_list_{shopping_list.id}"
+                actor = request.user
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "shopping_list_conflict_notice",
+                        "shopping_list_id": shopping_list.id,
+                        "actor_user_id": actor.id if actor else None,
+                        "actor_username": getattr(actor, "username", "") or getattr(actor, "email", "") or "",
+                        "target_user_ids": target_user_ids,
+                        "items": sanitized_items,
+                    },
+                )
+        except Exception:
+            pass
+
+        return Response({"ok": True, "broadcasted": True, "targets": target_user_ids}, status=status.HTTP_200_OK)
+
     def _unit_group_for_unit(self, unit: str) -> str:
         unit = (unit or '').lower()
         if unit in ['g', 'kg']:
@@ -4013,6 +4089,76 @@ def _mark_shopping_done_if_list_complete(shopping_list):
         RecipeBatch.objects.filter(id__in=batch_ids).update(shopping_done=True, updated_at=timezone.now())
 
 
+def _broadcast_shopping_list_item_update(item, updated_by_user):
+    """
+    Broadcast a minimal, aggregated view of a ShoppingListItem to the WebSocket room
+    corresponding to its shopping list.
+    """
+    try:
+        from decimal import Decimal as _D
+
+        # Aggregate quantities
+        qs = item.quantities.all()
+        total_qty = float(sum(_D(str(q.quantity or 0)) for q in qs))
+        total_checked = float(sum(_D(str(q.checked_quantity or 0)) for q in qs))
+
+        # Determine unit (same logic as with_quantities)
+        unit = ""
+        first_q = qs.first()
+        if first_q and first_q.unit:
+            unit = first_q.unit
+        elif item.pantry_unit:
+            unit = item.pantry_unit
+
+        pantry_qty = float(item.pantry_quantity or 0)
+
+        category = item.ingredient.category
+
+        payload = {
+            "item_id": item.id,
+            "shopping_list_id": item.shopping_list_id,
+            "ingredient_id": item.ingredient_id,
+            "name": item.ingredient.name,
+            "unit_group": item.unit_group,
+            "quantity": total_qty,
+            "checked_quantity": total_checked,
+            "unit": unit,
+            "category": {
+                "id": category.id,
+                "name": category.name,
+            }
+            if category
+            else None,
+            "pantry_quantity": pantry_qty,
+            "pantry_unit": item.pantry_unit or unit or "",
+            "checked_at": item.checked_at.isoformat() if item.checked_at else None,
+            "checked_by": {
+                "id": updated_by_user.id,
+                "username": getattr(updated_by_user, "username", "") or updated_by_user.email,
+                "name": getattr(updated_by_user, "username", "") or updated_by_user.email,
+            }
+            if updated_by_user
+            else None,
+        }
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+
+        group_name = f"shopping_list_{item.shopping_list_id}"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "shopping_list_item_updated",
+                "item": payload,
+                "updated_by_user_id": updated_by_user.id if updated_by_user else None,
+            },
+        )
+    except Exception:
+        # En cas de problème de temps réel, ne jamais casser la requête principale.
+        return
+
+
 class ShoppingListItemViewSet(viewsets.ModelViewSet):
     """ViewSet pour les items de liste de courses"""
     serializer_class = ShoppingListItemSerializer
@@ -4219,6 +4365,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             item.save(update_fields=['checked_at', 'checked_by', 'updated_at'])
 
         _mark_shopping_done_if_list_complete(item.shopping_list)
+        _broadcast_shopping_list_item_update(item, request.user)
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
@@ -4230,6 +4377,9 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             item.checked_at = None
             item.checked_by = None
             item.save(update_fields=['checked_at', 'checked_by', 'updated_at'])
+
+        _mark_shopping_done_if_list_complete(item.shopping_list)
+        _broadcast_shopping_list_item_update(item, request.user)
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='set_manual_quantity')
