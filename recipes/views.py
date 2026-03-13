@@ -266,6 +266,48 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = StepSerializer(steps, many=True, context={'request': request})
         return Response(serializer.data)
     
+    @action(detail=True, methods=['post'], url_path='complete_cooking')
+    def complete_cooking(self, request, pk=None):
+        """
+        Marquer la cuisson d'un batch comme terminée pour l'utilisateur courant.
+        - Si une CookingProgress 'in_progress' existe pour ce batch, on l'utilise.
+        - Sinon, on crée une CookingProgress minimale puis on la complète.
+        """
+        batch = self.get_object()
+        user = request.user
+
+        # Vérifier que l'utilisateur a accès au meal plan du batch
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
+        has_access = MealPlan.objects.filter(
+            meal_plan_recipe_batches__recipe_batch=batch
+        ).filter(accessible_meal_plan_filter).exists()
+        if not has_access:
+            return Response({'detail': "Accès refusé à ce batch."}, status=status.HTTP_403_FORBIDDEN)
+
+        # 1) Chercher une progression existante en cours pour ce batch
+        progress = CookingProgress.objects.filter(
+            user=user,
+            recipe_batch=batch,
+            status='in_progress',
+        ).first()
+
+        # 2) Si pas de progression, en créer une minimale
+        if not progress:
+            recipe = batch.recipe
+            total_steps = recipe.steps.count()
+            last_index = max(total_steps - 1, 0)
+            progress = CookingProgress.objects.create(
+                user=user,
+                recipe_batch=batch,
+                current_step_index=last_index,
+                status='in_progress',
+            )
+
+        # 3) Compléter la progression (met aussi batch.is_cooked = True)
+        progress.complete()
+        serializer = CookingProgressSerializer(progress, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
     @action(detail=True, methods=['post'], url_path='mark_shopping_done')
     def mark_shopping_done(self, request, pk=None):
         """Marque les courses comme terminées pour ce batch (ex. « J'ai déjà fait les courses »)."""
