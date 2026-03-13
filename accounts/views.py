@@ -9,9 +9,18 @@ from django.db.models.functions import Greatest
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
 from django.conf import settings
 import uuid
-from .serializers import UserRegistrationSerializer, UserSerializer, LoginSerializer, NotificationSerializer
-from .models import Follow, Notification
-from recipes.models import Recipe
+from .serializers import (
+    UserRegistrationSerializer,
+    UserSerializer,
+    LoginSerializer,
+    NotificationSerializer,
+    LoyaltyCardSerializer,
+)
+from .serializers_push import PushDeviceRegisterSerializer
+from .models import Follow, Notification, PushDevice, LoyaltyCard
+from .services.expo_push import send_expo_push_notifications
+import random
+from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
 from recipes.serializers import RecipeSerializer
 from savr_back.settings import build_s3_client, build_presigned_get_url, build_s3_url
 
@@ -289,13 +298,45 @@ def follow_user_view(request, user_id):
         )
         if created:
             # Créer une notification pour l'utilisateur suivi
-            Notification.objects.create(
+            follow_titles = [
+                "Un nouveau complice arrive",
+                "Tu as gagné un nouvel allié",
+            ]
+            follow_messages = [
+                f"{request.user.username} t'a ajouté comme complice.",
+                f"{request.user.username} a commencé à te suivre.",
+            ]
+
+            notification = Notification.objects.create(
                 user=target_user,
                 notification_type='follow',
-                title='Nouvel ami',
-                message=f'{request.user.username} vous a ajouté comme ami',
+                title=random.choice(follow_titles),
+                message=random.choice(follow_messages),
                 related_user=request.user
             )
+            # Envoyer une push Expo aux devices du nouvel ami
+            devices = PushDevice.objects.filter(
+                user=target_user,
+                is_active=True
+            ).exclude(expo_push_token='')
+            messages = []
+            for device in devices:
+                messages.append(
+                    {
+                        'to': device.expo_push_token,
+                        'title': notification.title,
+                        'body': notification.message,
+                        'data': {
+                            'source': 'social',
+                            'kind': 'follow',
+                            'notification_id': notification.id,
+                            'user_id': request.user.id,
+                        },
+                        'sound': 'default',
+                    }
+                )
+            if messages:
+                send_expo_push_notifications(messages)
             return Response({'message': 'Vous êtes maintenant ami'}, status=status.HTTP_201_CREATED)
         else:
             return Response({'message': 'Vous êtes déjà ami'}, status=status.HTTP_200_OK)
@@ -377,6 +418,55 @@ def complices_view(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def followers_list_view(request):
+    """Récupérer uniquement les abonnés de l'utilisateur (followers)"""
+    followers_qs = Follow.objects.filter(following=request.user).select_related('follower')
+    followers = [follow.follower for follow in followers_qs]
+    serializer = UserSerializer(followers, many=True, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def following_list_view(request):
+    """Récupérer uniquement les abonnements de l'utilisateur (following)"""
+    following_qs = Follow.objects.filter(follower=request.user).select_related('following')
+    following = [follow.following for follow in following_qs]
+    serializer = UserSerializer(following, many=True, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_followers_view(request, user_id):
+    """Récupérer les abonnés d'un utilisateur spécifique"""
+    try:
+        target_user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+    
+    followers_qs = Follow.objects.filter(following=target_user).select_related('follower')
+    followers = [follow.follower for follow in followers_qs]
+    serializer = UserSerializer(followers, many=True, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_following_view(request, user_id):
+    """Récupérer les abonnements d'un utilisateur spécifique"""
+    try:
+        target_user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+    
+    following_qs = Follow.objects.filter(follower=target_user).select_related('following')
+    following = [follow.following for follow in following_qs]
+    serializer = UserSerializer(following, many=True, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def users_search_view(request):
     """Recherche d'utilisateurs pour autocomplete @mention (retourne id, username, avatar_url)"""
     from recipes.serializers import UserLightSerializer
@@ -402,4 +492,147 @@ def user_by_username_view(request):
         return Response({'id': user.id, 'username': user.username}, status=status.HTTP_200_OK)
     except User.DoesNotExist:
         return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def register_push_device_view(request):
+    """
+    Enregistrer ou mettre à jour un appareil capable de recevoir des notifications push Expo.
+    """
+    serializer = PushDeviceRegisterSerializer(data=request.data, context={'request': request})
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    device = serializer.save()
+    return Response(
+        {
+            'id': device.id,
+            'expo_push_token': device.expo_push_token,
+            'platform': device.platform,
+            'is_active': device.is_active,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def test_push_device_view(request):
+    """
+    Endpoint de test pour envoyer une notification push immédiate
+    au(x) device(s) enregistrés de l'utilisateur courant.
+    """
+    devices = PushDevice.objects.filter(user=request.user, is_active=True).exclude(expo_push_token='').all()
+    if not devices:
+        return Response({'error': 'Aucun device push actif pour cet utilisateur'}, status=status.HTTP_400_BAD_REQUEST)
+
+    messages = []
+    for device in devices:
+        messages.append(
+            {
+                'to': device.expo_push_token,
+                'title': 'Test notifications Tchikook',
+                'body': 'Si tu vois ceci, la push backend fonctionne.',
+                'data': {
+                    'source': 'debug',
+                    'kind': 'test_push',
+                },
+                'sound': 'default',
+            }
+        )
+
+    send_expo_push_notifications(messages)
+    return Response({'message': f'Push de test envoyée à {len(messages)} device(s).'}, status=status.HTTP_200_OK)
+
+
+class LoyaltyCardListCreateView(generics.ListCreateAPIView):
+    """
+    Lister et créer les cartes de fidélité de l'utilisateur courant.
+    """
+
+    serializer_class = LoyaltyCardSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            LoyaltyCard.objects.filter(owner=self.request.user, is_active=True)
+            .order_by('-created_at')
+        )
+
+
+class LoyaltyCardDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    Détail / suppression logique d'une carte de fidélité.
+    """
+
+    serializer_class = LoyaltyCardSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return LoyaltyCard.objects.filter(owner=self.request.user, is_active=True)
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=['is_active', 'updated_at'])
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def loyalty_card_barcode_view(request, card_id):
+    """
+    Retourne les informations nécessaires pour afficher le code barre / QR d'une carte.
+
+    Autorisé si:
+    - l'utilisateur est propriétaire de la carte, OU
+    - l'utilisateur est membre d'au moins une liste à laquelle la carte est associée.
+    """
+    try:
+        card = LoyaltyCard.objects.get(pk=card_id, is_active=True)
+    except LoyaltyCard.DoesNotExist:
+        return Response({'detail': 'Carte introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+
+    user = request.user
+    is_owner = card.owner_id == user.id
+
+    has_list_access = False
+    if not is_owner:
+        list_ids = list(
+            ShoppingListLoyaltyCard.objects.filter(card=card).values_list('shopping_list_id', flat=True)
+        )
+        if list_ids:
+            has_list_access = ShoppingListMember.objects.filter(
+                shopping_list_id__in=list_ids,
+                user=user,
+            ).exists()
+
+    if not (is_owner or has_list_access):
+        return Response(
+            {'detail': 'Vous ne pouvez pas accéder à cette carte.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    from .services.loyalty_cards_crypto import decrypt_card_number
+
+    try:
+        number = decrypt_card_number(card.encrypted_number)
+    except Exception:
+        # Ne pas exposer de détails internes, ni le numéro de carte.
+        return Response(
+            {'detail': 'Impossible de lire cette carte pour le moment.'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    return Response(
+        {
+            'id': card.id,
+            'name': card.name,
+            'emoji': card.emoji,
+            'barcode_type': card.barcode_type or 'code128',
+            'barcode_value': number,
+            'number_last4': card.number_last4,
+            'is_owner': is_owner,
+        },
+        status=status.HTTP_200_OK,
+    )
 

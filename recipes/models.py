@@ -834,6 +834,31 @@ class PostComment(models.Model):
         return f"{self.user.username} on post {self.post.id}"
 
 
+class PostCommentLike(models.Model):
+    """Like sur un commentaire de post"""
+    comment = models.ForeignKey(
+        PostComment,
+        on_delete=models.CASCADE,
+        related_name='likes',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='post_comment_likes',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = ['comment', 'user']
+        indexes = [
+            models.Index(fields=['comment', 'created_at'], name='pcl_comment_created_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} like on comment {self.comment_id}"
+
+
 class ShoppingList(models.Model):
     """
     Liste de courses persistante (Maison, Appart, etc.).
@@ -919,6 +944,35 @@ class ShoppingListBatch(models.Model):
 
     def __str__(self):
         return f"{self.shopping_list} - batch {self.recipe_batch_id}"
+
+
+class ShoppingListLoyaltyCard(models.Model):
+    """
+    Association d'une carte de fidélité à une liste de courses.
+    Une même carte peut être partagée sur plusieurs listes.
+    """
+
+    shopping_list = models.ForeignKey(
+        ShoppingList,
+        on_delete=models.CASCADE,
+        related_name='loyalty_cards_links',
+    )
+    card = models.ForeignKey(
+        'accounts.LoyaltyCard',
+        on_delete=models.CASCADE,
+        related_name='shopping_list_links',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = ['shopping_list', 'card']
+        indexes = [
+            models.Index(fields=['shopping_list'], name='shoplist_loyalty_list_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.shopping_list} - carte {self.card_id}"
 
 
 class ShoppingListItem(models.Model):

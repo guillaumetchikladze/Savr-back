@@ -18,6 +18,7 @@ import re
 import uuid
 import logging
 import traceback
+import random
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
@@ -25,12 +26,12 @@ from .services.ingredient_matcher import get_batch_embeddings
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
     MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment,
-    ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListItem, ShoppingListItemQuantity,
+    ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListLoyaltyCard, ShoppingListItem, ShoppingListItemQuantity,
     ShoppingListInvitation,
     Collection, CollectionRecipe, CollectionMember, CollectionFollower,
-    RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch
+    RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch, PostCommentLike,
 )
-from accounts.models import Follow, Notification
+from accounts.models import Follow, Notification, LoyaltyCard, PushDevice
 from django.contrib.auth import get_user_model
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
@@ -51,8 +52,14 @@ from .serializers import (
     RecipeBatchLightSerializer,
     UserLightSerializer
 )
+from accounts.serializers import LoyaltyCardSerializer
+from accounts.services.expo_push import send_expo_push_notifications
 from .tasks import process_recipe_import
+from accounts.tasks import send_timer_almost_finished_push
 from .utils import get_accessible_meal_plan_filter
+
+
+logger = logging.getLogger(__name__)
 
 
 class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
@@ -96,16 +103,17 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         # post-process for groupedDates & total_servings_batch
         queryset = self.filter_queryset(self.get_queryset())
         data = []
+        # Calculer le filtre d'accessibilité une seule fois pour tous les batches
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
+        from .models import MealInvitation
         for batch in queryset:
             # Filtrer les meal plans accessibles par l'utilisateur pour ce batch
-            accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
             meal_plans_accessible = MealPlan.objects.filter(
                 meal_plan_recipe_batches__recipe_batch=batch
             ).filter(accessible_meal_plan_filter).distinct()
             
             # Pour total_servings_batch, calculer avec TOUS les meal plans du batch
             # (même ceux auxquels l'utilisateur n'est pas invité)
-            from .models import MealInvitation
             all_meal_plans = MealPlan.objects.filter(
                 meal_plan_recipe_batches__recipe_batch=batch
             ).prefetch_related(
@@ -1022,6 +1030,36 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 'last_activity': last_recipe.updated_at if last_recipe else None,
             })
         # Trier par date de mise à jour (plus récentes en premier)
+        recipes = recipes.order_by('-updated_at')
+        page = self.paginate_queryset(recipes)
+        serializer = self.get_serializer(page if page is not None else recipes, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def user_imports(self, request):
+        """
+        Récupérer les recettes importées d'un utilisateur spécifique.
+        Utilisé pour afficher le livre d'import d'un autre profil.
+        """
+        from django.shortcuts import get_object_or_404
+        User = get_user_model()
+        user_id = request.query_params.get('user')
+        if not user_id:
+            return Response({'error': 'Paramètre user requis'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        target_user = get_object_or_404(User, id=user_id)
+        recipes = Recipe.objects.filter(created_by=target_user)
+        summary_only = request.query_params.get('summary')
+        if summary_only:
+            count = recipes.count()
+            last_recipe = recipes.order_by('-updated_at').first()
+            return Response({
+                'count': count,
+                'last_activity': last_recipe.updated_at if last_recipe else None,
+            })
+        
         recipes = recipes.order_by('-updated_at')
         page = self.paginate_queryset(recipes)
         serializer = self.get_serializer(page if page is not None else recipes, many=True)
@@ -2294,11 +2332,38 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         # Créer les notifications après le commit de la transaction (asynchrone)
         # Cela rend l'endpoint plus rapide car les notifications sont créées en arrière-plan
         if notification_data:
-            def create_notifications():
+            def create_notifications_and_pushes():
                 for notif_data in notification_data:
-                    Notification.objects.create(**notif_data)
+                    notification = Notification.objects.create(**notif_data)
+                    user = notif_data.get('user')
+                    if not user:
+                        continue
+                    devices = PushDevice.objects.filter(
+                        user=user,
+                        is_active=True
+                    ).exclude(expo_push_token='')
+                    messages = []
+                    for device in devices:
+                        messages.append(
+                            {
+                                'to': device.expo_push_token,
+                                'title': notification.title,
+                                'body': notification.message,
+                                'data': {
+                                    'source': 'social',
+                                    'kind': 'meal_invitation',
+                                    'notification_id': notification.id,
+                                    'meal_plan_id': meal_plan.id,
+                                    'meal_plan_date': meal_plan.date.isoformat(),
+                                    'meal_time': meal_plan.meal_time,
+                                },
+                                'sound': 'default',
+                            }
+                        )
+                    if messages:
+                        send_expo_push_notifications(messages)
             
-            transaction.on_commit(create_notifications)
+            transaction.on_commit(create_notifications_and_pushes)
         
         # Rafraîchir le meal_plan depuis la DB pour avoir les invitations à jour
         # (nécessaire car le serializer utilise obj.invitations.all() qui peut être mis en cache)
@@ -2586,7 +2651,18 @@ class TimerViewSet(viewsets.ModelViewSet):
         return TimerSerializer
     
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        from django.utils import timezone
+        from datetime import timedelta
+
+        timer = serializer.save(user=self.request.user)
+
+        # Planifier l'envoi de la notification push "presque terminé"
+        expires_at = timer.expires_at
+        now = timezone.now()
+        if expires_at and expires_at > now:
+            almost_eta = expires_at - timedelta(seconds=3)
+            if almost_eta > now:
+                send_timer_almost_finished_push.apply_async(args=[timer.id], eta=almost_eta)
     
     @action(detail=False, methods=['get'])
     def active(self, request):
@@ -3360,14 +3436,53 @@ class PostViewSet(viewsets.ModelViewSet):
         if created:
             # Notification pour le propriétaire du post (sauf si c'est soi-même)
             if post.user_id != user.id:
-                Notification.objects.create(
+                logger.info("post_miam: creating notification for user=%s post=%s from user=%s", post.user_id, post.id, user.id)
+
+                miam_titles = [
+                    "On parle de ton repas",
+                    "Ton repas fait des envieux",
+                    "Un miam de plus au compteur",
+                ]
+                miam_messages = [
+                    f"{user.username} a mis un miam à ton post.",
+                    f"{user.username} vient de miamer ton repas.",
+                    f"{user.username} a craqué pour ton repas.",
+                ]
+
+                notification = Notification.objects.create(
                     user=post.user,
                     notification_type='post_miam',
-                    title='Nouveau Miam !',
-                    message=f'{user.username} a mis un Miam sur votre publication.',
+                    title=random.choice(miam_titles),
+                    message=random.choice(miam_messages),
                     related_user=user,
                     related_post_id=post.id,
                 )
+                devices = PushDevice.objects.filter(
+                    user=post.user,
+                    is_active=True
+                ).exclude(expo_push_token='')
+                logger.info("post_miam: found %d push devices for user=%s", devices.count(), post.user_id)
+                messages = []
+                for device in devices:
+                    messages.append(
+                        {
+                            'to': device.expo_push_token,
+                            'title': notification.title,
+                            'body': notification.message,
+                            'data': {
+                                'source': 'social',
+                                'kind': 'post_miam',
+                                'notification_id': notification.id,
+                                'post_id': post.id,
+                            },
+                            'sound': 'default',
+                        }
+                    )
+                if messages:
+                    logger.info("post_miam: sending %d push messages for notification=%s", len(messages), notification.id)
+                    send_expo_push_notifications(messages)
+                else:
+                    logger.info("post_miam: no active push devices for user=%s", post.user_id)
             return Response({
                 'message': 'Cookie sent successfully',
                 'post': serializer.data
@@ -3432,14 +3547,46 @@ class PostViewSet(viewsets.ModelViewSet):
 
             # 1. Notification au propriétaire du post (sauf si c'est le commentateur)
             if post.user_id != commenter.id:
-                Notification.objects.create(
+                comment_titles = [
+                    "Nouveau mot sur ton post",
+                    "Quelqu'un réagit à ton repas",
+                ]
+                comment_messages = [
+                    f"{commenter.username} a commenté ton post.",
+                    f"{commenter.username} a laissé un petit mot sous ton repas.",
+                ]
+
+                notification = Notification.objects.create(
                     user=post.user,
                     notification_type='post_comment',
-                    title='Nouveau commentaire',
-                    message=f'{commenter.username} a commenté votre publication.',
+                    title=random.choice(comment_titles),
+                    message=random.choice(comment_messages),
                     related_user=commenter,
                     related_post_id=post.id,
                 )
+                # Push Expo vers le propriétaire du post
+                owner_devices = PushDevice.objects.filter(
+                    user=post.user,
+                    is_active=True
+                ).exclude(expo_push_token='')
+                owner_messages = []
+                for device in owner_devices:
+                    owner_messages.append(
+                        {
+                            'to': device.expo_push_token,
+                            'title': notification.title,
+                            'body': notification.message,
+                            'data': {
+                                'source': 'social',
+                                'kind': 'post_comment',
+                                'notification_id': notification.id,
+                                'post_id': post.id,
+                            },
+                            'sound': 'default',
+                        }
+                    )
+                if owner_messages:
+                    send_expo_push_notifications(owner_messages)
 
             # 2. Parser les @mentions et notifier chaque utilisateur mentionné
             User = get_user_model()
@@ -3451,21 +3598,81 @@ class PostViewSet(viewsets.ModelViewSet):
                 try:
                     mentioned_user = User.objects.get(username__iexact=username)
                     if mentioned_user.id not in notified_user_ids:
-                        Notification.objects.create(
+                        mention_titles = [
+                            "On te cite à table",
+                            "Quelqu'un parle de toi",
+                        ]
+                        mention_messages = [
+                            f"{commenter.username} t'a mentionné dans un commentaire.",
+                            f"{commenter.username} t'a glissé dans la conversation.",
+                        ]
+
+                        notification = Notification.objects.create(
                             user=mentioned_user,
                             notification_type='post_comment_mention',
-                            title='Vous êtes mentionné',
-                            message=f'{commenter.username} vous a mentionné dans un commentaire.',
+                            title=random.choice(mention_titles),
+                            message=random.choice(mention_messages),
                             related_user=commenter,
                             related_post_id=post.id,
                         )
                         notified_user_ids.add(mentioned_user.id)
+                        # Push Expo vers l'utilisateur mentionné
+                        mention_devices = PushDevice.objects.filter(
+                            user=mentioned_user,
+                            is_active=True
+                        ).exclude(expo_push_token='')
+                        mention_messages_list = []
+                        for device in mention_devices:
+                            mention_messages_list.append(
+                                {
+                                    'to': device.expo_push_token,
+                                    'title': notification.title,
+                                    'body': notification.message,
+                                    'data': {
+                                        'source': 'social',
+                                        'kind': 'post_comment_mention',
+                                        'notification_id': notification.id,
+                                        'post_id': post.id,
+                                    },
+                                    'sound': 'default',
+                                }
+                            )
+                        if mention_messages_list:
+                            send_expo_push_notifications(mention_messages_list)
                 except User.DoesNotExist:
                     pass  # Username invalide, ignorer
 
             serializer = PostCommentSerializer(comment, context={'request': request})
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(create_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(
+        detail=True,
+        methods=['post', 'delete'],
+        url_path=r'comments/(?P<comment_id>[^/.]+)/like',
+    )
+    def like_comment(self, request, pk=None, comment_id=None):
+        """
+        Ajouter ou retirer un like sur un commentaire de post.
+
+        - POST   /posts/{post_id}/comments/{comment_id}/like/   => ajoute un like
+        - DELETE /posts/{post_id}/comments/{comment_id}/like/   => retire le like
+        """
+        post_qs = Post.objects.filter(is_published=True)
+        post = get_object_or_404(post_qs, pk=pk)
+        comment = get_object_or_404(PostComment, pk=comment_id, post=post)
+        user = request.user
+
+        if request.method == 'POST':
+            # Créer le like s'il n'existe pas déjà
+            PostCommentLike.objects.get_or_create(comment=comment, user=user)
+        else:
+            # Supprimer le like si présent
+            PostCommentLike.objects.filter(comment=comment, user=user).delete()
+
+        # Retourner le commentaire à jour
+        serializer = PostCommentSerializer(comment, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class ShoppingListViewSet(viewsets.ModelViewSet):
@@ -3656,6 +3863,83 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
             pass
 
         return Response({"ok": True, "broadcasted": True, "targets": target_user_ids}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get', 'post'], url_path='loyalty-cards')
+    def loyalty_cards(self, request, pk=None):
+        """
+        GET  /shopping-lists/{id}/loyalty-cards/ :
+            Retourne les cartes de fidélité associées à cette liste.
+
+        POST /shopping-lists/{id}/loyalty-cards/ :
+            - Si `card_id` est fourni, associe une carte existante (appartenant à l'utilisateur).
+            - Sinon, crée une nouvelle carte (nom, emoji, barcode_type, number) et l'associe.
+        """
+        shopping_list = self.get_object()  # membership enforced by queryset
+
+        if request.method == 'GET':
+            links = (
+                ShoppingListLoyaltyCard.objects
+                .filter(shopping_list=shopping_list)
+                .select_related('card', 'card__owner')
+            )
+            cards = [link.card for link in links if link.card and link.card.is_active]
+            serializer = LoyaltyCardSerializer(cards, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # POST
+        data = request.data or {}
+        card_id = data.get('card_id')
+
+        if card_id:
+            try:
+                card = LoyaltyCard.objects.get(id=card_id, owner=request.user, is_active=True)
+            except LoyaltyCard.DoesNotExist:
+                return Response(
+                    {'detail': "Carte introuvable ou vous n'en êtes pas le propriétaire."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            serializer = LoyaltyCardSerializer(data=data, context={'request': request})
+            serializer.is_valid(raise_exception=True)
+            card = serializer.save()
+
+        ShoppingListLoyaltyCard.objects.get_or_create(
+            shopping_list=shopping_list,
+            card=card,
+        )
+        output = LoyaltyCardSerializer(card, context={'request': request})
+        return Response(output.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='loyalty-cards/(?P<card_id>[^/.]+)')
+    def remove_loyalty_card(self, request, pk=None, card_id=None):
+        """
+        DELETE /shopping-lists/{id}/loyalty-cards/{card_id}/ :
+            Retire une carte de fidélité de la liste.
+            Réservé au propriétaire de la liste.
+        """
+        shopping_list = self.get_object()
+        is_owner = ShoppingListMember.objects.filter(
+            shopping_list=shopping_list,
+            user=request.user,
+            role='owner',
+        ).exists()
+        if not is_owner:
+            return Response(
+                {'detail': "Seul le propriétaire de la liste peut retirer une carte."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            link = ShoppingListLoyaltyCard.objects.get(
+                shopping_list=shopping_list,
+                card_id=card_id,
+            )
+        except ShoppingListLoyaltyCard.DoesNotExist:
+            # Rien à faire, considérer comme succès idempotent
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        link.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _unit_group_for_unit(self, unit: str) -> str:
         unit = (unit or '').lower()

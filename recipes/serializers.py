@@ -24,6 +24,7 @@ from .models import (
     CollectionMember,
     RecipeImportRequest,
     RecipeBatch,
+    PostCommentLike,
 )
 from django.contrib.auth import get_user_model
 from django.db.models import Q
@@ -1708,11 +1709,30 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
 class PostCommentSerializer(serializers.ModelSerializer):
     """Serializer pour les commentaires sur un post"""
     user = UserLightSerializer(read_only=True)
+    likes_count = serializers.SerializerMethodField()
+    has_like_from_user = serializers.SerializerMethodField()
 
     class Meta:
         model = PostComment
-        fields = ['id', 'user', 'text', 'created_at']
-        read_only_fields = ['user', 'created_at']
+        fields = ['id', 'user', 'text', 'created_at', 'likes_count', 'has_like_from_user']
+        read_only_fields = ['user', 'created_at', 'likes_count', 'has_like_from_user']
+
+    def get_likes_count(self, obj):
+        # Utiliser un attribut annoté si présent, sinon retomber sur le count()
+        annotated = getattr(obj, 'likes_count', None)
+        if annotated is not None:
+            return annotated
+        return obj.likes.count()
+
+    def get_has_like_from_user(self, obj):
+        request = self.context.get('request')
+        if not request or request.user.is_anonymous:
+            return False
+        user = request.user
+        # Si le queryset a pré-annoté un booléen, on le réutilise
+        if hasattr(obj, 'liked_by_user'):
+            return bool(obj.liked_by_user)
+        return PostCommentLike.objects.filter(comment=obj, user=user).exists()
 
 
 class PostCommentCreateSerializer(serializers.ModelSerializer):

@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.conf import settings
 
 
 class User(AbstractUser):
@@ -116,4 +117,88 @@ class Notification(models.Model):
     
     def __str__(self):
         return f"{self.title} - {self.user.username}"
+
+
+class PushDevice(models.Model):
+    """Appareil capable de recevoir des notifications push Expo."""
+    PLATFORM_CHOICES = [
+        ('android', 'Android'),
+        ('ios', 'iOS'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='push_devices',
+        verbose_name='Utilisateur',
+    )
+    expo_push_token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = 'Appareil push'
+        verbose_name_plural = 'Appareils push'
+
+    def __str__(self):
+        return f"{self.user.email} - {self.platform} - {self.expo_push_token}"
+
+
+class LoyaltyCard(models.Model):
+    """Carte de fidélité associée à un utilisateur, numéro chiffré côté serveur."""
+
+    BARCODE_TYPE_CHOICES = [
+        ('ean13', 'EAN-13'),
+        ('code128', 'Code 128'),
+        ('qr', 'QR Code'),
+    ]
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='loyalty_cards',
+        verbose_name='Propriétaire',
+    )
+    name = models.CharField(max_length=100, verbose_name='Nom de la carte')
+    emoji = models.CharField(
+        max_length=16,
+        blank=True,
+        verbose_name='Emoji',
+        help_text="Petit emoji pour identifier la carte dans l’UI",
+    )
+    barcode_type = models.CharField(
+        max_length=32,
+        choices=BARCODE_TYPE_CHOICES,
+        default='code128',
+        verbose_name='Type de code barre',
+    )
+    encrypted_number = models.TextField(
+        verbose_name='Numéro chiffré',
+        help_text="Numéro de carte chiffré avec une clé serveur (non lisible en base).",
+    )
+    number_last4 = models.CharField(
+        max_length=8,
+        blank=True,
+        verbose_name='4 derniers chiffres',
+        help_text="4 derniers chiffres pour affichage (non sensible).",
+    )
+    is_active = models.BooleanField(default=True, verbose_name='Active')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Carte de fidélité'
+        verbose_name_plural = 'Cartes de fidélité'
+        indexes = [
+            models.Index(fields=['owner', 'is_active'], name='loyaltycard_owner_active_idx'),
+        ]
+
+    def __str__(self):
+        suffix = f" • ••••{self.number_last4}" if self.number_last4 else ""
+        return f"{self.name}{suffix} ({self.owner.email})"
 

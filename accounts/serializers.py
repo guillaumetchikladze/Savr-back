@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import User, Follow, Notification
+from .models import User, Follow, Notification, LoyaltyCard
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -131,4 +131,148 @@ class NotificationSerializer(serializers.ModelSerializer):
             'title', 'message', 'related_user', 'related_post_id', 'is_read', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
+
+
+class LoyaltyCardSerializer(serializers.ModelSerializer):
+    """
+    Serializer pour les cartes de fidélité.
+
+    - Le numéro complet est fourni via le champ write-only `number`
+      et n'est jamais renvoyé en clair.
+    - On expose uniquement les métadonnées, les 4 derniers chiffres
+      et les listes où la carte est partagée.
+    """
+
+    number = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    number_last4 = serializers.CharField(read_only=True)
+    is_owner = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
+    lists = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LoyaltyCard
+        fields = [
+            'id',
+            'name',
+            'emoji',
+            'barcode_type',
+            'number',
+            'number_last4',
+            'is_active',
+            'created_at',
+            'updated_at',
+            'is_owner',
+            'owner_name',
+            'lists',
+        ]
+        read_only_fields = [
+            'id',
+            'created_at',
+            'updated_at',
+            'number_last4',
+            'is_owner',
+            'owner_name',
+            'lists',
+            'is_active',
+        ]
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        return bool(user and user.is_authenticated and obj.owner_id == user.id)
+
+    def get_owner_name(self, obj):
+        owner = getattr(obj, 'owner', None)
+        if not owner:
+            return None
+        return owner.username or owner.email or None
+
+    def get_lists(self, obj):
+        """
+        Retourne les listes où la carte est partagée, sous forme légère:
+        [{id, name, is_owner}] pour l'utilisateur courant.
+        """
+        from recipes.models import ShoppingListLoyaltyCard, ShoppingListMember
+
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        current_user_id = getattr(user, 'id', None)
+
+        links = (
+            ShoppingListLoyaltyCard.objects
+            .filter(card=obj)
+            .select_related('shopping_list')
+        )
+
+        results = []
+        for link in links:
+            sl = link.shopping_list
+            if not sl:
+                continue
+            is_owner = False
+            if current_user_id:
+                is_owner = ShoppingListMember.objects.filter(
+                    shopping_list=sl,
+                    user_id=current_user_id,
+                    role='owner',
+                ).exists()
+            results.append(
+                {
+                    'id': sl.id,
+                    'name': sl.name,
+                    'is_owner': is_owner,
+                }
+            )
+        return results
+
+    def create(self, validated_data):
+        from .services.loyalty_cards_crypto import encrypt_card_number
+
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Authentication required")
+
+        number = validated_data.pop('number', None)
+        if not number:
+            raise serializers.ValidationError({'number': 'Ce champ est obligatoire.'})
+
+        ciphertext, last4 = encrypt_card_number(number)
+        card = LoyaltyCard.objects.create(
+            owner=user,
+            encrypted_number=ciphertext,
+            number_last4=last4,
+            **validated_data,
+        )
+        return card
+
+    def update(self, instance, validated_data):
+        """
+        Permet de renommer la carte, changer l'emoji, le type de code barre
+        et, facultativement, de mettre à jour le numéro (avec rechiffrement).
+        """
+        from .services.loyalty_cards_crypto import encrypt_card_number
+
+        number = validated_data.pop('number', None)
+
+        update_fields = []
+
+        if number is not None and number != '':
+          ciphertext, last4 = encrypt_card_number(number)
+          instance.encrypted_number = ciphertext
+          instance.number_last4 = last4
+          update_fields.extend(['encrypted_number', 'number_last4'])
+
+        for field in ['name', 'emoji', 'barcode_type']:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+                update_fields.append(field)
+
+        if update_fields:
+            update_fields.append('updated_at')
+            instance.save(update_fields=update_fields)
+        else:
+            instance.save(update_fields=['updated_at'])
+
+        return instance
 

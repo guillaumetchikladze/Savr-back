@@ -26,4 +26,5 @@ recipe-scrapers==15.11.0
 nest-asyncio==1.6.0
 sentry-sdk[django]==2.20.0
 apify-client>=2.5.0
+cryptography
 
