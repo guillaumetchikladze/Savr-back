@@ -3,6 +3,7 @@ URL configuration for savr_back project.
 """
 from django.contrib import admin
 from django.http import JsonResponse
+from django.shortcuts import redirect, render
 from django.urls import path, include
 
 
@@ -10,7 +11,26 @@ def health_view(request):
     return JsonResponse({"status": "ok"})
 
 
+def legal_index_view(request):
+    """Index des mentions légales."""
+    return render(request, 'legal/index.html')
+
+
+def legal_privacy_view(request):
+    """Politique de confidentialité (requise pour le Play Store)."""
+    return render(request, 'legal/privacy_policy.html')
+
+
+def legal_delete_account_view(request):
+    """Page de demande de suppression de compte."""
+    return render(request, 'legal/delete_account.html')
+
+
 urlpatterns = [
+    path('legal/', legal_index_view, name='legal_index'),
+    path('legal/privacy-policy/', legal_privacy_view, name='legal_privacy'),
+    path('legal/delete-account/', legal_delete_account_view, name='legal_delete_account'),
+    path('privacy-policy/', lambda r: redirect('legal_privacy', permanent=True), name='privacy_policy_redirect'),
     path('admin/', admin.site.urls),
     path('api/health/', health_view),
     path('api/auth/', include('accounts.urls')),

@@ -1,8 +1,23 @@
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import DefaultRouter, APIRootView
+from rest_framework.permissions import IsAuthenticated
 from .views import CategoryViewSet, RecipeViewSet, IngredientViewSet, MealPlanViewSet, MealInvitationViewSet, CookingProgressViewSet, TimerViewSet, PostViewSet, ShoppingListViewSet, ShoppingListItemViewSet, ShoppingListInvitationViewSet, CollectionViewSet, RecipeBatchViewSet
 
-router = DefaultRouter()
+
+class SecureAPIRootView(APIRootView):
+    """API root exigeant une authentification."""
+    permission_classes = [IsAuthenticated]
+
+
+class SecureRouter(DefaultRouter):
+    """Router dont la vue API root exige une authentification."""
+    APIRootView = SecureAPIRootView
+
+    def get_api_root_view(self, api_urls=None):
+        return super().get_api_root_view(api_urls=api_urls)
+
+
+router = SecureRouter()
 router.register(r'categories', CategoryViewSet, basename='category')
 router.register(r'recipes', RecipeViewSet, basename='recipe')
 router.register(r'recipe-batches', RecipeBatchViewSet, basename='recipebatch')
