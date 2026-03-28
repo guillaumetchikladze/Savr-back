@@ -22,6 +22,7 @@ urlpatterns = [
     path('followers/', views.followers_list_view, name='followers_list'),
     path('following/', views.following_list_view, name='following_list'),
     path('users/search/', views.users_search_view, name='users_search'),
+    path('users/feed-suggestions/', views.feed_user_suggestions_view, name='feed_user_suggestions'),
     path('push-devices/register/', views.register_push_device_view, name='register_push_device'),
     path('push-devices/test/', views.test_push_device_view, name='test_push_device'),
     path('loyalty-cards/', views.LoyaltyCardListCreateView.as_view(), name='loyalty_card_list'),

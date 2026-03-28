@@ -25,7 +25,7 @@ from savr_back.settings import build_s3_client, build_s3_url, build_presigned_ge
 from .services.ingredient_matcher import get_batch_embeddings
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
-    MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment,
+    MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment, PostReport,
     ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListLoyaltyCard, ShoppingListItem, ShoppingListItemQuantity,
     ShoppingListInvitation,
     Collection, CollectionRecipe, CollectionMember, CollectionFollower,
@@ -56,7 +56,7 @@ from accounts.serializers import LoyaltyCardSerializer
 from accounts.services.expo_push import send_expo_push_notifications
 from .tasks import process_recipe_import
 from accounts.tasks import send_timer_almost_finished_push
-from .utils import get_accessible_meal_plan_filter
+from .utils import get_accessible_meal_plan_filter, shopping_list_item_quantity_is_stale, meal_plan_slot_api_fields
 
 
 logger = logging.getLogger(__name__)
@@ -121,20 +121,16 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             ).distinct()
             
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
-            total_servings_all = 0
             servings_breakdown_all = []
-            total_servings_accessible = 0
             servings_breakdown_accessible = []
-            # Calculer le total avec TOUS les meal plans du batch
             for mp in all_meal_plans:
-                adjusted, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
-                total_servings_all += adjusted
+                _, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
                 servings_breakdown_all.extend(breakdown)
-            # Total pour les meal plans accessibles (vue utilisateur)
             for mp in meal_plans_accessible:
-                adjusted, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
-                total_servings_accessible += adjusted
+                _, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
                 servings_breakdown_accessible.extend(breakdown)
+            total_servings_all = sum(e.get('portions', 0) for e in servings_breakdown_all)
+            total_servings_accessible = sum(e.get('portions', 0) for e in servings_breakdown_accessible)
             
             # Préparer un mapping des invitations acceptées pour l'utilisateur courant,
             # indexées par meal_plan_id pour enrichir les métadonnées côté front.
@@ -165,6 +161,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                     'id': mp.id,
                     'date': mp.date,
                     'meal_time': mp.meal_time,
+                    **meal_plan_slot_api_fields(mp),
                     'is_cooked': False,
                     'is_guest': is_guest,
                     'inviter_name': inviter_name,
@@ -200,34 +197,17 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         ).distinct()
         
         grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
-        total_servings = 0
         servings_breakdown = []
-        accessible_total_servings = 0
         accessible_servings_breakdown = []
-        # Calculer le total avec TOUS les meal plans du batch
-        # (même ceux auxquels l'utilisateur n'est pas invité)
         all_meal_plans_list = list(all_meal_plans)
-        
-        import sys
-        print(f"\n{'='*60}", file=sys.stderr)
-        print(f"[RecipeBatchViewSet.retrieve] Batch {batch.id} - User {request.user.id}", file=sys.stderr)
-        print(f"  All meal plans: {len(all_meal_plans_list)}", file=sys.stderr)
-        print(f"  Accessible meal plans: {meal_plans_accessible.count()}", file=sys.stderr)
-        
         for mp in all_meal_plans_list:
-            servings, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
-            participants_count = mp.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(mp, 'invitations') else 0
-            guest_count = mp.guest_count or 0
-            print(f"  Meal plan {mp.id}: servings={servings} (1 + {participants_count} participants + {guest_count} guests)", file=sys.stderr)
-            total_servings += servings
+            _, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
             servings_breakdown.extend(breakdown)
         for mp in meal_plans_accessible:
-            servings, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
-            accessible_total_servings += servings
+            _, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
             accessible_servings_breakdown.extend(breakdown)
-        
-        print(f"  ✅ TOTAL SERVINGS_BATCH: {total_servings}", file=sys.stderr)
-        print(f"{'='*60}\n", file=sys.stderr)
+        total_servings = sum(e.get('portions', 0) for e in servings_breakdown)
+        accessible_total_servings = sum(e.get('portions', 0) for e in accessible_servings_breakdown)
         
         meals = []
         meal_plan_ids = []
@@ -239,6 +219,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 'id': mp.id,
                 'date': mp.date,
                 'meal_time': mp.meal_time,
+                **meal_plan_slot_api_fields(mp),
                 'is_cooked': False,
             })
         serializer = RecipeBatchLightSerializer(batch, context={'request': request})
@@ -529,8 +510,8 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             )
         
         date_keys = request.data.get('date_keys', [])
-        meal_time = request.data.get('meal_time')
-        ratio = request.data.get('ratio', 1.0)
+        meal_time_param = request.data.get('meal_time')
+        portions = request.data.get('portions')  # optional; None = suit le nombre de personnes
         
         if not date_keys or not isinstance(date_keys, list):
             return Response(
@@ -538,16 +519,62 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        if not meal_time:
+        if not meal_time_param:
             return Response(
                 {'error': 'meal_time is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        try:
-            ratio = Decimal(str(ratio))
-        except (ValueError, TypeError):
-            ratio = Decimal('1.0')
+        if portions is not None:
+            try:
+                portions = int(portions)
+                portions = max(0, portions)
+            except (ValueError, TypeError):
+                portions = None
+
+        STANDARD = {'lunch', 'dinner', 'breakfast'}
+
+        def _parse_scheduled_time(val):
+            if not val:
+                return None
+            if isinstance(val, str):
+                for fmt in ('%H:%M:%S', '%H:%M'):
+                    try:
+                        return datetime.strptime(val.strip(), fmt).time()
+                    except ValueError:
+                        continue
+            return None
+
+        slot_key_param = (request.data.get('slot_key') or '').strip()
+        custom_label_param = (request.data.get('custom_label') or '').strip()
+        scheduled_time = _parse_scheduled_time(request.data.get('scheduled_time'))
+
+        if meal_time_param in STANDARD:
+            db_meal_time = meal_time_param
+            resolved_slot_key = meal_time_param
+            custom_label_save = ''
+            scheduled_save = None
+        elif meal_time_param == 'other':
+            resolved_slot_key = slot_key_param
+            if not resolved_slot_key:
+                return Response(
+                    {'error': 'slot_key is required when meal_time is other'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            db_meal_time = 'other'
+            custom_label_save = custom_label_param or 'Repas'
+            scheduled_save = scheduled_time
+        else:
+            # Client envoie la clé de créneau (ex. UUID) dans meal_time
+            db_meal_time = 'other'
+            resolved_slot_key = slot_key_param or str(meal_time_param).strip()
+            if not resolved_slot_key:
+                return Response(
+                    {'error': 'Invalid meal_time / slot_key'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            custom_label_save = custom_label_param or 'Repas'
+            scheduled_save = scheduled_time
         
         created_meal_plans = []
         
@@ -558,39 +585,38 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 except ValueError:
                     continue
                 
-                # Vérifier si un meal plan existe déjà pour cette date + meal_time
                 existing_meal_plan = MealPlan.objects.filter(
                     user=request.user,
                     date=target_date,
-                    meal_time=meal_time
+                    slot_key=resolved_slot_key,
                 ).first()
                 
-                # Créer ou mettre à jour le meal plan
                 if existing_meal_plan:
-                    # Vérifier si le batch n'est pas déjà associé à ce meal plan
                     if not existing_meal_plan.meal_plan_recipe_batches.filter(recipe_batch=batch).exists():
-                        # Ajouter le batch au meal plan existant
                         MealPlanRecipeBatch.objects.create(
                             meal_plan=existing_meal_plan,
                             recipe_batch=batch,
-                            ratio=ratio,
+                            portions=portions,
+                            is_portions_overridden=portions is not None,
                             order=existing_meal_plan.meal_plan_recipe_batches.count()
                         )
                     meal_plan = existing_meal_plan
                 else:
-                    # Créer un nouveau meal plan
                     meal_plan = MealPlan.objects.create(
                         user=request.user,
                         date=target_date,
-                        meal_time=meal_time,
+                        meal_time=db_meal_time,
+                        slot_key=resolved_slot_key,
+                        custom_label=custom_label_save if db_meal_time == 'other' else '',
+                        scheduled_time=scheduled_save if db_meal_time == 'other' else None,
                         meal_type='recipe',
                         confirmed=False,
                     )
-                    # Ajouter le batch au meal plan
                     MealPlanRecipeBatch.objects.create(
                         meal_plan=meal_plan,
                         recipe_batch=batch,
-                        ratio=ratio,
+                        portions=portions,
+                        is_portions_overridden=portions is not None,
                         order=0
                     )
                 
@@ -607,15 +633,25 @@ RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 
 def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_breakdown=False, recipe_batch_id=None):
     """
-    Calcule le nombre total de personnes pour un meal plan en appliquant le ratio
-    stocké sur MealPlanRecipeBatch. Retourne uniquement le total sauf si
-    include_breakdown=True.
+    Calcule le nombre total de personnes pour un meal plan (sans ratio).
+    Retourne ce nombre ; si include_breakdown=True, retourne aussi un breakdown
+    avec people_count et portions effectives par batch.
     """
-    # Si on a déjà _total_servings calculé, l'utiliser (déjà ajusté côté back)
     if hasattr(meal_plan, '_total_servings'):
-        return (meal_plan._total_servings, []) if include_breakdown else meal_plan._total_servings
-    
-    # Déterminer la base de servings (avant ratio)
+        people = meal_plan._total_servings
+        if include_breakdown:
+            breakdown = []
+            for mprb in getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).filter(recipe_batch_id=recipe_batch_id) if recipe_batch_id else getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).all():
+                portions = get_batch_portions(meal_plan, mprb, people_count=people)
+                breakdown.append({
+                    'meal_plan_id': meal_plan.id,
+                    'recipe_batch_id': mprb.recipe_batch_id,
+                    'base_servings': people,
+                    'portions': portions,
+                })
+            return people, breakdown
+        return (people, []) if include_breakdown else people
+
     if group_meal_plans and len(group_meal_plans) > 1:
         total_guest_count = sum(mp.guest_count or 0 for mp in group_meal_plans)
         all_participants = []
@@ -642,42 +678,29 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
         ).count() if hasattr(meal_plan, 'invitations') else 0
         guest_count = meal_plan.guest_count or 0
         base_servings = 1 + participants_count + guest_count
-    
-    # Appliquer les ratios des MealPlanRecipeBatch
-    from decimal import Decimal
-    mprbs_qs = getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).all()
-    if recipe_batch_id is not None:
-        mprbs_qs = mprbs_qs.filter(recipe_batch_id=recipe_batch_id)
-    mprbs = mprbs_qs
-    breakdown = []
-    total = Decimal('0')
-    if mprbs.exists():
-        for mprb in mprbs:
-            ratio = mprb.ratio if mprb.ratio is not None else Decimal('1')
-            adjusted = Decimal(base_servings) * Decimal(ratio)
-            total += adjusted
-            if include_breakdown:
-                breakdown.append({
-                    'meal_plan_id': meal_plan.id,
-                    'recipe_batch_id': mprb.recipe_batch_id,
-                    'base_servings': float(base_servings),
-                    'ratio': float(ratio),
-                    'adjusted_servings': float(adjusted),
-                })
-    else:
-        total = Decimal(base_servings)
-        if include_breakdown:
+
+    people_count = int(base_servings)
+    if include_breakdown:
+        breakdown = []
+        mprbs_qs = getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).all()
+        if recipe_batch_id is not None:
+            mprbs_qs = mprbs_qs.filter(recipe_batch_id=recipe_batch_id)
+        for mprb in mprbs_qs:
+            portions = get_batch_portions(meal_plan, mprb, people_count=people_count)
             breakdown.append({
                 'meal_plan_id': meal_plan.id,
-                'recipe_batch_id': None,
-                'base_servings': float(base_servings),
-                'ratio': 1.0,
-                'adjusted_servings': float(total),
+                'recipe_batch_id': mprb.recipe_batch_id,
+                'base_servings': people_count,
+                'portions': portions,
             })
-    
-    if include_breakdown:
-        return float(total), breakdown
-    return float(total)
+        return float(people_count), breakdown
+    return float(people_count)
+
+
+def get_batch_portions(meal_plan, mprb, people_count=None):
+    """Délègue à recipes.utils.get_batch_portions pour cohérence."""
+    from .utils import get_batch_portions as _get_batch_portions
+    return _get_batch_portions(meal_plan, mprb, people_count=people_count)
 
 
 class RecipeViewSet(viewsets.ModelViewSet):
@@ -773,11 +796,15 @@ class RecipeViewSet(viewsets.ModelViewSet):
             if include_nearby:
                 target_date_str = request.query_params.get('date')
                 meal_time = request.query_params.get('meal_time')
+                slot_key_qp = (request.query_params.get('slot_key') or '').strip()
                 
                 if target_date_str and meal_time:
                     try:
                         target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
-                        nearby_meal_plans = self._get_nearby_meal_plans(request.user, target_date, meal_time)
+                        current_slot_key = slot_key_qp or meal_time
+                        nearby_meal_plans = self._get_nearby_meal_plans(
+                            request.user, target_date, current_slot_key
+                        )
                         
                         # Suggestions basées sur les batches (pas de meal_type/difficulty ici)
                         batch_suggestions = []
@@ -872,8 +899,8 @@ class RecipeViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
-    def _get_nearby_meal_plans(self, user, target_date, meal_time, max_days=4, limit=10):
-        """Récupérer les meal plans non cuisinés des jours passés, du jour même (autre meal_time), et futurs"""
+    def _get_nearby_meal_plans(self, user, target_date, current_slot_key, max_days=4, limit=10):
+        """Récupérer les meal plans non cuisinés des jours proches, sauf le créneau courant (slot_key)."""
         from django.db.models import Prefetch, Q
         from .models import MealPlanRecipeBatch
         from django.utils import timezone
@@ -892,7 +919,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             date__lte=date_end,
         ).exclude(
             date=target_date,
-            meal_time=meal_time,  # on ne suggère pas le meal plan exact du créneau courant
+            slot_key=current_slot_key,
         ).filter(
             meal_plan_recipe_batches__recipe_batch__is_cooked=False
         ).exclude(
@@ -1406,7 +1433,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     """ViewSet pour les catégories d'ingrédients"""
-    queryset = Category.objects.all()
+    queryset = Category.objects.select_related('parent').all()
     serializer_class = CategorySerializer
     permission_classes = [IsAuthenticated]
 
@@ -1619,42 +1646,35 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         Ajouter des recettes via batches à un meal plan sans supprimer les existantes.
         - recipe_ids : liste obligatoire (crée un batch par recette)
-        - recipe_ratios : dict optionnel {recipe_id: ratio}
+        - portions par défaut = None (suit le nombre de personnes).
         """
 
         meal_plan = self.get_object()
         recipe_ids = request.data.get('recipe_ids') or []
-        recipe_ratios = request.data.get('recipe_ratios') or {}
 
         if not isinstance(recipe_ids, list) or len(recipe_ids) == 0:
             return Response({'error': 'recipe_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
 
         existing_mprs = {mpr.recipe_batch.recipe_id: mpr for mpr in MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).select_related('recipe_batch')}
         current_max_order = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).aggregate(Max('order'))['order__max'] or 0
-        default_ratio = Decimal('1.0') / Decimal(str(len(recipe_ids))) if recipe_ids else Decimal('1.0')
 
         created_mprs = []
         with transaction.atomic():
             for idx, recipe_id in enumerate(recipe_ids):
-                # Vérifier que la recette existe
                 try:
                     Recipe.objects.get(id=recipe_id)
                 except Recipe.DoesNotExist:
                     return Response({'error': f'recipe {recipe_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
-                ratio_value = recipe_ratios.get(str(recipe_id)) or recipe_ratios.get(recipe_id) or default_ratio
-                ratio_decimal = Decimal(str(ratio_value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
                 if recipe_id in existing_mprs:
-                    mpr = existing_mprs[recipe_id]
-                    mpr.ratio = ratio_decimal
-                    mpr.save(update_fields=['ratio', 'updated_at'])
+                    pass  # déjà associé, pas de mise à jour portions ici
                 else:
                     batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=request.user)
                     mpr = MealPlanRecipeBatch.objects.create(
                         meal_plan=meal_plan,
                         recipe_batch=batch,
-                        ratio=ratio_decimal,
+                        portions=None,
+                        is_portions_overridden=False,
                         order=current_max_order + len(created_mprs) + 1
                     )
                     created_mprs.append(mpr)
@@ -1730,8 +1750,17 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 )) & Q(is_cooked=True)
             )
         ).distinct().select_related('recipe').prefetch_related(
-            Prefetch('posts', queryset=Post.objects.filter(is_published=True)),
-            Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan'))
+            Prefetch(
+                'posts',
+                queryset=Post.objects.prefetch_related(
+                    Prefetch('photos', queryset=PostPhoto.objects.order_by('order', 'created_at'))
+                ).order_by('-created_at'),
+            ),
+            Prefetch(
+                'draft_photos',
+                queryset=PostPhoto.objects.filter(is_draft=False).exclude(image_path='').order_by('order', 'created_at'),
+            ),
+            Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan')),
         ).order_by('-created_at')
         
         # Filtrer par recette si demandé
@@ -1752,6 +1781,33 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         except EmptyPage:
             batches = paginator.page(paginator.num_pages)
         
+        def _first_photo_url_from_post(post):
+            if not post:
+                return None
+            for ph in post.photos.all():
+                url = getattr(ph, 'image_url', None)
+                if url:
+                    return url
+            return None
+
+        def _resolve_batch_cover_photo(batch, posts_list):
+            pub = next((p for p in posts_list if p.is_published), None)
+            if pub:
+                u = _first_photo_url_from_post(pub)
+                if u:
+                    return u
+            for p in posts_list:
+                u = _first_photo_url_from_post(p)
+                if u:
+                    return u
+            for ph in batch.draft_photos.all():
+                u = getattr(ph, 'image_url', None)
+                if u:
+                    return u
+            if batch.recipe_id and getattr(batch.recipe, 'image_url', None):
+                return batch.recipe.image_url
+            return None
+
         results = []
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
         for batch in batches:
@@ -1760,30 +1816,30 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 meal_plan_recipe_batches__recipe_batch=batch
             ).filter(accessible_meal_plan_filter).distinct()
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
-            total_servings = 0
-            total_servings_accessible = 0
             meals = []
+            breakdown_list = []
             for mp in meal_plans:
-                total_servings += calculate_meal_plan_servings(mp, recipe_batch_id=batch.id)
+                _, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
+                breakdown_list.extend(breakdown)
                 meals.append({
                     'id': mp.id,
                     'date': mp.date,
                     'meal_time': mp.meal_time,
+                    **meal_plan_slot_api_fields(mp),
                     'is_cooked': batch.is_cooked,
                 })
-            # Ici meal_plans est déjà filtré par accessible_meal_plan_filter
+            total_servings = sum(e.get('portions', 0) for e in breakdown_list)
             total_servings_accessible = total_servings
-            
-            has_published_post = batch.posts.filter(is_published=True).exists()
-            photo_url = None
-            if has_published_post:
-                post = batch.posts.filter(is_published=True).first()
-                first_photo = post.photos.order_by('order').first() if hasattr(post, 'photos') else None
-                if first_photo and hasattr(first_photo, 'image_url'):
-                    photo_url = first_photo.image_url
-            if not photo_url and batch.recipe and getattr(batch.recipe, 'image_url', None):
-                photo_url = batch.recipe.image_url
-            
+
+            posts_list = list(batch.posts.all())
+            has_published_post = any(p.is_published for p in posts_list)
+            photo_url = _resolve_batch_cover_photo(batch, posts_list)
+
+            latest_post = posts_list[0] if posts_list else None
+            post_comment = (latest_post.comment or '').strip() if latest_post else ''
+            batch_notes = (batch.notes or '').strip()
+            user_note = post_comment or batch_notes
+
             payload = RecipeBatchLightSerializer(batch, context={'request': request}).data
             payload.update({
                 'groupedDates': grouped_dates,
@@ -1793,6 +1849,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 'meals': meals,
                 'is_shared': has_published_post,
                 'photo_url': photo_url,
+                'user_note': user_note,
             })
             results.append(payload)
         
@@ -2150,77 +2207,90 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        try:
-            ratio = Decimal(str(ratio))
-        except (ValueError, TypeError):
-            ratio = Decimal('1.0')
+        portions = request.data.get('portions')
+        if portions is not None:
+            try:
+                portions = int(portions)
+                portions = max(0, portions)
+            except (ValueError, TypeError):
+                portions = None
         
         created_meal_plans = []
-        
+        valid_meal_times = {c[0] for c in MealPlan.MEAL_TIME_CHOICES}
+
+        def _parse_scheduled_time(val):
+            if not val:
+                return None
+            if isinstance(val, str):
+                for fmt in ('%H:%M:%S', '%H:%M'):
+                    try:
+                        return datetime.strptime(val.strip(), fmt).time()
+                    except ValueError:
+                        continue
+            return None
+
         with transaction.atomic():
-            # Créer un seul batch pour cette recette
             batch = RecipeBatch.objects.create(
                 recipe=recipe,
                 created_by=request.user
             )
-            
-            # Grouper les dates par meal_time pour traiter chaque meal_time séparément
-            dates_by_meal_time = {}
+
             for date_item in dates:
                 date_key = date_item.get('date')
                 meal_time = date_item.get('meal_time')
-                
-                if not date_key or not meal_time:
+                if not date_key or not meal_time or meal_time not in valid_meal_times:
                     continue
-                
                 try:
                     target_date = datetime.strptime(date_key, '%Y-%m-%d').date()
                 except ValueError:
                     continue
-                
-                if meal_time not in dates_by_meal_time:
-                    dates_by_meal_time[meal_time] = []
-                dates_by_meal_time[meal_time].append(target_date)
-            
-            # Pour chaque meal_time, créer ou mettre à jour les meal plans
-            for meal_time, target_dates in dates_by_meal_time.items():
-                for target_date in target_dates:
-                    # Vérifier si un meal plan existe déjà pour cette date + meal_time
-                    existing_meal_plan = MealPlan.objects.filter(
+
+                slot_key = (date_item.get('slot_key') or '').strip()
+                custom_label = (date_item.get('custom_label') or '').strip()
+                scheduled_time = _parse_scheduled_time(date_item.get('scheduled_time'))
+
+                if meal_time == 'other':
+                    if not slot_key or not custom_label:
+                        continue
+                else:
+                    slot_key = meal_time
+
+                existing_meal_plan = MealPlan.objects.filter(
+                    user=request.user,
+                    date=target_date,
+                    slot_key=slot_key,
+                ).first()
+
+                if existing_meal_plan:
+                    if not existing_meal_plan.meal_plan_recipe_batches.filter(recipe_batch=batch).exists():
+                        MealPlanRecipeBatch.objects.create(
+                            meal_plan=existing_meal_plan,
+                            recipe_batch=batch,
+                            portions=portions,
+                            is_portions_overridden=portions is not None,
+                            order=existing_meal_plan.meal_plan_recipe_batches.count()
+                        )
+                    meal_plan = existing_meal_plan
+                else:
+                    meal_plan = MealPlan.objects.create(
                         user=request.user,
                         date=target_date,
-                        meal_time=meal_time
-                    ).first()
-                    
-                    if existing_meal_plan:
-                        # Vérifier si le batch n'est pas déjà associé à ce meal plan
-                        if not existing_meal_plan.meal_plan_recipe_batches.filter(recipe_batch=batch).exists():
-                            # Ajouter le batch au meal plan existant
-                            MealPlanRecipeBatch.objects.create(
-                                meal_plan=existing_meal_plan,
-                                recipe_batch=batch,
-                                ratio=ratio,
-                                order=existing_meal_plan.meal_plan_recipe_batches.count()
-                            )
-                        meal_plan = existing_meal_plan
-                    else:
-                        # Créer un nouveau meal plan
-                        meal_plan = MealPlan.objects.create(
-                            user=request.user,
-                            date=target_date,
-                            meal_time=meal_time,
-                            meal_type='recipe',
-                            confirmed=False,
-                        )
-                        # Associer le batch au meal plan
-                        MealPlanRecipeBatch.objects.create(
-                            meal_plan=meal_plan,
-                            recipe_batch=batch,
-                            ratio=ratio,
-                            order=0
-                        )
-                    
-                    created_meal_plans.append(meal_plan)
+                        meal_time=meal_time,
+                        slot_key=slot_key,
+                        custom_label=custom_label if meal_time == 'other' else '',
+                        scheduled_time=scheduled_time,
+                        meal_type='recipe',
+                        confirmed=False,
+                    )
+                    MealPlanRecipeBatch.objects.create(
+                        meal_plan=meal_plan,
+                        recipe_batch=batch,
+                        portions=portions,
+                        is_portions_overridden=portions is not None,
+                        order=0
+                    )
+
+                created_meal_plans.append(meal_plan)
         
         # Précharger les relations nécessaires pour le serializer
         from django.db.models import Prefetch
@@ -2264,9 +2334,8 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         created_meal_plans = []
         
         with transaction.atomic():
-            # Récupérer les batches et ratios du meal plan source
             source_recipes = source_meal_plan.meal_plan_recipe_batches.all().select_related('recipe_batch__recipe')
-            recipe_data = [(mpr.recipe_batch_id, mpr.recipe_batch.recipe_id, float(mpr.ratio), mpr.order) for mpr in source_recipes]
+            recipe_data = [(mpr.recipe_batch_id, mpr.recipe_batch.recipe_id, mpr.portions, mpr.is_portions_overridden, mpr.order) for mpr in source_recipes]
             
             for date_key in date_keys:
                 try:
@@ -2274,36 +2343,34 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 except ValueError:
                     continue
                 
-                # Vérifier si un meal plan existe déjà pour cette date + meal_time
                 existing_meal_plan = MealPlan.objects.filter(
                     user=request.user,
                     date=target_date,
-                    meal_time=meal_time
+                    slot_key=source_meal_plan.slot_key,
                 ).first()
                 
-                # Créer ou mettre à jour le meal plan
                 if existing_meal_plan:
-                    # Supprimer les anciennes recettes (elles seront recréées)
                     existing_meal_plan.meal_plan_recipe_batches.all().delete()
                     meal_plan = existing_meal_plan
                 else:
-                    # Créer un nouveau meal plan
                     meal_plan = MealPlan.objects.create(
                         user=request.user,
                         date=target_date,
-                        meal_time=meal_time,
+                        meal_time=source_meal_plan.meal_time,
+                        slot_key=source_meal_plan.slot_key,
+                        custom_label=source_meal_plan.custom_label,
+                        scheduled_time=source_meal_plan.scheduled_time,
                         meal_type=source_meal_plan.meal_type,
                         confirmed=source_meal_plan.confirmed,
                     )
                 
-                # Ajouter les batches avec leurs ratios
-                for batch_id, recipe_id, ratio, order in recipe_data:
-                    # réutiliser le batch existant si dispo sinon clone
+                for batch_id, recipe_id, portions, is_overridden, order in recipe_data:
                     batch = RecipeBatch.objects.get(id=batch_id) if batch_id else RecipeBatch.objects.create(recipe_id=recipe_id, created_by=request.user)
                     MealPlanRecipeBatch.objects.create(
                         meal_plan=meal_plan,
                         recipe_batch=batch,
-                        ratio=Decimal(str(ratio)),
+                        portions=portions,
+                        is_portions_overridden=is_overridden,
                         order=order
                     )
                 
@@ -2834,7 +2901,7 @@ class PostViewSet(viewsets.ModelViewSet):
         
         # Optimisation : pour les listes, limiter les champs chargés
         if self.action == 'list':
-            from django.db.models import Prefetch
+            from django.db.models import Exists, OuterRef, Prefetch
             queryset = queryset.select_related(
                 'user',
                 'recipe_batch',
@@ -2845,7 +2912,14 @@ class PostViewSet(viewsets.ModelViewSet):
                     'recipe_batch__meal_plan_recipe_batches',
                     queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only('meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time')
                 )
-            ).order_by('-created_at')
+            )
+            if self.request.user.is_authenticated:
+                follow_exists = Follow.objects.filter(
+                    follower_id=self.request.user.id,
+                    following_id=OuterRef('user_id'),
+                )
+                queryset = queryset.annotate(_viewer_follows_post_author=Exists(follow_exists))
+            queryset = queryset.order_by('-created_at')
         else:
             queryset = queryset.select_related(
                 'user',
@@ -2904,7 +2978,24 @@ class PostViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-    
+
+    @action(detail=True, methods=['post'], url_path='report')
+    def report(self, request, pk=None):
+        """Signaler un post publié (un signalement par utilisateur et par post)."""
+        post = get_object_or_404(Post, pk=pk, is_published=True)
+        if post.user_id == request.user.id:
+            return Response(
+                {'detail': 'Vous ne pouvez pas signaler votre propre publication.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reason = (request.data.get('reason') or '')[:2000]
+        PostReport.objects.update_or_create(
+            post=post,
+            reporter=request.user,
+            defaults={'reason': reason},
+        )
+        return Response({'ok': True}, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'])
     def get_upload_presigned_url(self, request):
         """Générer une URL pré-signée pour uploader une photo directement vers S3"""
@@ -4013,13 +4104,11 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         recipe = batch.recipe
         if not recipe:
             return 1.0
-        total = 0.0
-        meal_plans = MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch).prefetch_related(
-            Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
-        ).distinct()
-        for mp in meal_plans:
-            total += float(calculate_meal_plan_servings(mp, recipe_batch_id=batch.id))
-        return total if total > 0 else float(recipe.servings or 1)
+        total = 0
+        mprbs = MealPlanRecipeBatch.objects.filter(recipe_batch=batch).select_related('meal_plan')
+        for mprb in mprbs:
+            total += get_batch_portions(mprb.meal_plan, mprb)
+        return float(total) if total > 0 else float(recipe.servings or 1)
 
     def _add_batch_ingredients_to_list(self, shopping_list: ShoppingList, batch: RecipeBatch, actor):
         """
@@ -4543,12 +4632,20 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         
         result = []
         now = timezone.now()
-        from datetime import timedelta as _timedelta_24h  # alias to avoid confusion with other imports
+        hide_after = timedelta(days=1)
         for item in shopping_list.items.all():
-            total_qty = float(sum((q.quantity or 0) for q in item.quantities.all()))
-            total_checked = float(sum((q.checked_quantity or 0) for q in item.quantities.all()))
+            quantities_list = list(item.quantities.all())
+            active_quantities = [
+                q for q in quantities_list
+                if not shopping_list_item_quantity_is_stale(q, now, hide_after)
+            ]
+            if not active_quantities:
+                continue
+
+            total_qty = float(sum(Decimal(str(q.quantity or 0)) for q in active_quantities))
+            total_checked = float(sum(Decimal(str(q.checked_quantity or 0)) for q in active_quantities))
             unit = ''
-            first_q = item.quantities.first()
+            first_q = active_quantities[0]
             if first_q and first_q.unit:
                 unit = first_q.unit
             elif item.pantry_unit:
@@ -4556,17 +4653,20 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
 
             category = item.ingredient.category
 
-            # Filtrer côté backend les lignes "tout acheté" depuis plus de 24h
+            # Filtrer côté backend les lignes "tout acheté" depuis plus de 24h (totaux = quantités actives)
             pantry_qty = float(item.pantry_quantity or 0)
             remaining = total_qty - total_checked - pantry_qty
             if remaining <= 0 and item.checked_at:
                 try:
-                    if now - item.checked_at > _timedelta_24h(days=1):
+                    if now - item.checked_at > hide_after:
                         # Ignorer complètement cette ligne dans la réponse
                         continue
                 except Exception:
                     # En cas de problème de timezone/valeur, ne pas filtrer agressivement
                     pass
+
+            line_checked_at = None if remaining > 0 else item.checked_at
+            line_checked_by = None if remaining > 0 else item.checked_by
             
             # Collecter les batches avec leurs détails (recipe_batch=None = ajout manuel)
             batches_data = []
@@ -4574,7 +4674,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             has_manual = False
             manual_qty = 0.0
             manual_checked = 0.0
-            for q in item.quantities.all():
+            for q in active_quantities:
                 batch = q.recipe_batch
                 if batch is None:
                     # Quantité manuelle (pas de recette liée)
@@ -4650,8 +4750,8 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 },
                 'pantry_quantity': float(item.pantry_quantity or 0),
                 'pantry_unit': item.pantry_unit or unit or '',
-                'checked_at': item.checked_at,
-                'checked_by': UserLightSerializer(item.checked_by).data if item.checked_by else None,
+                'checked_at': line_checked_at,
+                'checked_by': UserLightSerializer(line_checked_by).data if line_checked_by else None,
                 'batches': batches_data,
                 'recipes_count': len(batches_data),
             })
@@ -4835,55 +4935,9 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         )
     
     def _categorize_ingredient(self, ingredient_name: str, ingredient: Ingredient) -> Optional[Category]:
-        """
-        Catégorise un ingrédient en utilisant d'abord l'embedding pour trouver des ingrédients similaires,
-        puis une logique simple basée sur les mots-clés.
-        TODO: Ajouter fallback LLM si nécessaire.
-        """
-        # Si l'ingrédient a déjà une catégorie, la retourner
-        if ingredient.category:
-            return ingredient.category
-        
-        # Essayer de trouver un ingrédient similaire avec catégorie via embedding
-        # Vérifier si l'embedding existe (VectorField peut être None ou un array numpy)
-        if ingredient.embedding is not None:
-            try:
-                # Convertir l'embedding en liste si c'est un array numpy
-                embedding_list = list(ingredient.embedding) if hasattr(ingredient.embedding, '__iter__') else ingredient.embedding
-                if embedding_list:
-                    from .services.ingredient_matcher import find_similar_ingredient
-                    similar = find_similar_ingredient(ingredient_name, embedding_list)
-                    if similar and similar.category:
-                        return similar.category
-            except Exception:
-                # Si la recherche par embedding échoue, continuer avec le fallback
-                pass
-        
-        # Fallback: catégorisation basique par mots-clés
-        name_lower = ingredient_name.lower()
-        
-        # Mapping simple de mots-clés vers catégories
-        category_keywords = {
-            'Fruits': ['pomme', 'banane', 'orange', 'fraise', 'cerise', 'raisin', 'citron', 'kiwi', 'mangue', 'ananas', 'pêche', 'poire', 'abricot', 'melon', 'pastèque'],
-            'Légumes': ['tomate', 'carotte', 'courgette', 'aubergine', 'poivron', 'oignon', 'ail', 'salade', 'chou', 'brocoli', 'haricot', 'petit pois', 'épinard', 'poireau', 'céleri'],
-            'Viandes & Poissons': ['poulet', 'boeuf', 'porc', 'agneau', 'saumon', 'thon', 'cabillaud', 'crevette', 'moule', 'steak', 'jambon', 'bacon'],
-            'Produits laitiers': ['lait', 'fromage', 'yaourt', 'crème', 'beurre', 'fromage blanc', 'mozzarella', 'cheddar'],
-            'Pain & Pâtisserie': ['pain', 'baguette', 'brioche', 'croissant', 'gâteau', 'tarte', 'pizza'],
-            'Épicerie': ['riz', 'pâtes', 'farine', 'sucre', 'sel', 'poivre', 'huile', 'vinaigre', 'moutarde', 'ketchup'],
-        }
-        
-        for category_name, keywords in category_keywords.items():
-            if any(keyword in name_lower for keyword in keywords):
-                try:
-                    return Category.objects.get(name=category_name)
-                except Category.DoesNotExist:
-                    pass
-        
-        # Par défaut, retourner "Autres"
-        try:
-            return Category.objects.get(name='Autres')
-        except Category.DoesNotExist:
-            return None
+        from .services.ingredient_categorization import resolve_category_for_ingredient
+
+        return resolve_category_for_ingredient(ingredient_name, ingredient)
 
 
 class CollectionViewSet(viewsets.ModelViewSet):

@@ -15,7 +15,9 @@ from .serializers import (
     LoginSerializer,
     NotificationSerializer,
     LoyaltyCardSerializer,
+    FeedUserSuggestionSerializer,
 )
+from .feed_suggestions import build_feed_user_suggestions
 from .serializers_push import PushDeviceRegisterSerializer
 from .models import Follow, Notification, PushDevice, LoyaltyCard
 from .services.expo_push import send_expo_push_notifications
@@ -635,4 +637,13 @@ def loyalty_card_barcode_view(request, card_id):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def feed_user_suggestions_view(request):
+    """Suggestions de profils pour le feed (complices en commun + récence + aléatoire)."""
+    rows = build_feed_user_suggestions(request.user)
+    serializer = FeedUserSuggestionSerializer(rows, many=True, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
 

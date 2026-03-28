@@ -1,5 +1,49 @@
+from datetime import timedelta
+from decimal import Decimal
+
 from django.db.models import Q
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+
+
+def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
+    """
+    Retourne le nombre de personnes pour un meal plan (1 + participants acceptés/pending + guest_count).
+    Utilisable depuis serializers sans importer views.
+    """
+    if group_meal_plans and len(group_meal_plans) > 1:
+        from .models import MealPlan
+        total_guest_count = sum(mp.guest_count or 0 for mp in group_meal_plans)
+        all_participants = []
+        for mp in group_meal_plans:
+            invitations = mp.invitations.all() if hasattr(mp, 'invitations') else []
+            for inv in invitations:
+                all_participants.append({'user': inv.invitee, 'status': inv.status})
+        active_participants_by_user = {}
+        for p in all_participants:
+            if p.get('status') in ['accepted', 'pending']:
+                user_id = p['user'].id if hasattr(p['user'], 'id') else p['user']['id'] if isinstance(p['user'], dict) else None
+                if user_id:
+                    existing = active_participants_by_user.get(user_id)
+                    if not existing or (p.get('status') == 'accepted' and existing != 'accepted'):
+                        active_participants_by_user[user_id] = p.get('status')
+        return len(group_meal_plans) + len(active_participants_by_user) + total_guest_count
+    participants_count = meal_plan.invitations.filter(
+        status__in=['accepted', 'pending']
+    ).count() if hasattr(meal_plan, 'invitations') else 0
+    guest_count = meal_plan.guest_count or 0
+    return 1 + participants_count + guest_count
+
+
+def get_batch_portions(meal_plan, mprb, people_count=None):
+    """
+    Retourne le nombre effectif de portions pour ce batch dans ce repas.
+    Si mprb.portions est renseigné, on le retourne ; sinon people_count (nombre de personnes).
+    """
+    if mprb.portions is not None:
+        return mprb.portions
+    if people_count is not None:
+        return people_count
+    return get_meal_plan_people_count(meal_plan)
 
 
 def get_accessible_meal_plan_filter(user):
@@ -90,4 +134,37 @@ def canonicalize_import_url(url: str) -> str:
     normalized = urlunparse((scheme, netloc, path, parsed.params, query, fragment))
     return normalized
 
+
+def shopping_list_item_quantity_is_stale(quantity, now, hide_after: timedelta) -> bool:
+    """
+    True si cette sous-ligne (ShoppingListItemQuantity) est entièrement cochée
+    et cochée depuis plus de hide_after — même règle que le masquage 24h des lignes
+    dans with_quantities (évite d'exposer d'anciens batchs une fois le besoin réapparu).
+    """
+    qty = Decimal(str(quantity.quantity or 0))
+    checked = Decimal(str(quantity.checked_quantity or 0))
+    if qty - checked > Decimal('0'):
+        return False
+    if not quantity.checked_at:
+        return False
+    try:
+        return now - quantity.checked_at > hide_after
+    except Exception:
+        return False
+
+
+def meal_plan_slot_api_fields(meal_plan):
+    """
+    Champs custom_label + meal_time_display alignés sur MealPlanSerializer.get_meal_time_display,
+    pour les entrées `meals` des payloads recipe-batches (le client affiche le nom du créneau perso).
+    """
+    custom = (getattr(meal_plan, 'custom_label', None) or '').strip()
+    if meal_plan.meal_time == 'other' and custom:
+        display = custom
+    else:
+        display = meal_plan.get_meal_time_display()
+    return {
+        'custom_label': custom or None,
+        'meal_time_display': display,
+    }
 

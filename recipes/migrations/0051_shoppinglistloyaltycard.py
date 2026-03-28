@@ -1,4 +1,3 @@
-from django.conf import settings
 from django.db import migrations, models
 import django.db.models.deletion
 
@@ -8,7 +7,6 @@ class Migration(migrations.Migration):
     dependencies = [
         ('recipes', '0050_postcommentlike'),
         ('accounts', '0011_loyaltycard'),
-        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [

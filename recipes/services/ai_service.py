@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 # Configuration du modèle IA
 AI_MODEL = config('AI_MODEL', default='gemini-3-flash-preview')
 AI_API_KEY = config('AI_API_KEY', default='')
-print(AI_API_KEY)
 GoogleProvider = Literal['google-gla', 'google-vertex', 'gateway']
 
 DEFAULT_GOOGLE_PROVIDER: GoogleProvider = 'google-gla'

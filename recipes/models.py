@@ -8,15 +8,30 @@ from pgvector.django import VectorField
 
 
 class Category(models.Model):
-    """Catégorie d'ingrédient (Fruits, Légumes, etc.)"""
+    """Rayon magasin (feuille = assignée aux ingrédients ; parent = zone du parcours)."""
     name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(
+        max_length=80,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Identifiant stable pour règles et migrations (feuilles uniquement de préférence).",
+    )
+    parent = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='children',
+        help_text="Section (ex. Pôle frais). Vide pour racines historiques sans hiérarchie.",
+    )
     display_order = models.IntegerField(default=0, help_text="Ordre d'affichage dans les listes")
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         ordering = ['display_order', 'name']
         verbose_name_plural = 'Categories'
-    
+
     def __str__(self):
         return self.name
 
@@ -388,8 +403,10 @@ class MealPlan(models.Model):
     ]
     
     MEAL_TIME_CHOICES = [
+        ('breakfast', 'Petit-déjeuner'),
         ('lunch', 'Déjeuner'),
         ('dinner', 'Dîner'),
+        ('other', 'Autre'),
     ]
     
     user = models.ForeignKey(
@@ -399,6 +416,14 @@ class MealPlan(models.Model):
     )
     date = models.DateField()
     meal_time = models.CharField(max_length=20, choices=MEAL_TIME_CHOICES)
+    slot_key = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text='lunch/dinner/breakfast ou UUID pour un créneau personnalisé (meal_time=other).',
+    )
+    custom_label = models.CharField(max_length=80, blank=True, default='')
+    scheduled_time = models.TimeField(null=True, blank=True)
     meal_type = models.CharField(max_length=20, choices=MEAL_TYPE_CHOICES)
     confirmed = models.BooleanField(default=False)
     guest_count = models.IntegerField(
@@ -409,27 +434,35 @@ class MealPlan(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        ordering = ['-date', 'meal_time']
-        unique_together = ['user', 'date', 'meal_time']
+        ordering = ['-date', 'meal_time', 'slot_key']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'date', 'slot_key'],
+                name='mealplan_user_date_slotkey_uniq',
+            ),
+        ]
         indexes = [
             models.Index(fields=['user', 'date'], name='mealplan_user_date_idx'),
             models.Index(fields=['user', 'meal_time'], name='mealplan_user_meal_time_idx'),
         ]
+
+    def save(self, *args, **kwargs):
+        if not self.slot_key:
+            self.slot_key = self.meal_time
+        super().save(*args, **kwargs)
     
     def get_group_key(self):
         """
         Génère une clé unique pour identifier les meal plans du même groupe
-        (même meal_time, mêmes recettes avec mêmes ratios).
+        (même meal_time, mêmes recettes).
         Utilisé pour grouper les meal plans sur plusieurs dates.
         """
-        # Récupérer les recettes et ratios triés
-        meal_plan_recipes = self.meal_plan_recipes.all().order_by('order')
-        if meal_plan_recipes.exists():
-            recipe_ids = ','.join(str(mpr.recipe_id) for mpr in meal_plan_recipes)
-            # Normaliser les ratios pour éviter les problèmes de comparaison (ex: 1.0 vs 1.00)
-            from decimal import Decimal
-            ratios = ','.join(str(Decimal(str(mpr.ratio)).normalize()) for mpr in meal_plan_recipes)
-            return f"{self.meal_time}|{recipe_ids}|{ratios}"
+        mprbs = self.meal_plan_recipe_batches.all().order_by('order')
+        if mprbs.exists():
+            recipe_ids = ','.join(
+                str(mpr.recipe_batch.recipe_id) for mpr in mprbs if mpr.recipe_batch_id
+            )
+            return f"{self.meal_time}|{recipe_ids}"
         return None
     
     def __str__(self):
@@ -438,8 +471,9 @@ class MealPlan(models.Model):
 
 class MealPlanRecipeBatch(models.Model):
     """
-    Relation entre MealPlan et RecipeBatch avec ratio personnalisable.
-    Remplace les anciens groupes de recettes/meal plans.
+    Relation entre MealPlan et RecipeBatch avec gestion des portions.
+    portions=None => suit le nombre de personnes du repas.
+    is_portions_overridden=True => l'utilisateur a modifié manuellement les portions.
     """
     meal_plan = models.ForeignKey(
         MealPlan,
@@ -453,11 +487,14 @@ class MealPlanRecipeBatch(models.Model):
         related_name='meal_plan_recipe_batches',
         verbose_name='Batch'
     )
-    ratio = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        default=1.0,
-        help_text="Ratio appliqué aux quantités (défaut: 1.0)"
+    portions = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Nombre de portions pour ce batch dans ce repas (None = suit le nombre de personnes)"
+    )
+    is_portions_overridden = models.BooleanField(
+        default=False,
+        help_text="True si l'utilisateur a détaché les portions du nombre de personnes"
     )
     order = models.IntegerField(
         default=0,
@@ -475,7 +512,7 @@ class MealPlanRecipeBatch(models.Model):
         ]
     
     def __str__(self):
-        return f"{self.meal_plan} - {self.recipe_batch} (ratio: {self.ratio})"
+        return f"{self.meal_plan} - {self.recipe_batch} (portions: {self.portions}, overridden: {self.is_portions_overridden})"
 
 
 class MealInvitation(models.Model):
@@ -832,6 +869,33 @@ class PostComment(models.Model):
 
     def __str__(self):
         return f"{self.user.username} on post {self.post.id}"
+
+
+class PostReport(models.Model):
+    """Signalement d'un post publié par un utilisateur."""
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name='reports',
+    )
+    reporter = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='post_reports',
+    )
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['post', 'reporter'],
+                name='uniq_post_report_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Report post {self.post_id} by {self.reporter_id}"
 
 
 class PostCommentLike(models.Model):

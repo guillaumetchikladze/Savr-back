@@ -120,6 +120,32 @@ class LoginSerializer(serializers.Serializer):
         return attrs
 
 
+class FeedUserSuggestionSerializer(serializers.Serializer):
+    """Profils suggérés pour le feed (hors réseau complice actuel)."""
+
+    id = serializers.IntegerField(source='user.id')
+    username = serializers.CharField(source='user.username')
+    avatar_url = serializers.SerializerMethodField()
+    mutual_complices_count = serializers.IntegerField()
+    mutual_preview = serializers.SerializerMethodField()
+
+    def _avatar_url(self, user):
+        return UserSerializer(user, context=self.context).data.get('avatar_url')
+
+    def get_avatar_url(self, obj):
+        return self._avatar_url(obj['user'])
+
+    def get_mutual_preview(self, obj):
+        return [
+            {
+                'id': u.id,
+                'username': u.username,
+                'avatar_url': self._avatar_url(u),
+            }
+            for u in (obj.get('mutual_preview') or [])
+        ]
+
+
 class NotificationSerializer(serializers.ModelSerializer):
     related_user = UserSerializer(read_only=True)
     notification_type_display = serializers.CharField(source='get_notification_type_display', read_only=True)
