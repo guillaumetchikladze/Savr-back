@@ -64,10 +64,20 @@ User = get_user_model()
 
 class UserLightSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
-    
+    display_name = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'avatar_url']
+        fields = ['id', 'username', 'avatar_url', 'display_name']
+
+    def get_display_name(self, obj):
+        u = (getattr(obj, 'username', None) or '').strip()
+        if u:
+            return u
+        em = (getattr(obj, 'email', None) or '').strip()
+        if em and '@' in em:
+            return em.split('@', 1)[0]
+        return f'#{obj.pk}'
     
     def get_avatar_url(self, obj):
         """Retourner l'URL de l'avatar avec presigned URL si disponible"""
@@ -1002,17 +1012,22 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
     """
     recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
-    meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
+    meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     total_guest_count = serializers.SerializerMethodField()
     total_participants = serializers.SerializerMethodField()
     total_servings = serializers.SerializerMethodField()
     groupedDates = serializers.SerializerMethodField()
+
+    def get_meal_time_display(self, obj: MealPlan):
+        if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
+            return (obj.custom_label or '').strip() or obj.get_meal_time_display()
+        return obj.get_meal_time_display()
     
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display',
+            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
             'meal_type', 'meal_type_display', 'confirmed',
             'recipe', 'recipes', 'total_guest_count', 'total_participants', 'total_servings',
             'groupedDates',

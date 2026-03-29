@@ -4,14 +4,14 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
-from django.db.models import Q, F
-from django.db.models.functions import Greatest
+from django.db.models import Q
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
 from django.conf import settings
 import uuid
 from .serializers import (
     UserRegistrationSerializer,
     UserSerializer,
+    UserSearchResultSerializer,
     LoginSerializer,
     NotificationSerializer,
     LoyaltyCardSerializer,
@@ -25,8 +25,32 @@ import random
 from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
 from recipes.serializers import RecipeSerializer
 from savr_back.settings import build_s3_client, build_presigned_get_url, build_s3_url
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from django.core.cache import cache
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.shortcuts import render, redirect
+from django.views.decorators.http import require_http_methods
 
 User = get_user_model()
+
+
+def _get_client_ip(request) -> str:
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return (request.META.get("REMOTE_ADDR") or "").strip() or "unknown"
+
+
+def _rate_limit_key(prefix: str, value: str) -> str:
+    return f"rl:{prefix}:{value}"
+
+
+def _get_public_base_url() -> str:
+    base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+    return base.rstrip("/")
 
 
 @api_view(['POST'])
@@ -36,6 +60,31 @@ def register_view(request):
     serializer = UserRegistrationSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.save()
+        # Enqueue welcome email (non bloquant)
+        try:
+            from emails.services import enqueue_email
+
+            from_email = (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@savr.app"
+            login_url = (request.data.get("login_url") or "").strip()
+
+            enqueue_email(
+                from_email=from_email,
+                to_email=user.email,
+                subject="Bienvenue sur Tchikook",
+                content={
+                    "template_name": "emails/welcome",
+                    "context": {
+                        "username": user.username or user.email,
+                        "login_url": login_url,
+                    },
+                },
+                action_name="welcome",
+                priority="NORMAL",
+                user_id=user.id,
+            )
+        except Exception:
+            # Ne pas bloquer la création de compte si l'email échoue.
+            pass
         refresh = RefreshToken.for_user(user)
         return Response({
             'message': 'Utilisateur créé avec succès',
@@ -185,7 +234,7 @@ def search_view(request):
     if user_id:
         try:
             user = User.objects.get(id=int(user_id))
-            serializer = UserSerializer(user, context={'request': request})
+            serializer = UserSearchResultSerializer(user, context={'request': request})
             return Response({
                 'users': [serializer.data],
                 'recipes': [],
@@ -203,7 +252,7 @@ def search_view(request):
             'steps', 'recipe_ingredients__ingredient'
         ).order_by('-created_at')[:10]
         
-        users_serializer = UserSerializer(users, many=True, context={'request': request})
+        users_serializer = UserSearchResultSerializer(users, many=True, context={'request': request})
         recipes_serializer = RecipeSerializer(recipes, many=True)
         
         return Response({
@@ -211,22 +260,16 @@ def search_view(request):
             'recipes': recipes_serializer.data,
         }, status=status.HTTP_200_OK)
     
-    # Recherche fuzzy pour les utilisateurs avec trigram similarity
+    # Recherche fuzzy sur le username uniquement (pas d'email)
     try:
         users = User.objects.exclude(id=request.user.id).annotate(
             username_similarity=TrigramSimilarity('username', query),
-            email_similarity=TrigramSimilarity('email', query),
-        ).annotate(
-            max_similarity=Greatest('username_similarity', 'email_similarity')
         ).filter(
-            Q(username__icontains=query) | 
-            Q(email__icontains=query) | 
-            Q(max_similarity__gt=0.2)
-        ).order_by('-max_similarity')
+            Q(username__icontains=query) | Q(username_similarity__gt=0.2)
+        ).order_by('-username_similarity')
     except Exception:
-        # Fallback sans trigram similarity
         users = User.objects.filter(
-            Q(username__icontains=query) | Q(email__icontains=query)
+            Q(username__icontains=query)
         ).exclude(id=request.user.id)
     
     # Recherche fuzzy pour les recettes avec PostgreSQL Full-Text Search
@@ -271,7 +314,7 @@ def search_view(request):
     # Limiter les utilisateurs à 10 résultats
     users = users[:10]
     
-    users_serializer = UserSerializer(users, many=True, context={'request': request})
+    users_serializer = UserSearchResultSerializer(users, many=True, context={'request': request})
     recipes_serializer = RecipeSerializer(recipes, many=True)
     
     return Response({
@@ -546,6 +589,129 @@ def test_push_device_view(request):
 
     send_expo_push_notifications(messages)
     return Response({'message': f'Push de test envoyée à {len(messages)} device(s).'}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def password_reset_request_view(request):
+    """
+    Envoie un lien de reset password (token Django) par email.
+    Réponse non discriminante (anti-énumération).
+    """
+    ip = _get_client_ip(request)
+    email = (request.data.get('email') or '').strip().lower()
+    ttl_seconds = 5
+    key_ip = _rate_limit_key("pwreset:ip", ip)
+    key_email = _rate_limit_key("pwreset:email", email or "empty")
+    if not cache.add(key_ip, "1", timeout=ttl_seconds) or not cache.add(key_email, "1", timeout=ttl_seconds):
+        return Response(
+            {'message': 'Si le compte existe, un email a été envoyé.', 'retry_after_seconds': ttl_seconds},
+            status=429,
+        )
+
+    # Réponse OK même si vide/invalide
+    if not email:
+        return Response({'message': 'Si le compte existe, un email a été envoyé.'}, status=status.HTTP_200_OK)
+
+    user = User.objects.filter(email__iexact=email, is_active=True).first()
+    if user:
+        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        base = _get_public_base_url()
+        # Route web (sans /api) demandée.
+        reset_url = f"{base}/auth/password-reset/{uidb64}/{token}/" if base else ""
+
+        try:
+            from emails.services import enqueue_email
+
+            from_email = (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@savr.app"
+            enqueue_email(
+                from_email=from_email,
+                to_email=user.email,
+                subject="Réinitialiser ton mot de passe Tchikook",
+                content={
+                    "template_name": "emails/password_reset",
+                    "context": {
+                        "reset_url": reset_url,
+                    },
+                },
+                action_name="password_reset",
+                priority="HIGH",
+                user_id=user.id,
+            )
+        except Exception:
+            pass
+
+    return Response({'message': 'Si le compte existe, un email a été envoyé.'}, status=status.HTTP_200_OK)
+
+
+@require_http_methods(["GET", "POST"])
+def password_reset_confirm_view(request, uidb64: str, token: str):
+    """
+    Page web Django (sans auth) pour choisir un nouveau mot de passe.
+    """
+    user = None
+    try:
+        uid = force_str(urlsafe_base64_decode(uidb64))
+        user = User.objects.filter(pk=uid, is_active=True).first()
+    except Exception:
+        user = None
+
+    valid = bool(user and default_token_generator.check_token(user, token))
+    if not valid:
+        return render(
+            request,
+            "auth/password_reset_confirm.html",
+            {"valid": False},
+            status=400,
+        )
+
+    if request.method == "POST":
+        new_password = (request.POST.get("new_password") or "").strip()
+        confirm_password = (request.POST.get("confirm_password") or "").strip()
+        if not new_password or new_password != confirm_password:
+            return render(
+                request,
+                "auth/password_reset_confirm.html",
+                {"valid": True, "error": "Les mots de passe ne correspondent pas."},
+                status=400,
+            )
+        try:
+            validate_password(new_password, user=user)
+        except ValidationError as e:
+            return render(
+                request,
+                "auth/password_reset_confirm.html",
+                {"valid": True, "error": "Mot de passe invalide.", "details": list(e.messages)},
+                status=400,
+            )
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+        return render(request, "auth/password_reset_confirm.html", {"valid": True, "success": True})
+
+    return render(request, "auth/password_reset_confirm.html", {"valid": True})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password_view(request):
+    old_password = (request.data.get('old_password') or '').strip()
+    new_password = (request.data.get('new_password') or '').strip()
+    if not old_password or not new_password:
+        return Response({'error': 'old_password et new_password requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = request.user
+    if not user.check_password(old_password):
+        return Response({'error': 'Ancien mot de passe incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        validate_password(new_password, user=user)
+    except ValidationError as e:
+        return Response({'error': 'Mot de passe invalide.', 'details': list(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save(update_fields=['password'])
+    return Response({'message': 'Mot de passe mis à jour.'}, status=status.HTTP_200_OK)
 
 
 class LoyaltyCardListCreateView(generics.ListCreateAPIView):

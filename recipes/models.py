@@ -62,6 +62,116 @@ class Ingredient(models.Model):
         return self.name
 
 
+class DietaryIngredientMatch(models.Model):
+    """
+    Lie un libellé de préférence utilisateur (allergie ou « je n’aime pas »)
+    à des sous-chaînes cherchées dans les noms d’ingrédients (correspondance insensible à la casse).
+    """
+
+    preference_label = models.CharField(max_length=120, db_index=True)
+    match_keyword = models.CharField(max_length=200)
+
+    class Meta:
+        unique_together = [('preference_label', 'match_keyword')]
+        verbose_name = 'Correspondance préférence → ingrédient'
+        verbose_name_plural = 'Correspondances préférences → ingrédients'
+
+    def __str__(self):
+        return f'{self.preference_label} → {self.match_keyword}'
+
+
+class PreferenceMapping(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    """
+    Mapping communautaire: un label (allergie ou goût) -> mots-clés d'ingrédients.
+
+    - `status=pending` = impact global uniquement en soft (score/tags), jamais en strict.
+    - `status=validated` = peut être utilisé en strict (suggest) + warnings forts.
+    """
+
+    KIND_CHOICES = [
+        ('allergy', 'Allergie'),
+        ('dislike', 'Goût (n’aime pas)'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', 'À valider'),
+        ('validated', 'Validé'),
+    ]
+
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES, db_index=True)
+    label = models.CharField(max_length=120, db_index=True)
+    keywords = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending', db_index=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_preference_mappings',
+    )
+    forked_from = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='forks',
+    )
+
+    usage_count = models.IntegerField(default=0)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('kind', 'label')]
+        indexes = [
+            models.Index(fields=['kind', 'status', 'label'], name='prefmap_kind_status_label_idx'),
+            models.Index(fields=['kind', 'label'], name='prefmap_kind_label_idx'),
+        ]
+        ordering = ['kind', 'label']
+
+    def __str__(self):
+        return f'{self.kind}:{self.label} ({self.status})'
+
+
+class UserPreferenceMapping(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    """
+    Fork utilisateur: override des mots-clés pour un label donné.
+    Priorité sur le mapping communautaire.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='preference_mapping_overrides',
+    )
+    kind = models.CharField(max_length=16, choices=PreferenceMapping.KIND_CHOICES, db_index=True)
+    label = models.CharField(max_length=120, db_index=True)
+    keywords = models.JSONField(default=list, blank=True)
+    base_mapping = models.ForeignKey(
+        PreferenceMapping,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='user_overrides',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('user', 'kind', 'label')]
+        indexes = [
+            models.Index(fields=['user', 'kind', 'label'], name='upm_user_kind_label_idx'),
+        ]
+        ordering = ['kind', 'label']
+
+    def __str__(self):
+        return f'{self.user_id}:{self.kind}:{self.label}'
+
+
 class Recipe(models.Model):
     """Recette de cuisine"""
     MEAL_TYPE_CHOICES = [

@@ -1,5 +1,12 @@
 # Guide de mise à jour Python pour Savr Backend
 
+Avant toute commande `python` ou `manage.py` en local, activer l’environnement du projet :
+
+```bash
+cd Savr-back
+source venv/bin/activate
+```
+
 ## Vérifier la version actuelle
 
 ```bash

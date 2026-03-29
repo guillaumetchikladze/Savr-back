@@ -1,5 +1,6 @@
 """
 Suggestions de profils pour le feed : complices en commun + comptes récents + part d'aléatoire.
+Les comptes qui vous suivent sans que vous les suiviez en retour sont éligibles et listés en premier.
 Reste borné en coût (pool limité, requêtes Follow en masse).
 """
 from __future__ import annotations
@@ -93,7 +94,9 @@ def build_feed_user_suggestions(viewer):
 
     following = set(Follow.objects.filter(follower=viewer).values_list('following_id', flat=True))
     followers = set(Follow.objects.filter(following=viewer).values_list('follower_id', flat=True))
-    excluded = following | followers | {viewer.id}
+    # Ne pas exclure les abonnés : quelqu’un qui vous suit sans que vous le suiviez doit pouvoir être
+    # suggéré (et en priorité), comme sur les réseaux habituels.
+    excluded = following | {viewer.id}
 
     pool_ids = _candidate_pool_ids(excluded, rng)
     if not pool_ids:
@@ -111,9 +114,18 @@ def build_feed_user_suggestions(viewer):
         scored.append((score, u, mset))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    top = scored[:MAX_CANDIDATES_AFTER_SCORE]
-    rng.shuffle(top)
-    top = top[:MAX_RETURN]
+
+    def _follows_you_not_following_back(uid: int) -> bool:
+        return uid in followers and uid not in following
+
+    prio = [row for row in scored if _follows_you_not_following_back(row[1].id)]
+    rest = [row for row in scored if not _follows_you_not_following_back(row[1].id)]
+    prio.sort(key=lambda x: x[0], reverse=True)
+    prio_pick = prio[:MAX_RETURN]
+    remaining = MAX_RETURN - len(prio_pick)
+    rest_top = rest[:MAX_CANDIDATES_AFTER_SCORE]
+    rng.shuffle(rest_top)
+    top = prio_pick + rest_top[: max(0, remaining)]
 
     preview_user_ids: set[int] = set()
     for _, u, mset in top:

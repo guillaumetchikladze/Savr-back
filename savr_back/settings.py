@@ -55,6 +55,14 @@ if SENTRY_DSN:
 
 ALLOWED_HOSTS = ['*']
 
+# Filtrage recettes / préférences alimentaires (recipes.dietary_filters)
+# Distance cosinus pgvector : 0 = identique, 2 = opposé. Plus la valeur est basse, plus c’est strict.
+DIETARY_SEMANTIC_MATCHING = config('DIETARY_SEMANTIC_MATCHING', default=True, cast=bool)
+DIETARY_SEMANTIC_MAX_DISTANCE = config('DIETARY_SEMANTIC_MAX_DISTANCE', default=0.42, cast=float)
+DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL = config(
+    'DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', default=120, cast=int
+)
+
 
 # Application definition
 
@@ -71,6 +79,7 @@ INSTALLED_APPS = [
     'channels',
     'accounts',
     'recipes',
+    'emails',
 ]
 
 MIDDLEWARE = [
@@ -242,11 +251,39 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_BUCKET:
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
 CELERY_TASK_DEFAULT_QUEUE = 'savr_default'
+CELERY_TASK_DEFAULT_EXCHANGE = 'savr'
+CELERY_TASK_DEFAULT_ROUTING_KEY = 'savr.default'
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10  # 10 minutes
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+# Email queues (priority routing)
+CELERY_TASK_QUEUES = (
+    # default
+    __import__("kombu").Queue("savr_default", routing_key="savr.default"),
+    # emails
+    __import__("kombu").Queue("emails_urgent", routing_key="emails.urgent"),
+    __import__("kombu").Queue("emails_high", routing_key="emails.high"),
+    __import__("kombu").Queue("emails_normal", routing_key="emails.normal"),
+    __import__("kombu").Queue("emails_low", routing_key="emails.low"),
+)
+
+# Microsoft Graph (app-only)
+MS_GRAPH_TENANT_ID = config('MS_GRAPH_TENANT_ID', default='')
+MS_GRAPH_CLIENT_ID = config('MS_GRAPH_CLIENT_ID', default='')
+MS_GRAPH_CLIENT_SECRET = config('MS_GRAPH_CLIENT_SECRET', default='')
+MS_GRAPH_SENDER = config('MS_GRAPH_SENDER', default='')
+EMAIL_FROM_ADDRESS = config('EMAIL_FROM_ADDRESS', default='noreply@savr.app')
+
+# Public URL (used to build password reset links).
+# In local dev you may have API_URL=http://host:8000/api -> public base is http://host:8000
+API_URL = config('API_URL', default='')
+if API_URL and API_URL.rstrip('/').endswith('/api'):
+    PUBLIC_BASE_URL = API_URL.rstrip('/')[:-4]
+else:
+    PUBLIC_BASE_URL = config('PUBLIC_BASE_URL', default='')
 
 # Channels configuration (WebSocket)
 CHANNEL_REDIS_URL = config('CHANNEL_REDIS_URL', default='redis://localhost:6379/1')

@@ -57,6 +57,7 @@ from accounts.services.expo_push import send_expo_push_notifications
 from .tasks import process_recipe_import
 from accounts.tasks import send_timer_almost_finished_push
 from .utils import get_accessible_meal_plan_filter, shopping_list_item_quantity_is_stale, meal_plan_slot_api_fields
+from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
 
 
 logger = logging.getLogger(__name__)
@@ -765,8 +766,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
             queryset = queryset.prefetch_related(
                 'recipe_ingredients__ingredient',
             ).select_related('created_by')
-        
-        return queryset.order_by('-created_at')
+
+        queryset = queryset.order_by('-created_at')
+        # IMPORTANT: on ne filtre pas en dur sur les listes “générales”.
+        # Le mode strict est réservé aux endpoints de suggestions dédiés.
+        return queryset
     
     def list(self, request, *args, **kwargs):
         """Log détaillé pour diagnostiquer les lenteurs"""
@@ -897,6 +901,38 @@ class RecipeViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(data)
         
         serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='suggested')
+    def suggested(self, request):
+        """
+        Suggestions personnalisées:
+        - mode strict: exclusion allergies + régimes (jamais dislikes)
+        - dislikes: dépriorisation légère (dans la page courante), sans exclusion
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        queryset = apply_dietary_exclusion(queryset, request.user)
+
+        page = self.paginate_queryset(queryset)
+        if page is None:
+            items = list(queryset[:50])
+        else:
+            items = list(page)
+
+        # Déprioriser les dislikes: on conserve l’ordre relatif, mais on met d’abord les recettes
+        # sans conflit "dislike" pour l’utilisateur courant (allergies/régimes déjà exclues).
+        try:
+            ids = [r.id for r in items if getattr(r, 'id', None) is not None]
+            reasons_map = conflict_reasons_by_recipe_id(ids, request.user)
+            disliked = {rid for rid, reasons in (reasons_map or {}).items() if 'dislike' in (reasons or [])}
+        except Exception:
+            disliked = set()
+
+        items.sort(key=lambda r: (1 if r.id in disliked else 0))
+
+        serializer = RecipeLightSerializer(items, many=True, context={'request': request})
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
     
     def _get_nearby_meal_plans(self, user, target_date, current_slot_key, max_days=4, limit=10):
@@ -1356,11 +1392,36 @@ class RecipeViewSet(viewsets.ModelViewSet):
             .annotate(distance=CosineDistance('embedding', vector))
             .order_by('distance')
         )
-        
+        # Pas de filtrage hard en recherche explicite : on garde tout.
+
         # Appliquer la pagination
         paginated_queryset = self.paginate_queryset(queryset)
         if paginated_queryset is not None:
-            serializer = RecipeLightSerializer(paginated_queryset, many=True, context={'request': request})
+            items = list(paginated_queryset)
+            # Dépriorisation: pousser en bas ce qui est incompatible (allergy > diet > dislike),
+            # sans jamais supprimer de résultats.
+            try:
+                ids = [r.id for r in items if getattr(r, 'id', None) is not None]
+                reasons_map = conflict_reasons_by_recipe_id(ids, request.user) or {}
+
+                def _penalty(reasons):
+                    if not reasons:
+                        return 0
+                    if 'allergy' in reasons:
+                        return 3
+                    if 'diet' in reasons:
+                        return 2
+                    if 'dislike' in reasons:
+                        return 1
+                    return 0
+
+                indexed = [(idx, r, _penalty(reasons_map.get(r.id))) for idx, r in enumerate(items)]
+                indexed.sort(key=lambda t: (t[2], t[0]))
+                items = [t[1] for t in indexed]
+            except Exception:
+                pass
+
+            serializer = RecipeLightSerializer(items, many=True, context={'request': request})
             return self.get_paginated_response(serializer.data)
         
         # Fallback si pas de pagination
@@ -1682,7 +1743,51 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         prefetched = self._get_meal_plans_with_prefetch([meal_plan.id])
         response_serializer = self.get_serializer(prefetched[0])
         return Response(response_serializer.data, status=status.HTTP_200_OK)
-    
+
+    @action(detail=True, methods=['post'], url_path='remove-recipe-batch')
+    def remove_recipe_batch(self, request, pk=None):
+        """
+        Retire ce recipe_batch du repas planifié (supprime la ligne MealPlanRecipeBatch).
+        Si le RecipeBatch n'est plus lié à aucun meal plan, le batch est supprimé.
+        """
+        meal_plan = self.get_object()
+        if meal_plan.user_id != request.user.id:
+            return Response(
+                {'detail': 'Seul le propriétaire du repas peut retirer cette recette du créneau.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        recipe_batch_id = request.data.get('recipe_batch_id')
+        if recipe_batch_id is None:
+            return Response({'error': 'recipe_batch_id required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            recipe_batch_id = int(recipe_batch_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid recipe_batch_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        mprb = (
+            MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan, recipe_batch_id=recipe_batch_id)
+            .select_related('recipe_batch')
+            .first()
+        )
+        if not mprb:
+            return Response({'error': 'Association not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        batch_deleted = False
+        with transaction.atomic():
+            batch = mprb.recipe_batch
+            mprb.delete()
+            if not MealPlanRecipeBatch.objects.filter(recipe_batch_id=batch.id).exists():
+                batch.delete()
+                batch_deleted = True
+
+        return Response(
+            {
+                'batch_deleted': batch_deleted,
+                'recipe_batch_id': recipe_batch_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     def list(self, request, *args, **kwargs):
         """
         Log détaillé des temps pour diagnostiquer lenteurs:
@@ -1997,14 +2102,24 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         serializer = RecipeIngredientSerializer(ingredients, many=True, context={'request': request})
         return Response(serializer.data)
     
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context['request'] = self.request
-        return context
-    
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-    
+
+    @action(detail=True, methods=['get'], url_path='dietary-flags')
+    def dietary_flags(self, request, pk=None):
+        """Réponse légère pour badge planning : conflits goût / allergie / régime (invités avec compte)."""
+        from .dietary_filters import meal_plan_dietary_flag_summary
+
+        meal_plan = self.get_object()
+        dislike_c, allergy_c, diet_c = meal_plan_dietary_flag_summary(meal_plan, request.user)
+        return Response(
+            {
+                'dislike_conflict': dislike_c,
+                'allergy_conflict': allergy_c,
+                'diet_conflict': diet_c,
+            }
+        )
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         # Pour la liste, éviter les presigned URLs coûteuses : on renvoie image_url
@@ -4830,6 +4945,8 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 qty_obj.unit = unit
                 qty_obj.save(update_fields=['quantity', 'unit', 'updated_at'])
         _mark_shopping_done_if_list_complete(item.shopping_list)
+        # Temps réel : informer les autres clients du changement de quantité manuelle
+        _broadcast_shopping_list_item_update(item, request.user)
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
     def _unit_group_for_unit(self, unit: str) -> str:
@@ -4928,7 +5045,11 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             # Touch la liste pour que updated_at reflète bien la dernière modification
             shopping_list.updated_at = timezone.now()
             shopping_list.save(update_fields=['updated_at'])
-        
+
+        # Temps réel : informer les autres clients de la création/augmentation d'un item
+        _mark_shopping_done_if_list_complete(shopping_list)
+        _broadcast_shopping_list_item_update(item, request.user)
+
         return Response(
             ShoppingListItemSerializer(item, context={'request': request}).data,
             status=status.HTTP_201_CREATED if item_created else status.HTTP_200_OK
@@ -5314,7 +5435,8 @@ class CollectionViewSet(viewsets.ModelViewSet):
         ).exclude(
             id__in=existing_ids
         ).order_by('-created_at')
-        
+        queryset = apply_dietary_exclusion(queryset, request.user)
+
         page = self.paginate_queryset(queryset)
         serializer = RecipeLightSerializer(
             page if page is not None else queryset,

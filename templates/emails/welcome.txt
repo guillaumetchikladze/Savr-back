@@ -1,0 +1,11 @@
+Bienvenue sur Tchikook
+
+Salut {{ username }} — ton compte Tchikook est prêt.
+{% if login_url %}
+Ouvrir l’application: {{ login_url }}
+{% endif %}
+
+Découvrir Tchikook: https://tchikook.fr
+
+Si tu n’es pas à l’origine de cette création, contacte notre support via tchikook.fr.
+

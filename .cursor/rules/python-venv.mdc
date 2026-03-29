@@ -1,0 +1,17 @@
+---
+description: Activer le venv Python avant toute commande shell dans Savr-back (pytest, manage.py, pip).
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Savr-back — environnement Python
+
+Avant d’exécuter **toute** commande shell dans `Savr-back` qui utilise Python (`pytest`, `python manage.py`, `pip`, `django-admin`, etc.), se placer dans le dossier du backend et activer le venv :
+
+```bash
+cd "/path/to/Savr-back" && source venv/bin/activate
+```
+
+Ensuite lancer la commande (ex. `python manage.py check`, `pytest ...`).
+
+Ne pas invoquer `python` ou `pytest` avec le Python système si le projet suppose le venv du README (`python -m venv venv` puis `source venv/bin/activate`).

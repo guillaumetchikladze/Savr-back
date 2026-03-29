@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from .models import User, Follow, Notification, LoyaltyCard
+from .privacy import can_view_dietary_preferences
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -29,12 +30,128 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = (
-            'id', 'username', 'email', 'avatar_url', 'level', 
-            'experience_points', 'created_at', 'followers_count', 
-            'following_count', 'is_following', 'is_followed_by'
+            'id', 'username', 'email', 'avatar_url', 'level',
+            'experience_points', 'created_at', 'followers_count',
+            'following_count', 'is_following', 'is_followed_by',
+            'food_dislikes', 'allergies', 'regimes', 'is_vegetarian', 'onboarding_completed',
         )
         read_only_fields = ('id', 'created_at', 'level', 'experience_points', 'followers_count', 'following_count')
-    
+
+    def validate_food_dislikes(self, value):
+        return self._validate_string_list(value, max_items=40, max_len=80)
+
+    def validate_allergies(self, value):
+        return self._validate_string_list(value, max_items=30, max_len=80)
+
+    def validate_regimes(self, value):
+        """
+        Liste d'enums. On accepte aussi l'ancien bool `is_vegetarian` pour compat,
+        mais le champ source est `regimes`.
+        """
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Liste attendue.')
+        allowed = {
+            'vegetarian',
+            'vegan',
+            'pescatarian',
+            'gluten_free',
+            'halal',
+            'kosher',
+            'keto',
+        }
+        out = []
+        seen = set()
+        for item in value[:20]:
+            if not isinstance(item, str):
+                continue
+            s = item.strip()
+            if not s:
+                continue
+            s = s.lower()
+            if s not in allowed:
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    @staticmethod
+    def _validate_string_list(value, max_items, max_len):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Liste attendue.')
+        out = []
+        for item in value[:max_items]:
+            if not isinstance(item, str):
+                continue
+            s = item.strip()
+            if not s:
+                continue
+            if len(s) > max_len:
+                s = s[:max_len]
+            out.append(s)
+        return out
+
+    def get_is_following(self, obj):
+        """Vérifier si l'utilisateur connecté suit cet utilisateur"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return Follow.objects.filter(follower=request.user, following=obj).exists()
+        return False
+
+    def get_is_followed_by(self, obj):
+        """Vérifier si cet utilisateur suit l'utilisateur connecté"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return Follow.objects.filter(follower=obj, following=request.user).exists()
+        return False
+
+    def get_avatar_url(self, obj):
+        """Retourner l'URL de l'avatar avec presigned URL si disponible"""
+        if not getattr(obj, 'avatar_url', None):
+            return None
+
+        try:
+            from savr_back.settings import build_presigned_get_url
+            import re
+
+            url = obj.avatar_url
+            if 'avatars/' in url:
+                match = re.search(r'/(?:[^/]+/)?(avatars/.+)$', url)
+                if match:
+                    image_path = match.group(1)
+                    presigned_url = build_presigned_get_url(image_path)
+                    if presigned_url:
+                        return presigned_url
+
+                idx = url.find('avatars/')
+                if idx != -1:
+                    image_path = url[idx:]
+                    presigned_url = build_presigned_get_url(image_path)
+                    if presigned_url:
+                        return presigned_url
+
+            if url.startswith('http') and 'avatars/' not in url:
+                return url
+
+            return build_presigned_get_url(url) if url else None
+        except Exception:
+            return obj.avatar_url
+
+
+class UserSearchResultSerializer(UserSerializer):
+    """Liste de recherche / suggestions : pas d'email ni champs sensibles."""
+
+    class Meta(UserSerializer.Meta):
+        fields = (
+            'id', 'username', 'avatar_url', 'level',
+            'followers_count', 'is_following',
+        )
+
     def get_avatar_url(self, obj):
         """Retourner l'URL de l'avatar avec presigned URL si disponible"""
         if not obj.avatar_url:
@@ -97,6 +214,20 @@ class UserSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return Follow.objects.filter(follower=obj, following=request.user).exists()
         return False
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        viewer = getattr(request, 'user', None) if request else None
+        if viewer and viewer.is_authenticated and instance.pk != viewer.pk:
+            data.pop('email', None)
+        # Sans viewer authentifié (ex. réponse register) : ne pas masquer le compte créé.
+        if viewer and viewer.is_authenticated and not can_view_dietary_preferences(viewer, instance):
+            data['food_dislikes'] = []
+            data['allergies'] = []
+            data['regimes'] = []
+            data['is_vegetarian'] = False
+        return data
 
 
 class LoginSerializer(serializers.Serializer):

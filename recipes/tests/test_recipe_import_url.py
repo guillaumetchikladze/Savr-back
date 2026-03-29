@@ -63,8 +63,10 @@ class RecipeImportFromUrlTests(APITestCase):
     def test_extract_instagram_recipe_without_token_raises(self):
         # On ne teste ici que le comportement de garde-fou sur l'absence de token,
         # sans appeler réellement Apify.
-        with self.assertRaises(InstagramImportError) as ctx:
-            extract_instagram_recipe("https://www.instagram.com/p/DTQdIJoDJRI/")
+        with patch("recipes.services.recipe_importer.config") as config_mock:
+            config_mock.return_value = ""
+            with self.assertRaises(InstagramImportError) as ctx:
+                extract_instagram_recipe("https://www.instagram.com/p/DTQdIJoDJRI/")
         self.assertEqual(ctx.exception.code, "apify_not_configured")
 
     @patch("recipes.services.recipe_importer.extract_with_recipe_scrapers")

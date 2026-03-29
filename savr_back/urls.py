@@ -32,6 +32,7 @@ urlpatterns = [
     path('legal/delete-account/', legal_delete_account_view, name='legal_delete_account'),
     path('privacy-policy/', lambda r: redirect('legal_privacy', permanent=True), name='privacy_policy_redirect'),
     path('admin/', admin.site.urls),
+    path('auth/password-reset/<str:uidb64>/<str:token>/', __import__('accounts.views').views.password_reset_confirm_view, name='password_reset_confirm'),
     path('api/health/', health_view),
     path('api/auth/', include('accounts.urls')),
     path('api/', include('recipes.urls')),

@@ -1,0 +1,64 @@
+{# Base HTML email layout (tables + inline styles) #}
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Tchikook{% endblock %}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#F9F5F7;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+    {# Preheader (hidden) #}
+    <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+      {% block preheader %}{% endblock %}
+    </div>
+
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F9F5F7;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+      <tr>
+        <td align="center" style="padding:18px 10px;">
+          {# Container table is fluid; width via max-width wrapper pattern #}
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:620px;background:#ffffff;border:1px solid #EEF0F6;border-radius:16px;overflow:hidden;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+            <tr>
+              <td style="height:4px;line-height:4px;font-size:0;background:#EC7A9F;">&nbsp;</td>
+            </tr>
+
+            {# Header #}
+            <tr>
+              <td style="padding:18px 16px 10px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+                <div style="font-weight:800;font-size:20px;letter-spacing:-0.2px;color:#1F2937;">Tchikook</div>
+                <div style="font-size:12px;color:#6B7280;margin-top:2px;">
+                  {% block subtitle %}{% endblock %}
+                </div>
+              </td>
+            </tr>
+
+            {# Content #}
+            <tr>
+              <td style="padding:0 16px 16px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+                {% block content %}{% endblock %}
+              </td>
+            </tr>
+
+            {# Footer #}
+            <tr>
+              <td style="padding:14px 16px;background:#FAFAFB;border-top:1px solid #EEF0F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+                <div style="margin:0 0 8px 0;font-size:12px;line-height:1.6;color:#6B7280;">
+                  {% block footer_note %}
+                    Tu n’es pas à l’origine de cette demande ? Contacte notre support via
+                    <a href="https://tchikook.fr" style="color:#6B7280;text-decoration:underline;">tchikook.fr</a>.
+                  {% endblock %}
+                </div>
+                <div style="margin:0;font-size:11px;line-height:1.6;color:#9CA3AF;">
+                  © Tchikook • <a href="https://tchikook.fr" style="color:#9CA3AF;text-decoration:underline;">tchikook.fr</a>
+                </div>
+              </td>
+            </tr>
+          </table>
+
+          {# Spacer for mobile clients #}
+          <div style="height:18px;line-height:18px;font-size:0;">&nbsp;</div>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+

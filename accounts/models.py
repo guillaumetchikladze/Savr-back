@@ -17,6 +17,18 @@ class User(AbstractUser):
     
     # Shopping list preferences
     default_shopping_list_days = models.IntegerField(default=7, help_text="Nombre de jours par défaut pour la liste de courses")
+
+    # Préférences alimentaires (listes de libellés, ex. tags)
+    food_dislikes = models.JSONField(default=list, blank=True)
+    allergies = models.JSONField(default=list, blank=True)
+    # Régimes: enum strings, séparé des listes (pas d’auto-mapping côté user prefs).
+    # Exemples attendus: ["vegetarian", "vegan", "gluten_free", "halal", "kosher"]
+    regimes = models.JSONField(default=list, blank=True)
+    is_vegetarian = models.BooleanField(
+        default=False,
+        help_text="Régime végétarien (repérage viande/poisson côté recettes, en complément des listes).",
+    )
+    onboarding_completed = models.BooleanField(default=False)
     
     # Favorite recipes
     favorite_recipes = models.ManyToManyField(
