@@ -1,0 +1,42 @@
+---
+description: Contexte projet (back Django/DRF) + venv obligatoire + commandes usuelles
+alwaysApply: true
+---
+
+# Savr-back — Backend (Django REST Framework)
+
+## Règle la plus importante (venv)
+
+Avant toute commande Python dans `Savr-back/` (`python`, `pip`, `pytest`, `django-admin`, `manage.py`, etc.) :
+
+```bash
+cd "/path/to/Savr-back" && source venv/bin/activate
+```
+
+Ne pas utiliser le Python système si le projet suppose le venv.
+
+## Installation / démarrage (local)
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+```
+
+## Expo Go sur téléphone (API accessible)
+
+```bash
+source venv/bin/activate
+daphne -b 0.0.0.0 -p 8000 savr_back.asgi:application
+```
+
+Téléphone et machine doivent être sur le même Wi‑Fi, et le front doit pointer vers `http://<IP_LOCALE>:8000/api`.
+
+## Note (usage IA)
+
+En général, ce n’est pas à l’IA de lancer le serveur. Par contre, si on te demande des instructions de dev / debug réseau (téléphone ↔ API), la commande de référence est **Daphne ASGI** ci‑dessus.
+
+## Sécurité
+
+- Ne jamais proposer de commit de `.env` / secrets / credentials.
