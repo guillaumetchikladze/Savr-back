@@ -4656,6 +4656,7 @@ def _broadcast_shopping_list_item_update(item, updated_by_user):
             "category": {
                 "id": category.id,
                 "name": category.name,
+                "display_order": category.display_order,
             }
             if category
             else None,
@@ -4862,6 +4863,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 'category': {
                     'id': category.id if category else None,
                     'name': category.name if category else 'Autres',
+                    'display_order': category.display_order if category else None,
                 },
                 'pantry_quantity': float(item.pantry_quantity or 0),
                 'pantry_unit': item.pantry_unit or unit or '',
