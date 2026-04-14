@@ -3971,7 +3971,6 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                     'is_archived': shopping_list.is_archived,
                     # Informations minimales mais utiles pour l’UI
                     'items_count': 0,
-                    'batches_count': 1,
                     'is_complete': False,
                     'has_access': False,
                 }

@@ -1929,17 +1929,16 @@ class ShoppingListSerializer(serializers.ModelSerializer):
     """Serializer pour une liste de courses (V2)"""
     members = serializers.SerializerMethodField()
     items_count = serializers.SerializerMethodField()
-    batches_count = serializers.SerializerMethodField()
     is_complete = serializers.SerializerMethodField()
 
     class Meta:
         model = ShoppingList
         fields = [
             'id', 'name', 'color', 'is_archived',
-            'members', 'items_count', 'batches_count', 'is_complete',
+            'members', 'items_count', 'is_complete',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['created_at', 'updated_at', 'members', 'items_count', 'batches_count', 'is_complete']
+        read_only_fields = ['created_at', 'updated_at', 'members', 'items_count', 'is_complete']
 
     def get_members(self, obj):
         try:
@@ -1971,11 +1970,6 @@ class ShoppingListSerializer(serializers.ModelSerializer):
         except Exception:
             return 0
 
-    def get_batches_count(self, obj):
-        try:
-            return obj.batches.count()
-        except Exception:
-            return 0
 
     def get_is_complete(self, obj):
         """Vérifie si tous les ingrédients sont cochés (remaining <= 0 pour tous les items)"""
