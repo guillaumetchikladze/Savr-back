@@ -260,6 +260,13 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
 # Email queues (priority routing)
+# Rappel push « photo à table » après complete_cooking (secondes). Ex. 10800 = 3 h ; 90 pour tests.
+MEAL_TIME_PHOTO_REMINDER_DELAY_SECONDS = config(
+    'MEAL_TIME_PHOTO_REMINDER_DELAY_SECONDS',
+    default=10800,
+    cast=int,
+)
+
 CELERY_TASK_QUEUES = (
     # default
     __import__("kombu").Queue("savr_default", routing_key="savr.default"),

@@ -1516,8 +1516,11 @@ class PostPhotoSerializer(serializers.ModelSerializer):
     captured_label = serializers.SerializerMethodField()
     time_display = serializers.SerializerMethodField()
     editable = serializers.SerializerMethodField()
-    recipe_batch_id = serializers.IntegerField(source='recipe_batch.id', read_only=True)
-    post_id = serializers.IntegerField(source='post.id', read_only=True)
+    # Optimisation: exposer les *_id natifs (évite d'accéder à la relation FK)
+    recipe_batch_id = serializers.IntegerField(source='recipe_batch_id', read_only=True, allow_null=True)
+    post_id = serializers.IntegerField(source='post_id', read_only=True, allow_null=True)
+    uploaded_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    uploaded_by_username = serializers.CharField(source='uploaded_by.username', read_only=True, allow_null=True)
     image_url = serializers.SerializerMethodField()
     presigned_url = serializers.SerializerMethodField()
     
@@ -1526,7 +1529,8 @@ class PostPhotoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'photo_type', 'photo_type_display', 'image_path', 'image_url', 'presigned_url',
             'step', 'step_order', 'step_title', 'captured_label',
-            'time_display', 'recipe_batch_id', 'post_id', 'editable', 'order', 'is_draft', 'created_at'
+            'time_display', 'recipe_batch_id', 'post_id', 'uploaded_by_id', 'uploaded_by_username',
+            'editable', 'order', 'is_draft', 'created_at'
         ]
         read_only_fields = ['created_at']
     
@@ -1590,9 +1594,13 @@ class PostPhotoSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or request.user.is_anonymous:
             return False
-        
-        # Vérifier l'accès via recipe_batch (via meal_plan_recipe_batches)
-        # (propriétaire ou invité accepté)
+
+        if obj.post_id:
+            return False
+
+        if obj.uploaded_by_id and obj.uploaded_by_id != request.user.id:
+            return False
+
         if obj.recipe_batch_id:
             from .models import RecipeBatch, MealPlan
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
@@ -1602,13 +1610,15 @@ class PostPhotoSerializer(serializers.ModelSerializer):
                     accessible_meal_plan_filter
                 )
             ).exists()
-            if has_access:
-                return True
-        
-        # Vérifier l'accès via post
-        if obj.post_id and obj.post:
-            return obj.post.user == request.user
-        
+            return has_access
+
+        if getattr(obj, 'meal_plan_id', None):
+            from .models import MealPlan
+            accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
+            return MealPlan.objects.filter(id=obj.meal_plan_id).filter(
+                accessible_meal_plan_filter
+            ).exists()
+
         return False
 
 
@@ -1690,10 +1700,11 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
     """Version allégée pour la liste de posts (uniquement les URLs)."""
     image_url = serializers.SerializerMethodField()
     presigned_url = serializers.SerializerMethodField()
+    recipe_batch_id = serializers.IntegerField(read_only=True, allow_null=True)
     
     class Meta:
         model = PostPhoto
-        fields = ['id', 'photo_type', 'image_url', 'presigned_url', 'order']
+        fields = ['id', 'photo_type', 'image_url', 'presigned_url', 'order', 'recipe_batch_id']
     
     def get_image_url(self, obj):
         from savr_back.settings import build_s3_url
@@ -1802,6 +1813,22 @@ class PostListSerializer(serializers.ModelSerializer):
         nested = data.get('user')
         if isinstance(nested, dict):
             nested['is_following'] = bool(data.get('author_is_following'))
+        if settings.DEBUG:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                "[PostListSerializer] post_id=%s recipe_batch_id=%s photos=%s",
+                instance.id,
+                getattr(instance, 'recipe_batch_id', None),
+                [
+                    {
+                        'id': p.get('id'),
+                        'order': p.get('order'),
+                        'recipe_batch_id': p.get('recipe_batch_id'),
+                    }
+                    for p in (data.get('photos') or [])
+                ],
+            )
         return data
     
     def get_recipe(self, obj):
@@ -1969,7 +1996,6 @@ class ShoppingListSerializer(serializers.ModelSerializer):
             return count
         except Exception:
             return 0
-
 
     def get_is_complete(self, obj):
         """Vérifie si tous les ingrédients sont cochés (remaining <= 0 pour tous les items)"""

@@ -2,9 +2,9 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q, Count, Max, Case, When, IntegerField, Prefetch
+from django.db.models import Q, Count, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time
 from time import perf_counter
 from django.conf import settings
 from django.db import connection, transaction
@@ -55,7 +55,8 @@ from .serializers import (
 from accounts.serializers import LoyaltyCardSerializer
 from accounts.services.expo_push import send_expo_push_notifications
 from .tasks import process_recipe_import
-from accounts.tasks import send_timer_almost_finished_push
+from accounts.tasks import send_timer_almost_finished_push, send_meal_time_photo_reminder_push
+from savr_back.celery import app as celery_app
 from .utils import get_accessible_meal_plan_filter, shopping_list_item_quantity_is_stale, meal_plan_slot_api_fields
 from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
 
@@ -83,13 +84,30 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         date_gte = self.request.query_params.get('date__gte')
         date_lte = self.request.query_params.get('date__lte')
         exclude_cooked = self.request.query_params.get('exclude_cooked') == 'true'
-        
-        if date_gte:
-            qs = qs.filter(meal_plan_recipe_batches__meal_plan__date__gte=date_gte)
-        if date_lte:
-            qs = qs.filter(meal_plan_recipe_batches__meal_plan__date__lte=date_lte)
+
         if exclude_cooked:
-            qs = qs.filter(is_cooked=False)
+            in_date_range = Q()
+            if date_gte:
+                in_date_range &= Q(
+                    meal_plan_recipe_batches__meal_plan__date__gte=date_gte
+                )
+            if date_lte:
+                in_date_range &= Q(
+                    meal_plan_recipe_batches__meal_plan__date__lte=date_lte
+                )
+            if date_gte or date_lte:
+                qs = qs.filter(in_date_range & Q(is_cooked=False))
+            else:
+                qs = qs.filter(is_cooked=False)
+        else:
+            if date_gte:
+                qs = qs.filter(
+                    meal_plan_recipe_batches__meal_plan__date__gte=date_gte
+                )
+            if date_lte:
+                qs = qs.filter(
+                    meal_plan_recipe_batches__meal_plan__date__lte=date_lte
+                )
         
         # Annoter groupedDates et total_servings_batch
         qs = qs.select_related('created_by').prefetch_related(
@@ -146,7 +164,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             
             meals = []
             meal_plan_ids = []
-            any_cooked = False
+            batch_is_cooked = bool(getattr(batch, 'is_cooked', False))
             # Mais ne retourner que les meal plans accessibles dans meals et meal_plan_ids
             for mp in meal_plans_accessible:
                 meal_plan_ids.append(mp.id)
@@ -163,7 +181,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                     'date': mp.date,
                     'meal_time': mp.meal_time,
                     **meal_plan_slot_api_fields(mp),
-                    'is_cooked': False,
+                    'is_cooked': batch_is_cooked,
                     'is_guest': is_guest,
                     'inviter_name': inviter_name,
                 })
@@ -175,7 +193,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             payload['servings_breakdown_accessible'] = servings_breakdown_accessible
             payload['meal_plan_ids'] = meal_plan_ids  # Seulement les accessibles
             payload['meals'] = meals  # Seulement les accessibles
-            payload['is_cooked'] = any_cooked
+            payload['is_cooked'] = batch_is_cooked
             data.append(payload)
         return Response(data)
     
@@ -212,7 +230,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         
         meals = []
         meal_plan_ids = []
-        any_cooked = False
+        batch_is_cooked = bool(getattr(batch, 'is_cooked', False))
         # Mais ne retourner que les meal plans accessibles dans meals et meal_plan_ids
         for mp in meal_plans_accessible:
             meal_plan_ids.append(mp.id)
@@ -221,7 +239,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 'date': mp.date,
                 'meal_time': mp.meal_time,
                 **meal_plan_slot_api_fields(mp),
-                'is_cooked': False,
+                'is_cooked': batch_is_cooked,
             })
         serializer = RecipeBatchLightSerializer(batch, context={'request': request})
         payload = serializer.data
@@ -232,8 +250,62 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         payload['servings_breakdown_accessible'] = accessible_servings_breakdown
         payload['meal_plan_ids'] = meal_plan_ids  # Seulement les accessibles
         payload['meals'] = meals  # Seulement les accessibles
-        payload['is_cooked'] = any_cooked
+        payload['is_cooked'] = batch_is_cooked
         return Response(payload)
+
+    @action(detail=False, methods=['get'], url_path='finalize-candidates')
+    def finalize_candidates(self, request):
+        """
+        Batches « à finaliser » pour CTA (léger).
+
+        Contraintes produit:
+        - batch lié à au moins un meal plan accessible (même base query)
+        - created_by = utilisateur courant
+        - is_cooked = True
+        - pas de post publié
+        - récent (< 24 h via updated_at)
+        """
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
+        recent_cutoff = timezone.now() - timedelta(hours=24)
+
+        qs = (
+            RecipeBatch.objects.filter(
+                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
+                    accessible_meal_plan_filter
+                ),
+                created_by=request.user,
+                is_cooked=True,
+                updated_at__gte=recent_cutoff,
+            )
+            .annotate(
+                has_published_post=Exists(
+                    Post.objects.filter(recipe_batch_id=OuterRef('pk'), is_published=True)
+                )
+            )
+            .filter(has_published_post=False)
+            .select_related('recipe')
+            .distinct()
+            .order_by('-updated_at')
+        )
+
+        # Réponse légère (pour CTA). Pas besoin des groupedDates/servings ici.
+        results = []
+        for b in qs[:20]:
+            r = getattr(b, 'recipe', None)
+            results.append(
+                {
+                    'id': b.id,
+                    'recipe': {
+                        'id': getattr(r, 'id', None),
+                        'title': getattr(r, 'title', None),
+                        'image_url': getattr(r, 'image_url', None),
+                    }
+                    if r
+                    else None,
+                    'updated_at': b.updated_at,
+                }
+            )
+        return Response({'results': results}, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['get'])
     def steps(self, request, pk=None):
@@ -288,6 +360,80 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         # 3) Compléter la progression (met aussi batch.is_cooked = True)
         progress.complete()
         serializer = CookingProgressSerializer(progress, context={'request': request})
+
+        batch_pk = batch.id
+        user_pk = user.id
+
+        def schedule_meal_photo_push_reminder():
+            """
+            Nouveau workflow: 1 notif par meal plan.
+
+            Stratégie simple (v1):
+            - on choisit un meal plan "propriétaire" de l'utilisateur qui contient ce batch
+              et qui est le plus proche (date croissante), puis on planifie la push pour ce meal plan.
+            - la tâche elle-même applique les règles produit (skip si batch partagé / post déjà existant).
+            """
+            try:
+                today = timezone.localdate()
+                meal_plan = (
+                    MealPlan.objects.filter(
+                        user_id=user_pk,
+                        meal_plan_recipe_batches__recipe_batch_id=batch_pk,
+                        date__gte=today,
+                    )
+                    .distinct()
+                    .order_by('date', 'meal_time')
+                    .first()
+                )
+                if not meal_plan:
+                    # fallback: dernier meal plan (même si passé) pour ne pas perdre l'info
+                    meal_plan = (
+                        MealPlan.objects.filter(
+                            user_id=user_pk,
+                            meal_plan_recipe_batches__recipe_batch_id=batch_pk,
+                        )
+                        .distinct()
+                        .order_by('-date', '-id')
+                        .first()
+                    )
+                if not meal_plan:
+                    return
+
+                mp_pk = meal_plan.id
+                mp = MealPlan.objects.only('meal_time_photo_reminder_task_id').get(pk=mp_pk)
+                old_tid = (mp.meal_time_photo_reminder_task_id or '').strip()
+                if old_tid:
+                    try:
+                        celery_app.control.revoke(old_tid, terminate=False)
+                    except Exception as exc:
+                        logger.warning(
+                            'meal_photo_reminder: revoke failed task_id=%s meal_plan=%s: %s',
+                            old_tid,
+                            mp_pk,
+                            exc,
+                        )
+
+                delay = int(getattr(settings, 'MEAL_TIME_PHOTO_REMINDER_DELAY_SECONDS', 10800))
+                eta = timezone.now() + timedelta(seconds=max(30, delay))
+                result = send_meal_time_photo_reminder_push.apply_async(
+                    args=[user_pk, mp_pk],
+                    eta=eta,
+                )
+                new_tid = getattr(result, 'id', None)
+                if new_tid:
+                    MealPlan.objects.filter(pk=mp_pk).update(
+                        meal_time_photo_reminder_task_id=str(new_tid)
+                    )
+            except Exception as exc:
+                logger.exception(
+                    'meal_photo_reminder: schedule failed batch=%s user=%s: %s',
+                    batch_pk,
+                    user_pk,
+                    exc,
+                )
+
+        transaction.on_commit(schedule_meal_photo_push_reminder)
+
         return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'], url_path='mark_shopping_done')
@@ -371,7 +517,8 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             photo_type=photo_type,
             step=step,  # Peut être None pour after_cooking
             is_draft=True,
-            image_path=''
+            image_path='',
+            uploaded_by=request.user,
         )
         
         from .serializers import PostPhotoSerializer
@@ -391,7 +538,20 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         
         try:
             photo = PostPhoto.objects.get(id=photo_id, recipe_batch=batch)
-            
+
+            if photo.post_id:
+                return Response(
+                    {
+                        'error': 'Cette photo fait partie d\'un post. Supprime d\'abord le post.',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if photo.uploaded_by_id and photo.uploaded_by_id != request.user.id:
+                return Response(
+                    {'error': 'Seul l\'utilisateur qui a ajouté cette photo peut la supprimer.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             # Sauvegarder le chemin de l'image avant suppression
             image_path_to_delete = photo.image_path
             
@@ -1642,6 +1802,71 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
             ).order_by('date', meal_time_order)
         return qs
+
+    @action(detail=False, methods=['get'], url_path='publish-candidates')
+    def publish_candidates(self, request):
+        """
+        Repas "prêts à publier":
+        - au moins une photo at_meal_time (non draft) sur un batch de ce meal plan
+        - aucun post publié sur les batches du meal plan
+        - accessible à l'utilisateur courant
+        """
+        try:
+            days = int(request.query_params.get('days', 7))
+        except (TypeError, ValueError):
+            days = 7
+        days = max(1, min(days, 30))
+
+        now = timezone.localtime(timezone.now())
+        today = timezone.localdate()
+        start_date = today - timedelta(days=days)
+
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
+
+        qs = (
+            MealPlan.objects.filter(accessible_meal_plan_filter)
+            .filter(date__gte=start_date, date__lte=today)
+            .annotate(
+                has_published_post=Exists(
+                    Post.objects.filter(
+                        recipe_batch__meal_plan_recipe_batches__meal_plan_id=OuterRef('pk'),
+                        is_published=True,
+                    )
+                ),
+                has_at_meal_photos=Exists(
+                    PostPhoto.objects.filter(
+                        recipe_batch__meal_plan_recipe_batches__meal_plan_id=OuterRef('pk'),
+                        photo_type='at_meal_time',
+                        is_draft=False,
+                    )
+                ),
+            )
+            .filter(has_published_post=False, has_at_meal_photos=True)
+            .order_by('-date', '-id')
+        )
+
+        results = []
+        for mp in qs[:30]:
+            photos = list(
+                PostPhoto.objects.filter(
+                    recipe_batch__meal_plan_recipe_batches__meal_plan=mp,
+                    photo_type='at_meal_time',
+                    is_draft=False,
+                )
+                .order_by('-created_at')[:4]
+            )
+            results.append(
+                {
+                    'meal_plan_id': mp.id,
+                    'date': mp.date,
+                    'meal_time': mp.meal_time,
+                    **meal_plan_slot_api_fields(mp),
+                    'photos': [{'id': p.id, 'image_url': p.image_url} for p in photos if p.image_url],
+                    'photo_count': len(photos),
+                }
+            )
+
+        return Response({'results': results}, status=status.HTTP_200_OK)
     
     def _get_meal_plans_with_prefetch(self, meal_plan_ids):
         """Charger les meal plans avec les relations nécessaires pour la sérialisation."""
@@ -2201,6 +2426,297 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         meal_plan.save()
         serializer = self.get_serializer(meal_plan)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='publish-post')
+    def publish_meal_plan_post(self, request, pk=None):
+        """
+        Publier un post "du repas" (meal plan).
+
+        - photo_ids: liste ordonnée (max 20)
+        - comment: string (optionnel)
+
+        Note compat:
+        - on rattache aussi `recipe_batch` au premier batch du meal plan
+          pour préserver l'affichage existant côté app (recipe meta).
+        """
+        meal_plan = self.get_object()
+        photo_ids = request.data.get('photo_ids', [])
+        comment = request.data.get('comment', '')
+
+        if not isinstance(photo_ids, list) or len(photo_ids) == 0:
+            return Response({'error': 'photo_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            photo_ids = [int(pid) for pid in photo_ids]
+        except (TypeError, ValueError):
+            return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(photo_ids) > 20:
+            return Response({'error': 'You can select up to 20 photos'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Post.objects.filter(meal_plan=meal_plan, is_published=True).exists():
+            return Response({'error': 'A post already exists for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+
+        mprbs = list(meal_plan.meal_plan_recipe_batches.select_related('recipe_batch').all())
+        batch_ids = [mprb.recipe_batch_id for mprb in mprbs if mprb.recipe_batch_id]
+        if not batch_ids:
+            return Response({'error': 'This meal plan has no recipe batches'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Photos autorisées:
+        # - appartiennent à un batch du meal plan
+        #   OU sont restées au niveau meal plan (temp / non associées)
+        # - pas draft
+        photos_qs = PostPhoto.objects.filter(
+            id__in=photo_ids,
+            is_draft=False,
+        ).filter(
+            Q(recipe_batch_id__in=batch_ids) | Q(meal_plan_id=meal_plan.id)
+        )
+        photos_dict = {p.id: p for p in photos_qs}
+        if len(photos_dict) != len(photo_ids):
+            return Response({'error': 'Some photos are invalid or do not belong to this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+
+        photos = [photos_dict[pid] for pid in photo_ids]
+
+        cover_batch_id = batch_ids[0] if batch_ids else None
+
+        post = Post.objects.create(
+            user=request.user,
+            meal_plan=meal_plan,
+            recipe_batch_id=cover_batch_id,
+            comment=comment,
+            is_published=True,
+        )
+
+        for order_index, photo in enumerate(photos, start=1):
+            photo.post = post
+            photo.order = order_index
+            # Si une photo est encore au niveau meal plan, on la garde telle quelle (meal_plan_id)
+            photo.save(update_fields=['post', 'order'])
+
+        return Response(
+            {
+                'id': post.id,
+                'meal_plan_id': meal_plan.id,
+                'comment': post.comment,
+                'is_published': post.is_published,
+                'created_at': post.created_at,
+                'photo_ids': photo_ids,
+                'message': 'Post créé avec succès',
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['get'], url_path='published-post')
+    def published_meal_plan_post(self, request, pk=None):
+        """Récupérer le post publié associé à ce meal plan (workflow "post du repas")."""
+        meal_plan = self.get_object()
+        post = Post.objects.filter(meal_plan=meal_plan, is_published=True).first()
+        if not post:
+            return Response({}, status=status.HTTP_200_OK)
+        from .serializers import PostSerializer
+        serializer = PostSerializer(post, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='assign-temp-photos')
+    def assign_temp_photos(self, request, pk=None):
+        """
+        Assigner des photos temporaires (uploadées sur le meal plan) à des recipe_batches du meal plan.
+
+        Payload:
+        - assignments: [{ photo_id, recipe_batch_id }]
+        """
+        meal_plan = self.get_object()
+        assignments = request.data.get('assignments', [])
+        if not isinstance(assignments, list) or len(assignments) == 0:
+            return Response({'error': 'assignments must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # batches du meal plan
+        batch_ids = list(
+            meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)
+        )
+        batch_ids = [bid for bid in batch_ids if bid]
+        if not batch_ids:
+            return Response({'error': 'This meal plan has no recipe batches'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # valider mapping
+        photo_ids = []
+        mapping = {}
+        for a in assignments:
+            try:
+                pid = int(a.get('photo_id'))
+                bid = int(a.get('recipe_batch_id'))
+            except Exception:
+                return Response({'error': 'photo_id and recipe_batch_id must be integers'}, status=status.HTTP_400_BAD_REQUEST)
+            if bid not in batch_ids:
+                return Response({'error': 'Invalid recipe_batch_id for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+            photo_ids.append(pid)
+            mapping[pid] = bid
+
+        qs = PostPhoto.objects.filter(
+            id__in=photo_ids,
+            meal_plan=meal_plan,
+            post__isnull=True,
+            is_draft=False,
+        )
+        found = list(qs)
+        if len(found) != len(set(photo_ids)):
+            return Response({'error': 'Some photos are invalid or not temporary photos of this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated = []
+        for p in found:
+            bid = mapping.get(p.id)
+            if not bid:
+                continue
+            p.recipe_batch_id = bid
+            # IMPORTANT: on garde meal_plan_id pour pouvoir réassigner/supprimer
+            # les photos via le meal plan même après association à une recette.
+            p.save(update_fields=['recipe_batch_id'])
+            updated.append(p.id)
+
+        return Response({'ok': True, 'updated_photo_ids': updated}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='reassign-photos')
+    def reassign_photos(self, request, pk=None):
+        """
+        Réassigner des photos d'un meal plan entre recettes (ou désassocier).
+
+        Payload:
+        - assignments: [{ photo_id, recipe_batch_id }] où recipe_batch_id peut être null pour "Non associées"
+        """
+        meal_plan = self.get_object()
+        assignments = request.data.get('assignments', [])
+        if not isinstance(assignments, list) or len(assignments) == 0:
+            return Response({'error': 'assignments must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
+
+        batch_ids = list(
+            meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)
+        )
+        batch_ids = [bid for bid in batch_ids if bid]
+
+        photo_ids = []
+        mapping = {}
+        for a in assignments:
+            try:
+                pid = int(a.get('photo_id'))
+            except Exception:
+                return Response({'error': 'photo_id must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+            bid_raw = a.get('recipe_batch_id', None)
+            bid = None
+            if bid_raw not in [None, '', 'null']:
+                try:
+                    bid = int(bid_raw)
+                except Exception:
+                    return Response({'error': 'recipe_batch_id must be an integer or null'}, status=status.HTTP_400_BAD_REQUEST)
+                if bid not in batch_ids:
+                    return Response({'error': 'Invalid recipe_batch_id for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+            photo_ids.append(pid)
+            mapping[pid] = bid
+
+        # Compat: certaines photos associées à un batch ont historiquement perdu meal_plan_id,
+        # ou ont un meal_plan_id incohérent alors que recipe_batch_id pointe bien vers ce repas.
+        # On accepte:
+        # - les photos dont meal_plan = ce meal plan
+        # - OU toute photo dont recipe_batch_id est l’un des batches de ce meal plan
+        #   (évite le 400 quand meal_plan est renseigné à tort mais le batch est le bon)
+        from django.db.models import Q
+        qs = PostPhoto.objects.filter(
+            id__in=photo_ids,
+            post__isnull=True,
+            is_draft=False,
+        ).filter(
+            Q(meal_plan=meal_plan) |
+            Q(recipe_batch_id__in=batch_ids)
+        )
+        found = list(qs)
+        if len(found) != len(set(photo_ids)):
+            return Response({'error': 'Some photos are invalid for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated = []
+        for p in found:
+            p.recipe_batch_id = mapping.get(p.id, None)
+            # Normaliser: garder meal_plan_id pour les photos gérées dans ce workflow.
+            if p.meal_plan_id is None:
+                p.meal_plan_id = meal_plan.id
+                p.save(update_fields=['recipe_batch_id', 'meal_plan_id'])
+            else:
+                p.save(update_fields=['recipe_batch_id'])
+            updated.append(p.id)
+
+        # Mapping compact pour le front (photo_id -> recipe_batch_id, null si ambiance générale)
+        photos_mapping = [{'photo_id': pid, 'recipe_batch_id': mapping.get(pid)} for pid in photo_ids]
+        return Response(
+            {'ok': True, 'updated_photo_ids': updated, 'photos_mapping': photos_mapping},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['delete'], url_path='delete-photo')
+    def delete_meal_plan_photo(self, request, pk=None):
+        """
+        Supprimer une photo d'un meal plan (qu'elle soit associée à une recette ou non),
+        tant qu'elle n'est pas attachée à un post.
+        """
+        meal_plan = self.get_object()
+        photo_id = request.query_params.get('photo_id')
+        try:
+            photo_id = int(photo_id)
+        except Exception:
+            return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            photo = PostPhoto.objects.get(id=photo_id, meal_plan=meal_plan)
+        except PostPhoto.DoesNotExist:
+            return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if photo.post_id is not None:
+            return Response({'error': 'Cannot delete a photo already attached to a post'}, status=status.HTTP_400_BAD_REQUEST)
+
+        photo.delete()
+        return Response({'ok': True}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['delete'], url_path='delete-temp-photo')
+    def delete_temp_photo(self, request, pk=None):
+        """Supprimer une photo temporaire (meal_plan) non rattachée à un batch."""
+        meal_plan = self.get_object()
+        photo_id = request.query_params.get('photo_id')
+        try:
+            photo_id = int(photo_id)
+        except Exception:
+            return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            photo = PostPhoto.objects.get(id=photo_id, meal_plan=meal_plan)
+        except PostPhoto.DoesNotExist:
+            return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if photo.post_id is not None:
+            return Response({'error': 'Cannot delete a photo already attached to a post'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # réutiliser la logique delete S3 de recipe-batches/delete-photo (simple: delete DB only here)
+        # Le nettoyage S3 est best-effort; on peut l'ajouter plus tard si nécessaire.
+        photo.delete()
+        return Response({'ok': True}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='temp-photos')
+    def temp_photos(self, request, pk=None):
+        """
+        Lister les photos temporaires "à table" d'un meal plan (pas encore rattachées à un batch).
+
+        Retourne la même forme que /recipe-batches/{id}/photos/ (serializer light).
+        """
+        meal_plan = self.get_object()
+        photos = (
+            PostPhoto.objects.filter(
+                meal_plan=meal_plan,
+                recipe_batch_id__isnull=True,
+                post__isnull=True,
+                is_draft=False,
+            )
+            .select_related('step')
+            .order_by('-created_at')
+        )
+        from .serializers import PostPhotoLightSerializer
+        serializer = PostPhotoLightSerializer(photos, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=False, methods=['get'])
     def shared_with_me(self, request):
@@ -2209,6 +2725,103 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         meal_plans = [inv.meal_plan for inv in invitations]
         serializer = self.get_serializer(meal_plans, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='recent-photo-candidates')
+    def recent_photo_candidates(self, request):
+        """
+        Suggestions pour attribuer une photo « à table » à un repas récent.
+
+        Retourne des candidats basés sur les meal plans accessibles de l'utilisateur, dans le passé proche,
+        et uniquement pour des batches créés par l'utilisateur (cohérent avec l'UX « reprendre mon process »).
+        """
+        try:
+            days = int(request.query_params.get('days', 7))
+        except (TypeError, ValueError):
+            days = 7
+        days = max(1, min(days, 30))
+
+        now = timezone.localtime(timezone.now())
+        recent_cutoff = now - timedelta(hours=24)
+
+        today = timezone.localdate()
+        start_date = today - timedelta(days=days)
+
+        # Approximation hour per slot. (UX: on veut filtrer sur "dernier 24h" côté back.)
+        slot_hours = {
+            'breakfast': 9,
+            'lunch': 12,
+            'dinner': 20,
+        }
+
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
+        mprbs = (
+            MealPlanRecipeBatch.objects.filter(
+                meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter),
+                meal_plan__date__gte=start_date,
+                meal_plan__date__lte=today,
+                recipe_batch__created_by=request.user,
+            )
+            .select_related('meal_plan', 'recipe_batch__recipe')
+            .order_by('-meal_plan__date', '-meal_plan__id', 'order')
+        )
+
+        # Exclure complètement les meal plans qui ont déjà un post publié PAR l'utilisateur courant
+        # (sur n'importe quel batch du repas).
+        # Produit: si *moi* j'ai déjà publié ce repas, je ne dois plus le voir dans la liste.
+        meal_plan_ids = list({mprb.meal_plan_id for mprb in mprbs})
+        published_meal_plan_ids = set()
+        if meal_plan_ids:
+            published_meal_plan_ids = set(
+                MealPlan.objects.filter(id__in=meal_plan_ids)
+                .filter(meal_plan_recipe_batches__recipe_batch__posts__is_published=True)
+                .filter(meal_plan_recipe_batches__recipe_batch__posts__user=request.user)
+                .values_list('id', flat=True)
+                .distinct()
+            )
+
+        items = []
+        for mprb in mprbs:
+            mp = mprb.meal_plan
+            if mp.id in published_meal_plan_ids:
+                continue
+            try:
+                hour = slot_hours.get(getattr(mp, 'meal_time', None), 12)
+                mp_dt = timezone.make_aware(
+                    datetime.combine(mp.date, time(hour=hour, minute=0, second=0)),
+                    timezone.get_current_timezone(),
+                )
+                mp_dt = timezone.localtime(mp_dt)
+            except Exception:
+                mp_dt = None
+
+            # Filtre produit: meal plan "récent" (< 24h) + jamais dans le futur.
+            if mp_dt is None:
+                continue
+            if mp_dt > now:
+                continue
+            if mp_dt < recent_cutoff:
+                continue
+
+            batch = mprb.recipe_batch
+            recipe = getattr(batch, 'recipe', None)
+            items.append(
+                {
+                    'meal_plan_id': mp.id,
+                    'date': mp.date,
+                    'meal_time': mp.meal_time,
+                    **meal_plan_slot_api_fields(mp),
+                    'recipe_batch_id': batch.id,
+                    'recipe': {
+                        'id': getattr(recipe, 'id', None),
+                        'title': getattr(recipe, 'title', None),
+                        'image_url': getattr(recipe, 'image_url', None),
+                    }
+                    if recipe
+                    else None,
+                }
+            )
+
+        return Response({'results': items}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'])
     def photos(self, request, pk=None):
@@ -2949,21 +3562,18 @@ class PostViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def _user_can_manage_photo(self, photo, user):
-        owner = None
+        if photo.uploaded_by_id and photo.uploaded_by_id != user.id:
+            return False
         if photo.recipe_batch_id and photo.recipe_batch:
-            # Vérifier que l'utilisateur a accès au batch via ses meal plans
-            # (propriétaire ou invité accepté)
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
-            has_access = RecipeBatch.objects.filter(
+            return RecipeBatch.objects.filter(
                 id=photo.recipe_batch_id,
                 meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
                     accessible_meal_plan_filter
                 )
             ).exists()
-            return has_access
-        elif photo.post_id and photo.post:
-            owner = photo.post.user
-        return owner == user
+        if photo.post_id and photo.post:
+            return photo.post.user_id == user.id
         return False
     
     def get_queryset(self):
@@ -3115,34 +3725,42 @@ class PostViewSet(viewsets.ModelViewSet):
     def get_upload_presigned_url(self, request):
         """Générer une URL pré-signée pour uploader une photo directement vers S3"""
         recipe_batch_id = request.data.get('recipe_batch_id')
+        meal_plan_id = request.data.get('meal_plan_id')
         photo_type = request.data.get('photo_type', 'spontaneous')
         
-        if not recipe_batch_id:
-            return Response({'error': 'recipe_batch_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not recipe_batch_id and not meal_plan_id:
+            return Response({'error': 'recipe_batch_id or meal_plan_id is required'}, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            # Vérifier que le batch existe et que l'utilisateur y a accès via ses meal plans
-            # (propriétaire ou invité accepté)
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-            recipe_batch = RecipeBatch.objects.filter(
-                id=recipe_batch_id,
-                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                    accessible_meal_plan_filter
-                )
-            ).distinct().first()
-            if not recipe_batch:
-                return Response({'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+            recipe_batch = None
+            meal_plan = None
+            if recipe_batch_id:
+                # Vérifier batch accessible via meal plans
+                recipe_batch = RecipeBatch.objects.filter(
+                    id=recipe_batch_id,
+                    meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
+                        accessible_meal_plan_filter
+                    )
+                ).distinct().first()
+                if not recipe_batch:
+                    return Response({'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                meal_plan = MealPlan.objects.filter(id=meal_plan_id).filter(accessible_meal_plan_filter).first()
+                if not meal_plan:
+                    return Response({'error': 'Meal plan not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': f'Error accessing recipe batch: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'Error accessing target: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         # Vérifier que le type de photo est valide
         if photo_type not in PHOTO_TYPES:
             return Response({'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Vérifier l'unicité pour les types non-spontanés (sauf during_cooking qui peut avoir plusieurs)
-        if photo_type in RESTRICTED_PHOTO_TYPES:
+        # Vérifier l'unicité (legacy) uniquement si on connaît le batch.
+        # En upload temporaire meal_plan, on ne bloque pas: l'association batch se fera ensuite.
+        if recipe_batch and photo_type in RESTRICTED_PHOTO_TYPES:
             existing_photo = PostPhoto.objects.filter(
-                recipe_batch=recipe_batch, 
+                recipe_batch=recipe_batch,
                 photo_type=photo_type,
                 is_draft=False
             ).first()
@@ -3183,7 +3801,10 @@ class PostViewSet(viewsets.ModelViewSet):
             
             # Générer un nom de fichier unique (sans caractères spéciaux)
             unique_id = str(uuid.uuid4()).replace('-', '')
-            file_name = f"recipe_batches/{recipe_batch.id}/{unique_id}.jpg"
+            if recipe_batch:
+                file_name = f"recipe_batches/{recipe_batch.id}/{unique_id}.jpg"
+            else:
+                file_name = f"meal_plans/{meal_plan.id}/{unique_id}.jpg"
             
             print(f"🔑 Generating presigned URL for bucket: {bucket_name}, key: {file_name}")
             
@@ -3219,6 +3840,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 'file_name': file_name,
                 'image_path': file_name,  # Chemin relatif à stocker en base
                 'recipe_batch_id': recipe_batch_id,
+                'meal_plan_id': meal_plan_id,
                 'photo_type': photo_type
             }, status=status.HTTP_200_OK)
             
@@ -3236,28 +3858,34 @@ class PostViewSet(viewsets.ModelViewSet):
     def confirm_photo_upload(self, request):
         """Confirmer qu'une photo a été uploadée et créer ou finaliser l'objet PostPhoto"""
         recipe_batch_id = request.data.get('recipe_batch_id')
+        meal_plan_id = request.data.get('meal_plan_id')
         image_path = request.data.get('image_path') or request.data.get('file_name')  # Support des deux pour compatibilité
         photo_type = request.data.get('photo_type', 'spontaneous')
         step_id = request.data.get('step_id', None)
         draft_id = request.data.get('draft_id', None)  # ID du draft à finaliser
         
-        if not recipe_batch_id or not image_path:
-            return Response({'error': 'recipe_batch_id and image_path (or file_name) are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if (not recipe_batch_id and not meal_plan_id) or not image_path:
+            return Response({'error': 'recipe_batch_id or meal_plan_id and image_path are required'}, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            # Vérifier que le batch existe et que l'utilisateur y a accès via ses meal plans
-            # (propriétaire ou invité accepté)
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-            recipe_batch = RecipeBatch.objects.filter(
-                id=recipe_batch_id,
-                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                    accessible_meal_plan_filter
-                )
-            ).distinct().first()
-            if not recipe_batch:
-                return Response({'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+            recipe_batch = None
+            meal_plan = None
+            if recipe_batch_id:
+                recipe_batch = RecipeBatch.objects.filter(
+                    id=recipe_batch_id,
+                    meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
+                        accessible_meal_plan_filter
+                    )
+                ).distinct().first()
+                if not recipe_batch:
+                    return Response({'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                meal_plan = MealPlan.objects.filter(id=meal_plan_id).filter(accessible_meal_plan_filter).first()
+                if not meal_plan:
+                    return Response({'error': 'Meal plan not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': f'Error accessing recipe batch: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'Error accessing target: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         # Si un draft_id est fourni, finaliser le draft
         if draft_id:
@@ -3269,13 +3897,15 @@ class PostViewSet(viewsets.ModelViewSet):
                 )
                 draft.image_path = image_path
                 draft.is_draft = False
-                draft.save(update_fields=['image_path', 'is_draft'])
+                if not draft.uploaded_by_id:
+                    draft.uploaded_by = request.user
+                draft.save(update_fields=['image_path', 'is_draft', 'uploaded_by'])
                 post_photo = draft
             except PostPhoto.DoesNotExist:
                 return Response({'error': 'Draft not found or already finalized'}, status=status.HTTP_404_NOT_FOUND)
         else:
-            # Vérifier l'unicité pour certains types (sauf during_cooking qui peut avoir plusieurs)
-            if photo_type in RESTRICTED_PHOTO_TYPES:
+            # Vérifier l'unicité (legacy) seulement si batch connu.
+            if recipe_batch and photo_type in RESTRICTED_PHOTO_TYPES:
                 existing_photo = PostPhoto.objects.filter(
                     recipe_batch=recipe_batch, 
                     photo_type=photo_type,
@@ -3287,9 +3917,11 @@ class PostViewSet(viewsets.ModelViewSet):
             # Créer l'objet PostPhoto avec image_path
             photo_data = {
                 'recipe_batch': recipe_batch,
+                'meal_plan': meal_plan,
                 'photo_type': photo_type,
                 'image_path': image_path,
-                'is_draft': False
+                'is_draft': False,
+                'uploaded_by': request.user,
             }
             if step_id:
                 try:
@@ -3385,6 +4017,7 @@ class PostViewSet(viewsets.ModelViewSet):
             image_path=new_path,
             step=original_photo.step,
             created_at=original_photo.created_at,  # Conserver la même date de création
+            uploaded_by=request.user,
         )
         new_photo.save()
         
@@ -3464,7 +4097,8 @@ class PostViewSet(viewsets.ModelViewSet):
             photo_data = {
                 'meal_plan': meal_plan,
                 'photo_type': photo_type,
-                'image_path': file_name  # Stocker le chemin relatif
+                'image_path': file_name,  # Stocker le chemin relatif
+                'uploaded_by': request.user,
             }
             if step_id:
                 try:
@@ -3588,7 +4222,8 @@ class PostViewSet(viewsets.ModelViewSet):
             photo_data = {
                 'post': post,
                 'photo_type': photo_type,
-                'image_path': file_name  # Stocker le chemin relatif
+                'image_path': file_name,  # Stocker le chemin relatif
+                'uploaded_by': request.user,
             }
             if step_id:
                 try:

@@ -319,6 +319,12 @@ class RecipeBatch(models.Model):
         blank=True,
         help_text="Liste des step.order qui auront des étapes photo (ex: [3, 5])"
     )
+    meal_time_photo_reminder_task_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="ID tâche Celery (rappel push photo à table) pour révocation si replanification",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -534,6 +540,12 @@ class MealPlan(models.Model):
     )
     custom_label = models.CharField(max_length=80, blank=True, default='')
     scheduled_time = models.TimeField(null=True, blank=True)
+    meal_time_photo_reminder_task_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="ID tâche Celery (rappel push photo à table) pour révocation si replanification",
+    )
     meal_type = models.CharField(max_length=20, choices=MEAL_TYPE_CHOICES)
     confirmed = models.BooleanField(default=False)
     guest_count = models.IntegerField(
@@ -808,6 +820,14 @@ class Post(models.Model):
         null=True,
         blank=True
     )
+    meal_plan = models.ForeignKey(
+        'MealPlan',
+        on_delete=models.SET_NULL,
+        related_name='posts',
+        null=True,
+        blank=True,
+        help_text="Repas associé (nouveau workflow : post du repas).",
+    )
     comment = models.TextField(blank=True, help_text="Commentaire du post")
     is_published = models.BooleanField(default=False, help_text="Le post est publié")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -822,7 +842,11 @@ class Post(models.Model):
         ]
     
     def __str__(self):
-        return f"{self.user.email} - Batch {self.recipe_batch.id} - {self.created_at.strftime('%d/%m/%Y')}"
+        if self.meal_plan_id:
+            return f"{self.user.email} - MealPlan {self.meal_plan_id} - {self.created_at.strftime('%d/%m/%Y')}"
+        if self.recipe_batch_id:
+            return f"{self.user.email} - Batch {self.recipe_batch_id} - {self.created_at.strftime('%d/%m/%Y')}"
+        return f"{self.user.email} - Post {self.id} - {self.created_at.strftime('%d/%m/%Y')}"
     
     @property
     def photos_count(self):
@@ -847,8 +871,9 @@ class PostPhoto(models.Model):
         ('imported_after_cooking', 'Importée après la recette'),
     ]
 
-    UNIQUE_TYPES = ('at_meal_time',)  # during_cooking et after_cooking peuvent avoir plusieurs photos
-    
+    # Plusieurs photos `at_meal_time` par batch autorisées (contraintes DB retirées, voir migrations).
+    UNIQUE_TYPES = ()
+
     post = models.ForeignKey(
         Post,
         on_delete=models.CASCADE,
@@ -856,6 +881,14 @@ class PostPhoto(models.Model):
         null=True,
         blank=True,
         help_text="Post associé (null si pas encore publié)"
+    )
+    meal_plan = models.ForeignKey(
+        'MealPlan',
+        on_delete=models.CASCADE,
+        related_name='draft_photos',
+        null=True,
+        blank=True,
+        help_text="Repas associé (upload temporaire avant attribution à une recette)",
     )
     recipe_batch = models.ForeignKey(
         RecipeBatch,
@@ -891,6 +924,14 @@ class PostPhoto(models.Model):
         default=0,
         help_text="Ordre d'affichage dans le post (0 = non ordonné, utilise created_at)"
     )
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='uploaded_post_photos',
+        help_text="Utilisateur qui a uploadé la photo (suppression réservée à cet utilisateur si défini)",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     
     @property
@@ -908,20 +949,6 @@ class PostPhoto(models.Model):
     
     class Meta:
         ordering = ['order', 'created_at']
-        # Un seul photo "at_meal_time" par post ou batch.
-        # Les types "during_cooking" et "after_cooking" peuvent avoir plusieurs photos.
-        constraints = [
-            models.UniqueConstraint(
-                fields=['post', 'photo_type'],
-                condition=models.Q(photo_type='at_meal_time') & models.Q(post__isnull=False),
-                name='unique_photo_type_per_post'
-            ),
-            models.UniqueConstraint(
-                fields=['recipe_batch', 'photo_type'],
-                condition=models.Q(photo_type='at_meal_time') & models.Q(recipe_batch__isnull=False),
-                name='unique_photo_type_per_batch'
-            ),
-        ]
     
     def __str__(self):
         if self.post:
