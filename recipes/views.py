@@ -1702,6 +1702,11 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         # Utiliser des serializers adaptés par action
         if self.action == 'retrieve':
             return MealPlanDetailSerializer  # Serializer léger pour retrieve
+
+        view_mode = (self.request.query_params.get('view') or '').strip().lower()
+        if self.action in ['list'] and view_mode == 'timeline':
+            from .serializers import MealPlanTimelineSerializer
+            return MealPlanTimelineSerializer
         
         # Détecter le mode minimal via paramètre query
         is_minimal = self.request.query_params.get('minimal', '').lower() == 'true'
@@ -1771,6 +1776,8 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         
         # Détecter le mode minimal
         is_minimal = self.request.query_params.get('minimal', '').lower() == 'true'
+        include_shopping_list = self.request.query_params.get('include_shopping_list', '').lower() == 'true'
+        view_mode = (self.request.query_params.get('view') or '').strip().lower()
         
         if self.action in ['list']:
             if is_minimal:
@@ -1782,24 +1789,73 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 ).order_by('date', meal_time_order)
             else:
                 # Mode complet : précharger les relations nécessaires (plus de recipe directe)
-                qs = qs.prefetch_related(
-                    Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-                    Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
+                mprb_select_related = ['recipe_batch__recipe']
+                if include_shopping_list:
+                    # OneToOne: permet au serializer de renvoyer shopping_list sans requêtes supplémentaires
+                    mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
+                # Timeline: pas besoin de shopping_list ni de champs user lourds, mais besoin de user + invitations + recipes thumbs
+                if view_mode == 'timeline':
+                    include_shopping_list = False
+                    from django.db.models import Exists, OuterRef
+                    qs = qs.annotate(
+                        is_guest_annot=Exists(
+                            MealInvitation.objects.filter(
+                                meal_plan_id=OuterRef('pk'),
+                                invitee=self.request.user,
+                                status='accepted',
+                            )
+                        )
+                    )
+                qs = qs.select_related('user').prefetch_related(
+                    Prefetch(
+                        'invitations',
+                        queryset=MealInvitation.objects.filter(status__in=['accepted', 'pending']).select_related('invitee'),
+                    ),
+                    Prefetch(
+                        'meal_plan_recipe_batches',
+                        queryset=MealPlanRecipeBatch.objects.select_related(
+                            *mprb_select_related,
+                        ).order_by('order'),
+                    ),
                 ).order_by('date', meal_time_order)
         elif self.action in ['by_date']:
+            mprb_select_related = ['recipe_batch__recipe']
+            if include_shopping_list:
+                mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
             qs = qs.select_related('user').prefetch_related(
                 Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-                Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
+                Prefetch(
+                    'meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related(
+                        *mprb_select_related,
+                    ).order_by('order'),
+                ),
             ).order_by('date', meal_time_order)
         elif self.action in ['by_week', 'by_dates', 'bulk']:
+            mprb_select_related = ['recipe_batch__recipe']
+            if include_shopping_list:
+                mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
             qs = qs.select_related('user').prefetch_related(
-                Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
+                Prefetch(
+                    'meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related(
+                        *mprb_select_related,
+                    ).order_by('order'),
+                ),
             ).order_by('date', meal_time_order)
         else:
             # Pour retrieve : préfetch minimal (pas de steps ni recipe_ingredients détaillés)
+            mprb_select_related = ['recipe_batch__recipe']
+            if include_shopping_list:
+                mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
             qs = qs.select_related('user').prefetch_related(
                 Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-                Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
+                Prefetch(
+                    'meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related(
+                        *mprb_select_related,
+                    ).order_by('order'),
+                ),
             ).order_by('date', meal_time_order)
         return qs
 
@@ -2347,9 +2403,15 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
+        context['include_shopping_list'] = (
+            self.request.query_params.get('include_shopping_list', '').lower() == 'true'
+        )
         # Pour la liste, éviter les presigned URLs coûteuses : on renvoie image_url
         if self.action == 'list':
             context['skip_presign'] = True
+            # Optim perf: éviter N+1 queries dans groupedDates
+            if hasattr(self, '_grouped_dates_by_batch_id'):
+                context['grouped_dates_by_batch_id'] = self._grouped_dates_by_batch_id
         return context
     
     def list(self, request, *args, **kwargs):
@@ -2366,12 +2428,40 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         
         # Mode complet : utiliser la pagination DRF
         page = self.paginate_queryset(queryset)
+        objects = page if page is not None else queryset
+
+        # Pré-calcul groupedDates pour tous les batches retournés (évite N+1 dans serializers)
+        batch_ids = set()
+        for mp in objects:
+            for mprb in mp.meal_plan_recipe_batches.all():
+                if mprb.recipe_batch_id:
+                    batch_ids.add(mprb.recipe_batch_id)
+
+        self._grouped_dates_by_batch_id = {}
+        if batch_ids:
+            from collections import defaultdict
+            from .models import MealPlanRecipeBatch
+
+            # Une seule requête pour toutes les dates par batch
+            rows = MealPlanRecipeBatch.objects.filter(
+                recipe_batch_id__in=batch_ids
+            ).values_list('recipe_batch_id', 'meal_plan__date', 'meal_plan__meal_time')
+
+            by_batch = defaultdict(set)
+            for batch_id, mp_date, mp_meal_time in rows:
+                by_batch[batch_id].add((mp_date, mp_meal_time))
+
+            meal_time_rank = {'breakfast': 0, 'lunch': 1, 'dinner': 2, 'other': 3}
+            for batch_id, tuples in by_batch.items():
+                ordered = sorted(tuples, key=lambda t: (t[0], meal_time_rank.get(t[1], 99)))
+                self._grouped_dates_by_batch_id[batch_id] = [d.isoformat() for d, _ in ordered]
+
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            serializer = self.get_serializer(objects, many=True)
             return self.get_paginated_response(serializer.data)
         
         # Fallback si pas de pagination
-        serializer = self.get_serializer(queryset, many=True)
+        serializer = self.get_serializer(objects, many=True)
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
@@ -3224,22 +3314,83 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
 
     def get_serializer_class(self):
         if self.action == 'list':
+            view_mode = (self.request.query_params.get('view') or '').strip().lower()
+            if view_mode == 'timeline':
+                from .serializers import MealInvitationTimelineListSerializer
+                return MealInvitationTimelineListSerializer
             return MealInvitationListSerializer
         return MealInvitationSerializer
 
     def get_queryset(self):
         """
-        L'utilisateur peut voir les invitations qu'il a envoyées ou reçues.
+        Par défaut, on retourne uniquement les invitations **reçues** (où l'utilisateur est l'invité).
+        Objectif: l'écran timeline/notifications ne doit pas mélanger les invitations des repas
+        dont l'utilisateur est l'hôte.
+
+        Pour les usages hôte (gestion des invitations envoyées), on peut demander explicitement
+        `scope=host` (ou `scope=all`).
+
         On expose quelques filtres pour alléger les réponses côté frontend :
         - status : filtrer par statut (ex: pending)
         - date__gte / date__lte : filtrer par plage de dates sur meal_plan.date
         - meal_plan : filtrer sur un meal_plan précis
         """
-        qs = MealInvitation.objects.filter(
-            Q(inviter=self.request.user) | Q(invitee=self.request.user)
-        ).select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
-        
         params = self.request.query_params
+        scope = (params.get('scope') or 'invitee').strip().lower()
+        user = self.request.user
+
+        # Cas "gestion participants" : quand on cible un meal plan précis, on doit pouvoir
+        # récupérer TOUTES les invitations de ce meal plan, à condition que l'utilisateur
+        # ait accès à ce meal plan (hôte ou invité accepté).
+        meal_plan_id = params.get('meal_plan')
+        if meal_plan_id:
+            try:
+                mp_id = int(meal_plan_id)
+            except (TypeError, ValueError):
+                mp_id = None
+
+            if mp_id is None:
+                return MealInvitation.objects.none()
+
+            accessible_filter = get_accessible_meal_plan_filter(user)
+            if not MealPlan.objects.filter(id=mp_id).filter(accessible_filter).exists():
+                return MealInvitation.objects.none()
+
+            qs = MealInvitation.objects.filter(meal_plan_id=mp_id)
+            qs = qs.select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
+
+            status_param = params.get('status')
+            if status_param:
+                qs = qs.filter(status=status_param)
+            return qs
+
+        if scope == 'host':
+            qs = MealInvitation.objects.filter(inviter=user)
+        elif scope == 'all':
+            qs = MealInvitation.objects.filter(Q(inviter=user) | Q(invitee=user))
+        else:
+            # default: invitations reçues
+            qs = MealInvitation.objects.filter(invitee=user)
+
+        # Pour les actions "objet" (retrieve/destroy/...), on élargit aux invitations des meal plans accessibles,
+        # sinon un utilisateur invité accepté ne peut pas supprimer une invitation liée au même repas.
+        if self.action in ('retrieve', 'destroy', 'update', 'partial_update'):
+            accessible_filter = get_accessible_meal_plan_filter(user)
+            qs = MealInvitation.objects.filter(meal_plan__in=MealPlan.objects.filter(accessible_filter))
+
+        qs = qs.select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
+
+        # Timeline: on veut 0-2 thumbs de recettes sans charger tout le meal plan
+        view_mode = (params.get('view') or '').strip().lower()
+        if view_mode == 'timeline':
+            from django.db.models import Prefetch
+            from .models import MealPlanRecipeBatch
+            qs = qs.prefetch_related(
+                Prefetch(
+                    'meal_plan__meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+                )
+            )
         
         status_param = params.get('status')
         if status_param:
@@ -3252,15 +3403,6 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         date_lte = params.get('date__lte')
         if date_lte:
             qs = qs.filter(meal_plan__date__lte=date_lte)
-        
-        # Filtrer par meal_plan si fourni dans les query params
-        meal_plan_id = params.get('meal_plan')
-        if meal_plan_id:
-            try:
-                qs = qs.filter(meal_plan_id=meal_plan_id)
-            except ValueError:
-                # Si meal_plan_id n'est pas un entier valide, ignorer le filtre
-                pass
         
         return qs
     

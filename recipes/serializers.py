@@ -328,12 +328,14 @@ class RecipeLightSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
+    total_time = serializers.SerializerMethodField()
     
     class Meta:
         model = Recipe
         fields = [
             'id', 'title', 'image_path', 'image_url', 'meal_type', 'meal_type_display',
             'difficulty', 'difficulty_display', 'prep_time', 'cook_time', 'servings',
+            'total_time',
             'source_type', 'source_type_display', 'import_source_url',
             'created_by', 'created_by_username', 'created_at',
             'is_author'
@@ -341,6 +343,16 @@ class RecipeLightSerializer(serializers.ModelSerializer):
     
     def get_image_url(self, obj):
         return obj.image_url
+
+    def get_total_time(self, obj):
+        """Temps total (prep + cuisson) en minutes, ou None si inconnu."""
+        try:
+            prep = obj.prep_time or 0
+            cook = obj.cook_time or 0
+            total = prep + cook
+            return total if total > 0 else None
+        except Exception:
+            return None
     
     def get_is_author(self, obj):
         """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
@@ -403,12 +415,64 @@ class RecipeBatchSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'photo_step_orders']
 
 
+class RecipeBatchMealPlanStatusSerializer(serializers.ModelSerializer):
+    """
+    Serializer très léger pour les écrans MealPlan (statuts + association liste).
+    Objectif: éviter N calls /shopping-lists/ côté front.
+    """
+    shopping_list = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecipeBatch
+        fields = [
+            'id',
+            'is_cooked',
+            'shopping_done',
+            'shopping_list',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+    def get_fields(self):
+        """
+        Par défaut, on retire `shopping_list` du payload MealPlan pour réduire le JSON
+        et éviter du travail inutile. Ré-activable via `?include_shopping_list=true`.
+        """
+        fields = super().get_fields()
+        ctx = getattr(self, 'context', {}) or {}
+        include_shopping_list = bool(ctx.get('include_shopping_list'))
+        if not include_shopping_list:
+            fields.pop('shopping_list', None)
+        return fields
+
+    def get_shopping_list(self, obj):
+        """
+        ShoppingListBatch est un OneToOne sur RecipeBatch (`recipe_batch.shopping_list_batch`).
+        Quand `recipe_batch__shopping_list_batch__shopping_list` est select_related côté queryset,
+        on évite une requête DB par batch ici.
+        """
+        try:
+            link = getattr(obj, 'shopping_list_batch', None)
+            sl = getattr(link, 'shopping_list', None) if link else None
+            if not sl:
+                return None
+            return {
+                'id': sl.id,
+                'name': sl.name,
+                'is_complete': bool(getattr(sl, 'is_complete', False)),
+                'is_archived': bool(getattr(sl, 'is_archived', False)),
+            }
+        except Exception:
+            # Fallback safe (on préfère "pas de shopping_list" plutôt que 500)
+            return None
+
+
 class MealPlanRecipeSerializer(serializers.ModelSerializer):
     """
     Serializer pour la relation MealPlan-RecipeBatch avec portions.
     """
     recipe = RecipeLightSerializer(source='recipe_batch.recipe', read_only=True)
-    recipe_batch = RecipeBatchSerializer(read_only=True)
+    recipe_batch = RecipeBatchMealPlanStatusSerializer(read_only=True)
     recipe_batch_id = serializers.PrimaryKeyRelatedField(
         queryset=RecipeBatch.objects.all(),
         source='recipe_batch',
@@ -450,6 +514,10 @@ class MealPlanRecipeSerializer(serializers.ModelSerializer):
         """Dates de tous les meal plans liés au même batch."""
         if not obj.recipe_batch_id:
             return [obj.meal_plan.date.isoformat()]
+        ctx = getattr(self, 'context', {}) or {}
+        mapping = ctx.get('grouped_dates_by_batch_id') or {}
+        if obj.recipe_batch_id in mapping:
+            return mapping.get(obj.recipe_batch_id) or [obj.meal_plan.date.isoformat()]
         meal_plans = MealPlan.objects.filter(
             meal_plan_recipe_batches__recipe_batch_id=obj.recipe_batch_id
         ).distinct().order_by('date', 'meal_time')
@@ -918,6 +986,7 @@ class MealPlanListSerializer(serializers.ModelSerializer):
     meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     groupedDates = serializers.SerializerMethodField()
+    is_guest = serializers.SerializerMethodField()
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
@@ -930,6 +999,7 @@ class MealPlanListSerializer(serializers.ModelSerializer):
             'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
             'meal_type', 'meal_type_display', 'confirmed',
             'recipe', 'user', 'recipes', 'groupedDates',
+            'is_guest',
         ]
     
     def get_groupedDates(self, obj: MealPlan):
@@ -942,6 +1012,16 @@ class MealPlanListSerializer(serializers.ModelSerializer):
             else:
                 dates.add(obj.date.isoformat())
         return sorted(list(dates)) if dates else [obj.date.isoformat()]
+
+    def get_is_guest(self, obj: MealPlan):
+        """
+        True si l'utilisateur courant a une invitation acceptée pour ce repas.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        from .models import MealInvitation
+        return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
 
 
 class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
@@ -963,6 +1043,192 @@ class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
             'meal_type', 'meal_type_display', 'user',
+        ]
+
+
+class MealPlanTimelineSerializer(serializers.ModelSerializer):
+    """
+    Serializer ultra-léger pour MealPlanTimelineScreen:
+    - pas de `recipes` détaillées
+    - pas de `participants` détaillés
+    - uniquement thumbs + preview avatars + compteurs
+    """
+    meal_time_display = serializers.SerializerMethodField()
+    is_guest = serializers.SerializerMethodField()
+    recipe_thumbs = serializers.SerializerMethodField()
+    people_count = serializers.SerializerMethodField()
+    people_preview = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MealPlan
+        fields = [
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'confirmed',
+            'guest_count',
+            'is_guest',
+            'recipe_thumbs',
+            'people_count',
+            'people_preview',
+        ]
+
+    def get_meal_time_display(self, obj: MealPlan):
+        if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
+            return (obj.custom_label or '').strip() or obj.get_meal_time_display()
+        return obj.get_meal_time_display()
+
+    def get_is_guest(self, obj: MealPlan):
+        if hasattr(obj, 'is_guest_annot'):
+            return bool(getattr(obj, 'is_guest_annot'))
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        from .models import MealInvitation
+        return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
+
+    def get_recipe_thumbs(self, obj: MealPlan):
+        """
+        Retourne max 2 URLs d'images de recette liées au meal plan.
+        Pré-requis perf: prefetch meal_plan_recipe_batches + select_related(recipe_batch__recipe).
+        """
+        thumbs = []
+        try:
+            mprbs = obj.meal_plan_recipe_batches.all()
+        except Exception:
+            mprbs = []
+        for mprb in mprbs:
+            recipe = getattr(getattr(mprb, 'recipe_batch', None), 'recipe', None)
+            u = getattr(recipe, 'image_url', None) if recipe else None
+            if u:
+                thumbs.append(u)
+            if len(thumbs) >= 2:
+                break
+        return thumbs
+
+    def _invited_users_for_preview(self, obj: MealPlan):
+        """
+        Retourne liste d'users invités actifs (accepted/pending) si invitations prefetched.
+        """
+        try:
+            invitations = obj.invitations.all()
+        except Exception:
+            invitations = []
+        invited = []
+        for inv in invitations:
+            if getattr(inv, 'status', None) not in ('accepted', 'pending'):
+                continue
+            u = getattr(inv, 'invitee', None)
+            if u:
+                invited.append(u)
+        return invited
+
+    def get_people_count(self, obj: MealPlan):
+        host = getattr(obj, 'user', None)
+        invited = self._invited_users_for_preview(obj)
+        seen = set()
+        count = 0
+        if host and getattr(host, 'id', None) is not None:
+            seen.add(str(host.id))
+            count += 1
+        for u in invited:
+            uid = getattr(u, 'id', None)
+            if uid is None:
+                continue
+            key = str(uid)
+            if key in seen:
+                continue
+            seen.add(key)
+            count += 1
+        return count
+
+    def get_people_preview(self, obj: MealPlan):
+        """
+        Max 3 personnes (host inclus) sous forme {id, name, avatar}.
+        Le front gère les URLs relatives via sa fonction avatarFromUser si besoin.
+        """
+        host = getattr(obj, 'user', None)
+        invited = self._invited_users_for_preview(obj)
+
+        def _name(u):
+            return getattr(u, 'username', None) or getattr(u, 'display_name', None) or getattr(u, 'email', None) or 'Utilisateur'
+
+        def _avatar(u):
+            # garder large : le front sait normaliser plusieurs keys
+            return getattr(u, 'avatar_url', None) or getattr(u, 'avatar', None) or getattr(u, 'profile_picture', None) or getattr(u, 'picture', None)
+
+        out = []
+        seen = set()
+        if host and getattr(host, 'id', None) is not None:
+            out.append({'id': host.id, 'name': _name(host), 'avatar': _avatar(host)})
+            seen.add(str(host.id))
+        for u in invited:
+            if len(out) >= 3:
+                break
+            uid = getattr(u, 'id', None)
+            if uid is None:
+                continue
+            key = str(uid)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({'id': uid, 'name': _name(u), 'avatar': _avatar(u)})
+        return out
+
+
+class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
+    meal_time_display = serializers.SerializerMethodField()
+    recipe_thumbs = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MealPlan
+        fields = [
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'recipe_thumbs',
+        ]
+
+    def get_meal_time_display(self, obj: MealPlan):
+        if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
+            return (obj.custom_label or '').strip() or obj.get_meal_time_display()
+        return obj.get_meal_time_display()
+
+    def get_recipe_thumbs(self, obj: MealPlan):
+        thumbs = []
+        try:
+            mprbs = obj.meal_plan_recipe_batches.all()
+        except Exception:
+            mprbs = []
+        for mprb in mprbs:
+            recipe = getattr(getattr(mprb, 'recipe_batch', None), 'recipe', None)
+            u = getattr(recipe, 'image_url', None) if recipe else None
+            if u:
+                thumbs.append(u)
+            if len(thumbs) >= 2:
+                break
+        return thumbs
+
+
+class MealInvitationTimelineListSerializer(serializers.ModelSerializer):
+    inviter = UserLightSerializer(read_only=True)
+    meal_plan = MealPlanTimelineForInvitationSerializer(read_only=True)
+
+    class Meta:
+        model = MealInvitation
+        fields = [
+            'id',
+            'inviter',
+            'meal_plan',
+            'status',
         ]
 
 
@@ -1010,14 +1276,17 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
     Lightweight list serializer for ranged listing:
     - removes user/shared_with to reduce payload
     """
+    user = UserLightSerializer(read_only=True)
     recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
     meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
+    participants = serializers.SerializerMethodField()
     total_guest_count = serializers.SerializerMethodField()
     total_participants = serializers.SerializerMethodField()
     total_servings = serializers.SerializerMethodField()
     groupedDates = serializers.SerializerMethodField()
+    is_guest = serializers.SerializerMethodField()
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
@@ -1029,10 +1298,36 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
             'meal_type', 'meal_type_display', 'confirmed',
+            'user', 'participants',
             'recipe', 'recipes', 'total_guest_count', 'total_participants', 'total_servings',
             'groupedDates',
+            'is_guest',
         ]
     
+    def get_participants(self, obj):
+        """
+        Participants pour la timeline (léger):
+        - invitations accepted/pending
+        - user serialisé via UserLightSerializer (inclut avatar_url)
+        """
+        try:
+            invitations = getattr(obj, 'invitations', None)
+            if invitations is None:
+                return []
+            active = invitations.filter(status__in=['accepted', 'pending'])
+            out = []
+            for inv in active:
+                u = getattr(inv, 'invitee', None)
+                if not u:
+                    continue
+                out.append({
+                    'user': UserLightSerializer(u, context=self.context).data,
+                    'status': inv.status,
+                })
+            return out
+        except Exception:
+            return []
+
     def get_total_guest_count(self, obj: MealPlan):
         """
         Retourne le total_guest_count pré-calculé si disponible.
@@ -1095,14 +1390,30 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
     
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
+        ctx = getattr(self, 'context', {}) or {}
+        mapping = ctx.get('grouped_dates_by_batch_id') or {}
         dates = set()
         for mprb in obj.meal_plan_recipe_batches.all():
             if mprb.recipe_batch_id:
-                for mp in MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch_id=mprb.recipe_batch_id):
-                    dates.add(mp.date.isoformat())
+                if mprb.recipe_batch_id in mapping:
+                    for ds in mapping.get(mprb.recipe_batch_id) or []:
+                        dates.add(ds)
+                else:
+                    for mp in MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch_id=mprb.recipe_batch_id):
+                        dates.add(mp.date.isoformat())
             else:
                 dates.add(obj.date.isoformat())
         return sorted(list(dates)) if dates else [obj.date.isoformat()]
+
+    def get_is_guest(self, obj: MealPlan):
+        """
+        True si l'utilisateur courant a une invitation acceptée pour ce repas.
+        """
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        from .models import MealInvitation
+        return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
 
 
 class MealPlanMinimalListSerializer(serializers.ModelSerializer):
