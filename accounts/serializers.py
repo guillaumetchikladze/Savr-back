@@ -278,7 +278,7 @@ class FeedUserSuggestionSerializer(serializers.Serializer):
 
 
 class NotificationSerializer(serializers.ModelSerializer):
-    related_user = UserSerializer(read_only=True)
+    related_user = serializers.SerializerMethodField()
     notification_type_display = serializers.CharField(source='get_notification_type_display', read_only=True)
     
     class Meta:
@@ -288,6 +288,25 @@ class NotificationSerializer(serializers.ModelSerializer):
             'title', 'message', 'related_user', 'related_post_id', 'is_read', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
+
+    def get_related_user(self, obj):
+        """
+        Serializer "léger" pour éviter les coûts du UserSerializer (prefs/email + N+1 follow + presign avatar).
+        On renvoie juste ce dont l'app a besoin pour l'écran Notifications.
+        """
+        u = getattr(obj, 'related_user', None)
+        if not u:
+            return None
+        # Le view peut annoter `related_user_is_following` pour éviter un N+1.
+        is_following = getattr(obj, 'related_user_is_following', None)
+        if is_following is None:
+            is_following = False
+        return {
+            'id': u.id,
+            'username': u.username,
+            'avatar_url': u.avatar_url,
+            'is_following': bool(is_following),
+        }
 
 
 class LoyaltyCardSerializer(serializers.ModelSerializer):

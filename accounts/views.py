@@ -4,7 +4,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
-from django.db.models import Q
+from django.db.models import Q, Exists, OuterRef
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
 from django.conf import settings
 import uuid
@@ -400,9 +400,45 @@ def follow_user_view(request, user_id):
 @permission_classes([IsAuthenticated])
 def notifications_view(request):
     """Récupérer toutes les notifications de l'utilisateur"""
-    notifications = Notification.objects.filter(user=request.user).select_related('related_user')
-    serializer = NotificationSerializer(notifications, many=True, context={'request': request})
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    # Pagination + queryset optimisé:
+    # - Evite de renvoyer "tout" (payload énorme + sérialisation lente)
+    # - Evite le N+1 sur `is_following` via annotation Exists
+    from rest_framework.pagination import PageNumberPagination
+
+    paginator = PageNumberPagination()
+    paginator.page_size = 30
+    paginator.page_size_query_param = 'page_size'
+    paginator.max_page_size = 100
+
+    follow_exists = Follow.objects.filter(
+        follower=request.user,
+        following_id=OuterRef('related_user_id'),
+    )
+
+    qs = (
+        Notification.objects
+        .filter(user=request.user)
+        .select_related('related_user')
+        .annotate(related_user_is_following=Exists(follow_exists))
+        .only(
+            'id',
+            'notification_type',
+            'title',
+            'message',
+            'related_post_id',
+            'is_read',
+            'created_at',
+            'related_user_id',
+            'related_user__id',
+            'related_user__username',
+            'related_user__avatar_url',
+        )
+        .order_by('-created_at')
+    )
+
+    page = paginator.paginate_queryset(qs, request)
+    serializer = NotificationSerializer(page, many=True, context={'request': request})
+    return paginator.get_paginated_response(serializer.data)
 
 
 @api_view(['GET'])
