@@ -3,11 +3,11 @@ Service pour identifier et créer des ingrédients en utilisant l'embedding
 """
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
-import numpy as np
 import requests
 from decouple import config
+from django.conf import settings as django_settings
 from django.db import transaction
 from pgvector.django import CosineDistance
 from unidecode import unidecode
@@ -65,20 +65,32 @@ def normalize_ingredient_name(name: str) -> str:
     return normalized
 
 
-def get_batch_embeddings(texts: List[str]) -> List[Optional[list]]:
-    """
-    Récupère les embeddings de plusieurs textes en une seule requête (batch)
-    """
+def get_batch_embeddings(
+    texts: List[str],
+    *,
+    input_type: Literal['query', 'passage'] = 'passage',
+    dimensions: int | None = None,
+    timeout: float | None = None,
+) -> List[Optional[list]]:
+    """Récupère les embeddings de plusieurs textes en une seule requête (batch)."""
     if not EMBEDDING_API_SECRET:
         logger.warning("EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings")
         return [None] * len(texts)
-    
+
     if not texts:
         return []
-    
+
+    dims = dimensions or getattr(django_settings, 'EMBEDDING_DIMENSION', 512)
+    req_timeout = timeout if timeout is not None else (15.0 if input_type == 'query' else 30.0)
+
     try:
         start_time = time.perf_counter()
-        logger.info("[Embeddings][Batch] Génération de %d embeddings (normalisation=%s)", len(texts), True)
+        logger.info(
+            "[Embeddings][Batch] %d textes type=%s dim=%s",
+            len(texts),
+            input_type,
+            dims,
+        )
         response = requests.post(
             f"{EMBEDDING_API_URL}/embed/batch",
             headers={
@@ -87,9 +99,11 @@ def get_batch_embeddings(texts: List[str]) -> List[Optional[list]]:
             },
             json={
                 "texts": texts,
-                "normalize": True
+                "normalize": True,
+                "input_type": input_type,
+                "dimensions": dims,
             },
-            timeout=30  # Timeout plus long pour les batch
+            timeout=req_timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -107,18 +121,23 @@ def get_batch_embeddings(texts: List[str]) -> List[Optional[list]]:
         return [None] * len(texts)
 
 
-def get_embedding(text: str) -> Optional[list]:
-    """
-    Récupère l'embedding d'un texte via l'API d'embedding
-    """
+def get_embedding(
+    text: str,
+    *,
+    input_type: Literal['query', 'passage'] = 'passage',
+) -> Optional[list]:
+    """Récupère l'embedding d'un texte via l'API d'embedding."""
     if not EMBEDDING_API_SECRET:
         logger.warning("EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings")
         return None
-    
+
+    dims = getattr(django_settings, 'EMBEDDING_DIMENSION', 512)
+    req_timeout = 15.0 if input_type == 'query' else 10.0
+
     try:
         start_time = time.perf_counter()
         truncated_text = text[:60] + ("..." if len(text) > 60 else "")
-        logger.info("[Embeddings][Single] Génération pour '%s'", truncated_text)
+        logger.info("[Embeddings][Single] Génération pour '%s' type=%s", truncated_text, input_type)
         response = requests.post(
             f"{EMBEDDING_API_URL}/embed",
             headers={
@@ -127,9 +146,11 @@ def get_embedding(text: str) -> Optional[list]:
             },
             json={
                 "text": text,
-                "normalize": True
+                "normalize": True,
+                "input_type": input_type,
+                "dimensions": dims,
             },
-            timeout=10
+            timeout=req_timeout,
         )
         response.raise_for_status()
         data = response.json()

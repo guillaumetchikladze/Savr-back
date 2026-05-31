@@ -40,7 +40,7 @@ def generate_recipe_embedding(formalized_recipe, data: Dict[str, Any]) -> Option
     Crée un embedding de recette à partir des informations formalisées.
     """
     text = _format_recipe_text(formalized_recipe, data)
-    embeddings = get_batch_embeddings([text])
+    embeddings = get_batch_embeddings([text], input_type='passage')
     if embeddings and embeddings[0]:
         return embeddings[0]
     return None

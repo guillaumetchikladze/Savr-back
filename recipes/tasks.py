@@ -274,3 +274,17 @@ def process_recipe_import_from_url(self, request_id: str):
         _update_import_progress(import_request, step='ERROR', percent=100)
         raise
 
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def reindex_recipe_search(self, recipe_id: int, force: bool = False):
+    """Indexation async Gemini + embedding (zero-friction : conserve l'ancien vecteur jusqu'au succès)."""
+    from .services.recipe_search_index import index_recipe
+
+    try:
+        ok = index_recipe(recipe_id, force=force)
+        if not ok:
+            raise RuntimeError(f'index_recipe failed for recipe {recipe_id}')
+    except Exception as exc:
+        logger.exception('[ReindexRecipeSearch] recipe %s: %s', recipe_id, exc)
+        raise self.retry(exc=exc)
+

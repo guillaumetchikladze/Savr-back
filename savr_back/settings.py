@@ -63,6 +63,16 @@ DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL = config(
     'DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', default=120, cast=int
 )
 
+# Recherche recettes sémantique (nomic 512d + hybride pg_trgm/pgvector)
+EMBEDDING_DIMENSION = config('EMBEDDING_DIMENSION', default=512, cast=int)
+SEARCH_SEMANTIC_MAX_DISTANCE = config('SEARCH_SEMANTIC_MAX_DISTANCE', default=0.45, cast=float)
+SEARCH_HYBRID_WEIGHT_SEMANTIC = config('SEARCH_HYBRID_WEIGHT_SEMANTIC', default=0.65, cast=float)
+SEARCH_HYBRID_WEIGHT_TRIGRAM = config('SEARCH_HYBRID_WEIGHT_TRIGRAM', default=0.35, cast=float)
+# word_similarity : typo « healty » → « healthy » dans les tags (~0.5+)
+SEARCH_TRIGRAM_MIN_SCORE = config('SEARCH_TRIGRAM_MIN_SCORE', default=0.08, cast=float)
+SEARCH_HYBRID_MIN_SCORE = config('SEARCH_HYBRID_MIN_SCORE', default=0.18, cast=float)
+SEARCH_CONTEXT_GEMINI_ENABLED = config('SEARCH_CONTEXT_GEMINI_ENABLED', default=True, cast=bool)
+
 
 # Application definition
 

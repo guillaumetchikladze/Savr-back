@@ -11,6 +11,8 @@ django-storages==1.14.2
 boto3==1.41.1
 Pillow==10.4.0
 litellm==1.52.0
+# pydantic-ai 1.21+ requiert pydantic >= 2.10 (allow_partial sur SchemaValidator)
+pydantic>=2.10.0,<3.0.0
 pydantic-ai==1.21.0
 pydantic-ai-slim==1.21.0
 google-genai==1.52.0

@@ -1,5 +1,6 @@
-# Framework web
+# Framework web (starlette 1.x casse fastapi 0.115 — ne pas mélanger avec le venv Django)
 fastapi==0.115.0
+starlette>=0.37.2,<0.39.0
 uvicorn[standard]==0.32.0
 python-multipart==0.0.12
 
@@ -9,9 +10,10 @@ python-decouple==3.8
 # Modèle d'embedding
 sentence-transformers==3.3.1
 
-# Dépendances du modèle
+# Dépendances du modèle (nomic-embed-text-v1.5)
 torch==2.5.1
 numpy==2.1.1
+einops>=0.7.0
 
 # Validation des données
 pydantic==2.9.2

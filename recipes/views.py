@@ -11,7 +11,6 @@ from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from urllib.parse import urlparse
-from pgvector.django import CosineDistance
 from pydantic_ai.exceptions import UserError as PydanticAIUserError
 from typing import Optional
 import re
@@ -23,6 +22,8 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
 from .services.ingredient_matcher import get_batch_embeddings
+from .services.recipe_search import hybrid_recipe_queryset
+from .services.recipe_search_index import schedule_recipe_search_reindex
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
     MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment, PostReport,
@@ -878,7 +879,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return RecipeCreateSerializer
         # Utiliser RecipeLightSerializer pour les listes (pas besoin de steps/ingredients)
-        if self.action in ['list', 'search', 'my_imports', 'my_favorites', 'my_recipes']:
+        if self.action in ['list', 'search', 'search_semantic', 'my_imports', 'my_favorites', 'my_recipes']:
             return RecipeLightSerializer
         # Utiliser RecipeDetailSerializer pour retrieve (léger, sans steps/ingredients)
         if self.action == 'retrieve':
@@ -909,7 +910,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(difficulty=difficulty)
         if search:
             # Pour les listes, chercher uniquement dans le titre (plus rapide)
-            if self.action in ['list', 'search']:
+            if self.action in ['list', 'search', 'search_semantic']:
                 queryset = queryset.filter(title__icontains=search)
             else:
                 queryset = queryset.filter(
@@ -918,9 +919,15 @@ class RecipeViewSet(viewsets.ModelViewSet):
         
         # Pour les listes, ne pas précharger steps et ingredients (inutiles)
         # Utiliser defer() pour exclure les gros champs
-        if self.action in ['list', 'search']:
+        if self.action in ['list', 'search', 'search_semantic']:
             queryset = queryset.defer(
-                'description', 'created_at', 'updated_at', 'created_by_id'
+                'description',
+                'created_at',
+                'updated_at',
+                'created_by_id',
+                'search_index_text',
+                'search_context_tags',
+                'search_index_hash',
             )
         elif self.action == 'retrieve':
             # Pour retrieve : ne pas précharger steps et ingredients (chargés via endpoints séparés)
@@ -1134,7 +1141,8 @@ class RecipeViewSet(viewsets.ModelViewSet):
         return meal_plans
     
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        recipe = serializer.save(created_by=self.request.user)
+        schedule_recipe_search_reindex(recipe.id)
     
     @action(detail=True, methods=['get'])
     def steps(self, request, pk=None):
@@ -1259,6 +1267,8 @@ class RecipeViewSet(viewsets.ModelViewSet):
                         has_timer=bool(step_data.get('has_timer', False)),
                         timer_duration=step_data.get('timer_duration'),
                     )
+
+        schedule_recipe_search_reindex(recipe.id)
 
         serializer = RecipeSerializer(recipe, context={'request': request})
         return Response(serializer.data)
@@ -1541,25 +1551,21 @@ class RecipeViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='search_semantic')
     def search_semantic(self, request):
         query = request.query_params.get('q', '').strip()
-        page = int(request.query_params.get('page', 1))
-        page_size = min(int(request.query_params.get('page_size', 20)), 50)
 
         if not query:
             return Response({'error': 'Paramètre q requis.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        embeddings = get_batch_embeddings([query])
+        embeddings = get_batch_embeddings([query], input_type='query')
         vector = embeddings[0] if embeddings else None
         if not vector:
-            return self.get_paginated_response([])
+            logging.getLogger(__name__).warning(
+                '[search_semantic] embedding indisponible pour q=%r — recherche trigram seule',
+                query,
+            )
 
-        queryset = (
-            Recipe.objects.exclude(embedding__isnull=True)
-            .annotate(distance=CosineDistance('embedding', vector))
-            .order_by('distance')
-        )
-        # Pas de filtrage hard en recherche explicite : on garde tout.
+        base_qs = self.filter_queryset(self.get_queryset())
+        queryset = hybrid_recipe_queryset(base_qs, query, vector)
 
-        # Appliquer la pagination
         paginated_queryset = self.paginate_queryset(queryset)
         if paginated_queryset is not None:
             items = list(paginated_queryset)
@@ -1590,6 +1596,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         
         # Fallback si pas de pagination
+        page_size = min(int(request.query_params.get('page_size', 20)), 50)
         serializer = RecipeLightSerializer(queryset[:page_size], many=True, context={'request': request})
         return Response(serializer.data)
     

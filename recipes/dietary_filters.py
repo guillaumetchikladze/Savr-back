@@ -453,7 +453,7 @@ def _semantic_ingredient_ids(labels):
         logger.debug('dietary semantic: import ingredient_matcher failed: %s', e)
         return []
 
-    vectors = get_batch_embeddings(list(labels))
+    vectors = get_batch_embeddings(list(labels), input_type='query')
     max_d = float(getattr(settings, 'DIETARY_SEMANTIC_MAX_DISTANCE', 0.42))
     max_per = int(getattr(settings, 'DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', 120))
 

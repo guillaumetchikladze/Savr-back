@@ -48,10 +48,10 @@ class Ingredient(models.Model):
         help_text="Catégorie de l'ingrédient"
     )
     embedding = VectorField(
-        dimensions=384,  # Dimension de BGE-small-en-v1.5
+        dimensions=512,
         null=True,
         blank=True,
-        help_text="Vecteur d'embedding pour la recherche sémantique"
+        help_text="Vecteur d'embedding pour la recherche sémantique (nomic 512d)",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     
@@ -201,11 +201,25 @@ class Recipe(models.Model):
         null=True,
         help_text="Chemin relatif de l'image (ex: recipes/user/uuid.jpg)"
     )
+    class SearchIndexStatus(models.TextChoices):
+        PENDING = "pending", "En cours"
+        READY = "ready", "Prêt"
+        FAILED = "failed", "Échec"
+
     embedding = VectorField(
-        dimensions=384,
+        dimensions=512,
         null=True,
         blank=True,
-        help_text="Embedding sémantique pour la recherche"
+        help_text="Embedding sémantique pour la recherche (nomic 512d)",
+    )
+    search_context_tags = models.JSONField(null=True, blank=True)
+    search_index_text = models.TextField(blank=True, default="")
+    search_index_hash = models.CharField(max_length=64, blank=True, default="")
+    search_indexed_at = models.DateTimeField(null=True, blank=True)
+    search_index_status = models.CharField(
+        max_length=16,
+        choices=SearchIndexStatus.choices,
+        default=SearchIndexStatus.PENDING,
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

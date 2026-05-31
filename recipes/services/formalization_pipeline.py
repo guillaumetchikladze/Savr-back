@@ -15,7 +15,7 @@ from .ingredient_matcher import (
     get_batch_embeddings,
     find_similar_ingredient,
 )
-from .recipe_embeddings import generate_recipe_embedding
+from .recipe_search_index import schedule_recipe_search_reindex
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +90,6 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
                     ingredient = Ingredient.objects.create(name=ingredient_name)
                     ingredient_map[ingredient_name] = ingredient
 
-        recipe_embedding = generate_recipe_embedding(formalized_recipe, data)
-
         recipe = Recipe.objects.create(
             title=formalized_recipe.title,
             description=formalized_recipe.description or '',
@@ -102,11 +100,11 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
             cook_time=formalized_recipe.cook_time,
             servings=formalized_recipe.servings,
             image_path=data.get('image_path') or '',
-            embedding=recipe_embedding,
             created_by=user,
             is_public=True,
             source_type=data.get('source_type', 'user_created'),
-            import_source_url=data.get('import_source_url') or None
+            import_source_url=data.get('import_source_url') or None,
+            search_index_status=Recipe.SearchIndexStatus.PENDING,
         )
 
         # Utiliser un set pour éviter les doublons d'ingrédients
@@ -163,5 +161,6 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
                 )
                 step_added_ingredients.add(ingredient.id)
 
+    schedule_recipe_search_reindex(recipe.id)
     return recipe
 
