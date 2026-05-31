@@ -50,11 +50,11 @@ def get_accessible_meal_plan_filter(user):
     """
     Retourne un Q object pour filtrer les MealPlan auxquels un utilisateur a accès :
     - Les MealPlan dont il est le propriétaire
-    - Les MealPlan auxquels il est invité avec une invitation acceptée
+    - Les MealPlan auxquels il est invité avec une invitation acceptée ou en attente (lecture autorisée)
     """
     return Q(
         Q(user=user) |  # Propriétaire
-        Q(invitations__invitee=user, invitations__status='accepted')  # Invité accepté
+        Q(invitations__invitee=user, invitations__status__in=['accepted', 'pending'])
     )
 
 

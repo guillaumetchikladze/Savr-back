@@ -597,23 +597,28 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         photo_ids = request.data.get('photo_ids', [])
         comment = request.data.get('comment', '')
 
-        if not isinstance(photo_ids, list) or len(photo_ids) == 0:
-            return Response({'error': 'photo_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            photo_ids = [int(pid) for pid in photo_ids]
-        except (TypeError, ValueError):
-            return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
+        if photo_ids is None:
+            photo_ids = []
+        if not isinstance(photo_ids, list):
+            return Response({'error': 'photo_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if len(photo_ids) > 10:
-            return Response({'error': 'You can select up to 10 photos'}, status=status.HTTP_400_BAD_REQUEST)
+        photos = []
+        if photo_ids:
+            try:
+                photo_ids = [int(pid) for pid in photo_ids]
+            except (TypeError, ValueError):
+                return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Récupérer les photos dans l'ordre de sélection (ordre des photo_ids)
-        photos_dict = {p.id: p for p in PostPhoto.objects.filter(recipe_batch=batch, id__in=photo_ids)}
-        if len(photos_dict) != len(photo_ids):
-            return Response({'error': 'Some photos are invalid or do not belong to this batch'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Préserver l'ordre de sélection
-        photos = [photos_dict[pid] for pid in photo_ids]
+            if len(photo_ids) > 10:
+                return Response({'error': 'You can select up to 10 photos'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Récupérer les photos dans l'ordre de sélection (ordre des photo_ids)
+            photos_dict = {p.id: p for p in PostPhoto.objects.filter(recipe_batch=batch, id__in=photo_ids)}
+            if len(photos_dict) != len(photo_ids):
+                return Response({'error': 'Some photos are invalid or do not belong to this batch'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Préserver l'ordre de sélection
+            photos = [photos_dict[pid] for pid in photo_ids]
 
         post = Post.objects.create(
             user=request.user,
@@ -1997,33 +2002,47 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not isinstance(recipe_ids, list) or len(recipe_ids) == 0:
             return Response({'error': 'recipe_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
 
-        existing_mprs = {mpr.recipe_batch.recipe_id: mpr for mpr in MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).select_related('recipe_batch')}
+        existing_recipe_ids = set(
+            MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).values_list('recipe_batch__recipe_id', flat=True)
+        )
         current_max_order = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).aggregate(Max('order'))['order__max'] or 0
 
-        created_mprs = []
-        with transaction.atomic():
-            for idx, recipe_id in enumerate(recipe_ids):
-                try:
-                    Recipe.objects.get(id=recipe_id)
-                except Recipe.DoesNotExist:
-                    return Response({'error': f'recipe {recipe_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+        already_present_recipe_ids = [rid for rid in recipe_ids if rid in existing_recipe_ids]
 
-                if recipe_id in existing_mprs:
-                    pass  # déjà associé, pas de mise à jour portions ici
-                else:
-                    batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=request.user)
-                    mpr = MealPlanRecipeBatch.objects.create(
+        # Garder l'ordre demandé par le client tout en évitant les doublons déjà associés
+        recipe_ids_to_add = [rid for rid in recipe_ids if rid not in existing_recipe_ids]
+
+        # Valider l'existence des recettes en un seul hit DB
+        if recipe_ids_to_add:
+            existing_in_db = set(Recipe.objects.filter(id__in=recipe_ids_to_add).values_list('id', flat=True))
+            missing = [rid for rid in recipe_ids_to_add if rid not in existing_in_db]
+            if missing:
+                return Response({'error': f'recipe(s) not found: {missing}'}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            if recipe_ids_to_add:
+                batches = [RecipeBatch(recipe_id=rid, created_by=request.user) for rid in recipe_ids_to_add]
+                RecipeBatch.objects.bulk_create(batches)
+                mprs = [
+                    MealPlanRecipeBatch(
                         meal_plan=meal_plan,
-                        recipe_batch=batch,
+                        recipe_batch=batches[i],
                         portions=None,
                         is_portions_overridden=False,
-                        order=current_max_order + len(created_mprs) + 1
+                        order=current_max_order + i + 1,
                     )
-                    created_mprs.append(mpr)
+                    for i in range(len(batches))
+                ]
+                MealPlanRecipeBatch.objects.bulk_create(mprs)
 
-        prefetched = self._get_meal_plans_with_prefetch([meal_plan.id])
-        response_serializer = self.get_serializer(prefetched[0])
-        return Response(response_serializer.data, status=status.HTTP_200_OK)
+        # Réponse légère (JSON minimal): évite un body vide avec Content-Type JSON qui peut faire planter certains clients.
+        return Response(
+            {
+                'added_recipe_ids': recipe_ids_to_add,
+                'already_present_recipe_ids': already_present_recipe_ids,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=['post'], url_path='remove-recipe-batch')
     def remove_recipe_batch(self, request, pk=None):
@@ -2533,15 +2552,10 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         photo_ids = request.data.get('photo_ids', [])
         comment = request.data.get('comment', '')
 
-        if not isinstance(photo_ids, list) or len(photo_ids) == 0:
-            return Response({'error': 'photo_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            photo_ids = [int(pid) for pid in photo_ids]
-        except (TypeError, ValueError):
-            return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if len(photo_ids) > 20:
-            return Response({'error': 'You can select up to 20 photos'}, status=status.HTTP_400_BAD_REQUEST)
+        if photo_ids is None:
+            photo_ids = []
+        if not isinstance(photo_ids, list):
+            return Response({'error': 'photo_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
 
         if Post.objects.filter(meal_plan=meal_plan, is_published=True).exists():
             return Response({'error': 'A post already exists for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2551,21 +2565,31 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not batch_ids:
             return Response({'error': 'This meal plan has no recipe batches'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Photos autorisées:
-        # - appartiennent à un batch du meal plan
-        #   OU sont restées au niveau meal plan (temp / non associées)
-        # - pas draft
-        photos_qs = PostPhoto.objects.filter(
-            id__in=photo_ids,
-            is_draft=False,
-        ).filter(
-            Q(recipe_batch_id__in=batch_ids) | Q(meal_plan_id=meal_plan.id)
-        )
-        photos_dict = {p.id: p for p in photos_qs}
-        if len(photos_dict) != len(photo_ids):
-            return Response({'error': 'Some photos are invalid or do not belong to this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+        photos = []
+        if photo_ids:
+            try:
+                photo_ids = [int(pid) for pid in photo_ids]
+            except (TypeError, ValueError):
+                return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
 
-        photos = [photos_dict[pid] for pid in photo_ids]
+            if len(photo_ids) > 20:
+                return Response({'error': 'You can select up to 20 photos'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Photos autorisées:
+            # - appartiennent à un batch du meal plan
+            #   OU sont restées au niveau meal plan (temp / non associées)
+            # - pas draft
+            photos_qs = PostPhoto.objects.filter(
+                id__in=photo_ids,
+                is_draft=False,
+            ).filter(
+                Q(recipe_batch_id__in=batch_ids) | Q(meal_plan_id=meal_plan.id)
+            )
+            photos_dict = {p.id: p for p in photos_qs}
+            if len(photos_dict) != len(photo_ids):
+                return Response({'error': 'Some photos are invalid or do not belong to this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+
+            photos = [photos_dict[pid] for pid in photo_ids]
 
         cover_batch_id = batch_ids[0] if batch_ids else None
 
@@ -2939,49 +2963,6 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=True, methods=['post'], url_path='publish-post')
-    def publish_post(self, request, pk=None):
-        """Créer et publier un post à partir d'une sélection de photos"""
-        meal_plan = self.get_object()
-        photo_ids = request.data.get('photo_ids', [])
-        comment = request.data.get('comment', '')
-
-        if not isinstance(photo_ids, list) or len(photo_ids) == 0:
-            return Response({'error': 'photo_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            photo_ids = [int(pid) for pid in photo_ids]
-        except (TypeError, ValueError):
-            return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if len(photo_ids) > 10:
-            return Response({'error': 'You can select up to 10 photos'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Récupérer les photos dans l'ordre de sélection (ordre des photo_ids)
-        batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
-        photos_dict = {p.id: p for p in PostPhoto.objects.filter(recipe_batch_id__in=batch_ids, id__in=photo_ids)}
-        if len(photos_dict) != len(photo_ids):
-            return Response({'error': 'Some photos are invalid or do not belong to this batch/meal plan'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Préserver l'ordre de sélection
-        photos = [photos_dict[pid] for pid in photo_ids]
-
-        main_batch = meal_plan.meal_plan_recipe_batches.first()
-        post = Post.objects.create(
-            user=request.user,
-            recipe_batch=main_batch.recipe_batch if main_batch else None,
-            comment=comment,
-            is_published=True
-        )
-
-        # Associer les photos au post dans l'ordre de sélection et définir l'ordre
-        for order_index, photo in enumerate(photos, start=1):
-            photo.post = post
-            photo.order = order_index
-            photo.save(update_fields=['post', 'order'])
-
-        serializer = PostSerializer(post, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
     @action(detail=False, methods=['post'], url_path='create-batch-and-associate')
     def create_batch_and_associate(self, request):
         """

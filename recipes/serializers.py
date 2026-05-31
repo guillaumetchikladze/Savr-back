@@ -1056,6 +1056,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
     meal_time_display = serializers.SerializerMethodField()
     is_guest = serializers.SerializerMethodField()
     recipe_thumbs = serializers.SerializerMethodField()
+    recipes_count = serializers.SerializerMethodField()
     people_count = serializers.SerializerMethodField()
     people_preview = serializers.SerializerMethodField()
 
@@ -1073,6 +1074,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             'guest_count',
             'is_guest',
             'recipe_thumbs',
+            'recipes_count',
             'people_count',
             'people_preview',
         ]
@@ -1093,7 +1095,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
 
     def get_recipe_thumbs(self, obj: MealPlan):
         """
-        Retourne max 2 URLs d'images de recette liées au meal plan.
+        Retourne max 3 URLs d'images de recette liées au meal plan.
         Pré-requis perf: prefetch meal_plan_recipe_batches + select_related(recipe_batch__recipe).
         """
         thumbs = []
@@ -1106,9 +1108,25 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             u = getattr(recipe, 'image_url', None) if recipe else None
             if u:
                 thumbs.append(u)
-            if len(thumbs) >= 2:
+            if len(thumbs) >= 3:
                 break
         return thumbs
+
+    def get_recipes_count(self, obj: MealPlan):
+        """
+        Nombre total de recettes associées au meal plan.
+        Le front affiche max 2 thumbnails + un badge "+X" basé sur ce count.
+        Pré-requis perf: prefetch meal_plan_recipe_batches.
+        """
+        try:
+            mprbs = obj.meal_plan_recipe_batches.all()
+        except Exception:
+            return 0
+        # `len(qs)` utilise le cache de prefetch si présent.
+        try:
+            return len(mprbs)
+        except Exception:
+            return 0
 
     def _invited_users_for_preview(self, obj: MealPlan):
         """
@@ -1154,12 +1172,24 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
         host = getattr(obj, 'user', None)
         invited = self._invited_users_for_preview(obj)
 
+        def _light(u):
+            """
+            IMPORTANT: `u.avatar_url` est souvent un chemin S3 (avatars/...)
+            et DOIT être converti en URL presignée pour le mobile.
+            """
+            try:
+                return UserLightSerializer(u, context=self.context).data
+            except Exception:
+                return None
+
         def _name(u):
-            return getattr(u, 'username', None) or getattr(u, 'display_name', None) or getattr(u, 'email', None) or 'Utilisateur'
+            data = _light(u) or {}
+            return (data.get('display_name') or data.get('username') or getattr(u, 'email', None) or 'Utilisateur')
 
         def _avatar(u):
-            # garder large : le front sait normaliser plusieurs keys
-            return getattr(u, 'avatar_url', None) or getattr(u, 'avatar', None) or getattr(u, 'profile_picture', None) or getattr(u, 'picture', None)
+            data = _light(u) or {}
+            # `UserLightSerializer.avatar_url` est presigné si nécessaire.
+            return data.get('avatar_url') or getattr(u, 'avatar', None) or getattr(u, 'profile_picture', None) or getattr(u, 'picture', None)
 
         out = []
         seen = set()
@@ -1183,6 +1213,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
 class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
     meal_time_display = serializers.SerializerMethodField()
     recipe_thumbs = serializers.SerializerMethodField()
+    recipes_count = serializers.SerializerMethodField()
 
     class Meta:
         model = MealPlan
@@ -1195,6 +1226,7 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
             'custom_label',
             'scheduled_time',
             'recipe_thumbs',
+            'recipes_count',
         ]
 
     def get_meal_time_display(self, obj: MealPlan):
@@ -1213,9 +1245,19 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
             u = getattr(recipe, 'image_url', None) if recipe else None
             if u:
                 thumbs.append(u)
-            if len(thumbs) >= 2:
+            if len(thumbs) >= 3:
                 break
         return thumbs
+
+    def get_recipes_count(self, obj: MealPlan):
+        try:
+            mprbs = obj.meal_plan_recipe_batches.all()
+        except Exception:
+            return 0
+        try:
+            return len(mprbs)
+        except Exception:
+            return 0
 
 
 class MealInvitationTimelineListSerializer(serializers.ModelSerializer):
