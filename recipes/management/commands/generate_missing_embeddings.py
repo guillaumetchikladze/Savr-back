@@ -5,8 +5,6 @@ Usage: python manage.py generate_missing_embeddings [--ingredients] [--recipes] 
 import logging
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Q
-
 from recipes.models import Ingredient, Recipe
 from recipes.services.ingredient_matcher import get_batch_embeddings
 
@@ -76,9 +74,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('\n🔍 Recherche des ingrédients sans embedding...'))
         
         # Trouver tous les ingrédients sans embedding
-        ingredients_without_embedding = Ingredient.objects.filter(
-            Q(embedding__isnull=True) | Q(embedding='')
-        )
+        ingredients_without_embedding = Ingredient.objects.filter(embedding__isnull=True)
         
         total = ingredients_without_embedding.count()
         
@@ -134,7 +130,7 @@ class Command(BaseCommand):
         
         # Trouver toutes les recettes sans embedding
         recipes_without_embedding = Recipe.objects.filter(
-            Q(embedding__isnull=True) | Q(embedding='')
+            embedding__isnull=True,
         ).select_related('created_by').prefetch_related(
             'recipe_ingredients__ingredient',
             'steps'
