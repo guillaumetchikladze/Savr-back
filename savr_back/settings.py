@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     'accounts',
     'recipes',
     'emails',
+    'chat',
 ]
 
 MIDDLEWARE = [

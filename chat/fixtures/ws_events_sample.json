@@ -1,0 +1,20 @@
+[
+  {"type": "text_block_start", "turn_id": "turn-001", "stream_phase": "text", "block_index": 0},
+  {"type": "assistant_delta", "turn_id": "turn-001", "stream_phase": "text", "block_index": 0, "content": "Je vais chercher des recettes "},
+  {"type": "assistant_delta", "turn_id": "turn-001", "stream_phase": "text", "block_index": 0, "content": "de pâtes pour vous."},
+  {"type": "text_block_end", "turn_id": "turn-001", "stream_phase": "text", "block_index": 0},
+  {"type": "tool_running", "turn_id": "turn-001", "stream_phase": "tool", "tool_name": "search_recipes"},
+  {"type": "tool_done", "turn_id": "turn-001", "stream_phase": "tool", "tool_name": "search_recipes", "summary": "3 résultat(s)"},
+  {"type": "text_block_start", "turn_id": "turn-001", "stream_phase": "text", "block_index": 1},
+  {"type": "assistant_delta", "turn_id": "turn-001", "stream_phase": "text", "block_index": 1, "content": "J'ai trouvé 3 recettes de pâtes !"},
+  {"type": "text_block_end", "turn_id": "turn-001", "stream_phase": "text", "block_index": 1},
+  {"type": "message_complete", "turn_id": "turn-001", "stream_phase": "complete", "message_id": 42},
+  {"type": "text_block_start", "turn_id": "turn-002", "stream_phase": "text", "block_index": 0},
+  {"type": "assistant_delta", "turn_id": "turn-002", "stream_phase": "text", "block_index": 0, "content": "Je propose de retirer cette recette."},
+  {"type": "text_block_end", "turn_id": "turn-002", "stream_phase": "text", "block_index": 0},
+  {"type": "tool_running", "turn_id": "turn-002", "stream_phase": "tool", "tool_name": "propose_meal_deletion"},
+  {"type": "tool_done", "turn_id": "turn-002", "stream_phase": "tool", "tool_name": "propose_meal_deletion", "summary": "Retirer une recette"},
+  {"type": "mutation_card", "turn_id": "turn-002", "stream_phase": "mutation", "action_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "message_id": 43, "payload": {"card_type": "meal_deletion", "title": "Retirer une recette", "subtitle": "Carbonara — Déjeuner du 10/06/2026", "details": {"meal_plan_id": 1, "recipe_batch_id": 5, "recipe_id": 12, "recipe_title": "Carbonara", "date": "2026-06-10", "meal_time": "lunch"}, "warnings": []}},
+  {"type": "action_executed", "action_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "result": {"batch_deleted": true, "recipe_batch_id": 5, "meal_plan_id": 1}, "message_id": 44},
+  {"type": "conversation_title_updated", "title": "Recettes de pâtes pour le dîner"}
+]

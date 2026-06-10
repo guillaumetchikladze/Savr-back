@@ -36,5 +36,6 @@ urlpatterns = [
     path('api/health/', health_view),
     path('api/auth/', include('accounts.urls')),
     path('api/', include('recipes.urls')),
+    path('api/chat/', include('chat.urls')),
 ]
 
