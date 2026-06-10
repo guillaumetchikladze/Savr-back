@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from chat.models import Conversation, Message, PendingAction
+from chat.models import Conversation, Message, MessageFeedback, PendingAction
 from chat.services.text_sanitize import strip_tool_json_segments
 
 
@@ -27,12 +27,20 @@ class ConversationSerializer(serializers.ModelSerializer):
             return clean[:120]
         traces = (msg.ui_payload or {}).get('tool_traces') or []
         if traces:
-            return 'Savr a consulté vos données'
+            return 'Tchikook Agent a consulté vos données'
         return ''
+
+
+class MessageFeedbackSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MessageFeedback
+        fields = ['rating', 'created_at', 'updated_at']
+        read_only_fields = fields
 
 
 class MessageSerializer(serializers.ModelSerializer):
     pending_action = serializers.SerializerMethodField()
+    user_feedback = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -45,8 +53,16 @@ class MessageSerializer(serializers.ModelSerializer):
             'turn_id',
             'created_at',
             'pending_action',
+            'user_feedback',
         ]
         read_only_fields = fields
+
+    def get_user_feedback(self, obj):
+        feedback_map = self.context.get('user_feedback_map') or {}
+        feedback = feedback_map.get(obj.id)
+        if not feedback:
+            return None
+        return MessageFeedbackSerializer(feedback).data
 
     def get_pending_action(self, obj):
         if obj.message_type != Message.TYPE_MUTATION_PROPOSAL:

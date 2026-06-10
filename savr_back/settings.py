@@ -5,6 +5,7 @@ Django settings for savr_back project.
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
+import sys
 import boto3
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -269,6 +270,11 @@ CELERY_TASK_TIME_LIMIT = 60 * 10  # 10 minutes
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+# macOS: prefork + libs Objective-C (Sentry, httpx, SDK OpenAI…) → SIGABRT au fork().
+# En local sur Darwin, solo par défaut ; prefork reste le défaut ailleurs (Docker/Linux).
+_default_celery_pool = 'solo' if sys.platform == 'darwin' else 'prefork'
+CELERY_WORKER_POOL = config('CELERY_WORKER_POOL', default=_default_celery_pool)
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 # Email queues (priority routing)
 # Rappel push « photo à table » après complete_cooking (secondes). Ex. 10800 = 3 h ; 90 pour tests.

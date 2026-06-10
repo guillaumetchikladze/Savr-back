@@ -37,7 +37,7 @@ def build_session_context_prompt(user: AbstractBaseUser) -> str:
 
     username = getattr(user, 'username', None) or getattr(user, 'email', 'utilisateur')
 
-    return f"""Contexte Savr (référence interne — ne pas recopier tel quel à l'utilisateur) :
+    return f"""Contexte Tchikook Agent (référence interne — ne pas recopier tel quel à l'utilisateur) :
 - Utilisateur : {username} (id {user.pk})
 - Maintenant : {now.strftime('%Y-%m-%d %H:%M')} ({_WEEKDAY_FR[today.weekday()]}) — fuseau {timezone.get_current_timezone()}
 - Aujourd'hui : {today.isoformat()}

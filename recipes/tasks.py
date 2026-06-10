@@ -8,7 +8,7 @@ nest_asyncio.apply()
 from celery import shared_task
 
 from .models import RecipeImportRequest
-from .services.ai_service import formalize_recipe
+from .services.ai_service import formalize_recipe, generate_recipe_from_idea
 from .services.formalization_pipeline import create_recipe_from_formalized
 from .services.recipe_importer import import_recipe_from_url, is_ingredients_suspicious, InstagramImportError
 from .services.image_uploader import download_and_upload_image
@@ -64,6 +64,8 @@ def process_recipe_import(self, request_id: str):
         import_request.status = RecipeImportRequest.STATUS_SUCCESS
         import_request.recipe = recipe
         import_request.save(update_fields=['status', 'recipe', 'updated_at'])
+        from chat.services.recipe_job_notify import notify_chat_recipe_job_completed
+        notify_chat_recipe_job_completed(import_request)
         logger.info("[RecipeImportTask] Request %s completed", request_id)
     except Exception as exc:  # pragma: no cover
         logger.exception("[RecipeImportTask] Request %s failed: %s", request_id, exc)
@@ -259,6 +261,8 @@ def process_recipe_import_from_url(self, request_id: str):
         import_request.recipe = recipe
         import_request.save(update_fields=['status', 'recipe', 'updated_at'])
         _update_import_progress(import_request, step='DONE', percent=100, used_source=used_source)
+        from chat.services.recipe_job_notify import notify_chat_recipe_job_completed
+        notify_chat_recipe_job_completed(import_request)
         logger.info(
             "[RecipeImportURLTask] Request %s completed successfully - recipe_id=%s, title='%s'",
             request_id,
@@ -272,6 +276,72 @@ def process_recipe_import_from_url(self, request_id: str):
         import_request.error_message = str(exc)
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
         _update_import_progress(import_request, step='ERROR', percent=100)
+        raise
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def process_recipe_generate_from_idea(self, request_id: str):
+    """Génère une recette via IA à partir d'une idée libre, puis la crée en DB."""
+    try:
+        import_request = RecipeImportRequest.objects.select_related('user').get(id=request_id)
+    except RecipeImportRequest.DoesNotExist:
+        logger.error("[RecipeGenerateTask] Request %s not found", request_id)
+        return
+
+    if import_request.status not in [RecipeImportRequest.STATUS_PENDING, RecipeImportRequest.STATUS_PROCESSING]:
+        logger.info(
+            "[RecipeGenerateTask] Request %s already processed (%s)",
+            request_id,
+            import_request.status,
+        )
+        return
+
+    logger.info("[RecipeGenerateTask] Processing request %s", request_id)
+    import_request.status = RecipeImportRequest.STATUS_PROCESSING
+    import_request.error_message = ''
+    import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+    _update_import_progress(import_request, step='GENERATING', percent=15, used_source='ai_generated')
+
+    payload = import_request.payload or {}
+    idea_text = (payload.get('idea_text') or '').strip()
+    if not idea_text:
+        import_request.status = RecipeImportRequest.STATUS_ERROR
+        import_request.error_message = "Idée de recette manquante dans le payload"
+        import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+        return
+
+    try:
+        _update_import_progress(import_request, step='GENERATING', percent=40, used_source='ai_generated')
+        formalized_recipe = asyncio.run(
+            generate_recipe_from_idea(idea_text, payload.get('servings'))
+        )
+
+        _update_import_progress(import_request, step='SAVING', percent=80, used_source='ai_generated')
+        recipe_data = {
+            **payload,
+            'source_type': 'user_created',
+            'is_public': False,
+        }
+        recipe = create_recipe_from_formalized(formalized_recipe, recipe_data, import_request.user)
+
+        import_request.status = RecipeImportRequest.STATUS_SUCCESS
+        import_request.recipe = recipe
+        import_request.save(update_fields=['status', 'recipe', 'updated_at'])
+        _update_import_progress(import_request, step='DONE', percent=100, used_source='ai_generated')
+        from chat.services.recipe_job_notify import notify_chat_recipe_job_completed
+        notify_chat_recipe_job_completed(import_request)
+        logger.info(
+            "[RecipeGenerateTask] Request %s completed - recipe_id=%s title='%s'",
+            request_id,
+            recipe.id,
+            recipe.title,
+        )
+    except Exception as exc:
+        logger.exception("[RecipeGenerateTask] Request %s failed: %s", request_id, exc)
+        import_request.status = RecipeImportRequest.STATUS_ERROR
+        import_request.error_message = str(exc)
+        import_request.save(update_fields=['status', 'error_message', 'updated_at'])
+        _update_import_progress(import_request, step='ERROR', percent=100, used_source='ai_generated')
         raise
 
 

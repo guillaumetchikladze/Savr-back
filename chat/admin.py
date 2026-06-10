@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from chat.models import Conversation, Message, PendingAction
+from chat.models import Conversation, Message, MessageFeedback, PendingAction
 
 
 @admin.register(Conversation)
@@ -16,6 +16,13 @@ class MessageAdmin(admin.ModelAdmin):
     list_display = ['id', 'conversation', 'role', 'message_type', 'created_at']
     list_filter = ['role', 'message_type']
     raw_id_fields = ['conversation']
+
+
+@admin.register(MessageFeedback)
+class MessageFeedbackAdmin(admin.ModelAdmin):
+    list_display = ['id', 'message', 'user', 'rating', 'updated_at']
+    list_filter = ['rating', 'updated_at']
+    raw_id_fields = ['message', 'user']
 
 
 @admin.register(PendingAction)

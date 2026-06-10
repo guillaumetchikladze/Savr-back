@@ -3,17 +3,24 @@
 import logging
 import os
 
+from chat.services.gemini_tool_compat import install as install_gemini_tool_compat
+
+install_gemini_tool_compat()
+
 from decouple import config
 from openai import AsyncOpenAI
 
 from agents import Agent, set_tracing_disabled
+from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 
 from chat.services.agent_context import AgentContext
+from chat.services.session_context import build_session_context_prompt
 from recipes.services.ai_service import sanitize_model_string
 from chat.services.async_tools import (
     add_recipe_to_meal_plan,
     create_meal_plan_slot,
+    generate_recipe_from_idea,
     get_meal_plans,
     import_recipe_from_url,
     propose_meal_deletion,
@@ -30,7 +37,7 @@ GEMINI_OPENAI_BASE_URL = config(
     default='https://generativelanguage.googleapis.com/v1beta/openai/',
 )
 
-AGENT_INSTRUCTIONS = """Tu es Savr, assistant culinaire pour planifier les repas et gérer les recettes.
+AGENT_INSTRUCTIONS = """Tu es Tchikook Agent, assistant culinaire pour planifier les repas et gérer les recettes.
 
 Tu peux :
 - Rechercher des recettes (search_recipes)
@@ -38,14 +45,19 @@ Tu peux :
 - Créer un créneau vide dans le planning (create_meal_plan_slot)
 - Ajouter des recettes à un créneau existant (add_recipe_to_meal_plan)
 - Importer une recette depuis une URL (import_recipe_from_url)
+- Créer une recette à partir d'une idée (generate_recipe_from_idea) — quand aucune recette existante ne convient
 - Proposer de retirer une recette du planning (propose_meal_deletion) — l'utilisateur devra confirmer
 - Proposer d'inviter des complices (send_invitation_proposal) — l'utilisateur devra confirmer
 
 Règles :
 - Réponds en français, de façon concise et utile.
-- Un message système « Contexte Savr » te donne la date du jour et les bornes de semaine : utilise-le pour calculer les périodes toi-même.
+- Un message système « Contexte Tchikook Agent » te donne la date du jour et les bornes de semaine : utilise-le pour calculer les périodes toi-même.
+- Un préfixe « [Contexte utilisateur attaché] » dans le message utilisateur signale une recette, un repas ou une liste déjà sélectionnés — le bloc « Contenu résolu depuis Tchikook Agent » contient les détails (ingrédients, étapes, etc.). Base ta réponse dessus ; ne redemande pas ces infos et n'appelle pas search_recipes sauf si l'utilisateur cherche d'autres recettes.
+- Pour les tools : arguments JSON stricts (guillemets doubles), ex. {"query": "curry", "limit": 5}. N'invente pas de champs hors du schéma.
 - Pour « cette semaine », « demain », etc. : déduis les dates et appelle les tools sans redemander à l'utilisateur.
 - Pour planifier une recette : appelle get_meal_plans ; si le créneau n'existe pas, create_meal_plan_slot puis add_recipe_to_meal_plan.
+- Si l'utilisateur demande une recette sur mesure ou qu'aucune recette du carnet ne convient : appelle generate_recipe_from_idea (ne rédige pas la recette en entier dans le chat). Une fois créée, propose de la planifier ou de la consulter.
+- Un message système [Événement Tchikook Agent] signale qu'un import ou une génération est terminé : enchaîne tout de suite avec la suite (planifier via add_recipe_to_meal_plan, ou proposer de consulter la fiche). Ne relance pas d'import ni de génération pour cette recette.
 - Pour les actions sensibles (suppression, invitation), utilise UNIQUEMENT les tools propose_*.
 - Ne demande jamais de confirmation textuelle pour les mutations : le tool propose_* affiche une carte UI.
 
@@ -94,20 +106,26 @@ def create_chat_model() -> OpenAIChatCompletionsModel:
     return OpenAIChatCompletionsModel(model=model_name, openai_client=client)
 
 
-def create_planning_agent() -> Agent[AgentContext]:
+def create_planning_agent(user=None) -> Agent[AgentContext]:
     if config('DEBUG', default=True, cast=bool):
         set_tracing_disabled(True)
 
+    instructions = AGENT_INSTRUCTIONS
+    if user is not None:
+        instructions = f'{instructions}\n\n{build_session_context_prompt(user)}'
+
     model = create_chat_model()
     return Agent[AgentContext](
-        name='Savr Planning Agent',
-        instructions=AGENT_INSTRUCTIONS,
+        name='Tchikook Agent',
+        instructions=instructions,
         model=model,
+        model_settings=ModelSettings(parallel_tool_calls=False),
         tools=[
             search_recipes,
             get_meal_plans,
             create_meal_plan_slot,
             add_recipe_to_meal_plan,
+            generate_recipe_from_idea,
             import_recipe_from_url,
             propose_meal_deletion,
             send_invitation_proposal,

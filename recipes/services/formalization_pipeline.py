@@ -101,7 +101,7 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
             servings=formalized_recipe.servings,
             image_path=data.get('image_path') or '',
             created_by=user,
-            is_public=True,
+            is_public=data.get('is_public', True),
             source_type=data.get('source_type', 'user_created'),
             import_source_url=data.get('import_source_url') or None,
             search_index_status=Recipe.SearchIndexStatus.PENDING,

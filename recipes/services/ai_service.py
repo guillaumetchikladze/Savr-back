@@ -622,6 +622,102 @@ async def formalize_recipe(
         raise
 
 
+def create_recipe_generation_agent() -> Agent:
+    """Agent PydanticAI pour inventer une recette complète à partir d'une idée."""
+    if not AI_API_KEY:
+        raise ValueError("AI_API_KEY doit être configuré dans .env")
+
+    model = resolve_model(AI_MODEL)
+    agent = Agent(
+        model=model,
+        output_type=RecipeFormalized,
+        system_prompt="""Tu es un chef cuisinier créatif et pragmatique.
+Ton rôle est d'inventer une recette complète, réaliste et appétissante à partir d'une idée ou d'un concept décrit par l'utilisateur.
+
+Instructions :
+1. Propose un titre clair et engageant (pas générique).
+2. Rédige une courte description (1-2 phrases).
+3. Liste les ingrédients avec quantités réalistes pour le nombre de portions visé.
+   - Unités : g, kg, ml, l, tsp, tbsp, cup, piece, pinch, clove
+   - Quantités cohérentes avec les usages culinaires français/européens
+4. Détaille les étapes dans l'ordre logique (une action principale par étape).
+   - Associe les ingrédients utilisés à chaque étape avec leurs quantités
+   - Active has_timer et timer_duration quand une durée est pertinente
+5. Infère meal_type, difficulty, prep_time, cook_time, servings (défaut 4 si non précisé).
+6. steps_summary : 2-3 phrases résumant la préparation.
+
+Contraintes :
+- Recette faisable à la maison avec des ingrédients courants en supermarché.
+- Si l'utilisateur mentionne des ingrédients obligatoires, ils doivent figurer dans la recette.
+- Si l'utilisateur impose un régime (végétarien, sans gluten…), respecte-le strictement.
+- Sois concis dans les instructions, pas de blabla inutile.""",
+    )
+
+    agent_model = agent.model
+    if isinstance(agent_model, GeminiModel):
+        object_def = agent._output_schema.object_def  # type: ignore[attr-defined]
+        original_schema = copy.deepcopy(object_def.json_schema)
+        object_def.json_schema = flatten_schema(original_schema)
+
+        toolset = getattr(agent._output_schema, 'toolset', None)  # type: ignore[attr-defined]
+        if toolset and hasattr(toolset, '_tool_defs'):
+            for tool_def in toolset._tool_defs:
+                tool_def.parameters_json_schema = flatten_schema(
+                    copy.deepcopy(tool_def.parameters_json_schema)
+                )
+
+    return agent
+
+
+async def generate_recipe_from_idea(
+    idea_text: str,
+    servings: Optional[int] = None,
+) -> RecipeFormalized:
+    """Génère une recette structurée à partir d'une idée libre."""
+    if not AI_API_KEY:
+        raise ValueError("AI_API_KEY doit être configuré dans .env pour utiliser l'IA")
+
+    idea = (idea_text or '').strip()
+    if len(idea) < 3:
+        raise ValueError("L'idée de recette est trop courte.")
+
+    agent = create_recipe_generation_agent()
+    prompt_parts = [f"Idée de recette : {idea}"]
+    if servings:
+        prompt_parts.append(f"Nombre de portions souhaité : {servings}")
+    prompt = "\n".join(prompt_parts)
+
+    logger.info("[AI] Génération recette depuis idée (len=%d)", len(prompt))
+    start_time = time.perf_counter()
+    max_retries = 3
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await agent.run(prompt)
+            formalized_recipe = result.output
+            duration = time.perf_counter() - start_time
+            logger.info(
+                "[AI] Génération terminée en %.2fs (%d ingrédients, %d étapes)",
+                duration,
+                len(formalized_recipe.recipe_ingredients),
+                len(formalized_recipe.steps),
+            )
+            return formalized_recipe
+        except UnexpectedModelBehavior as e:
+            last_error = e
+            logger.warning(
+                "[AI] Génération tentative %d/%d échouée: %s",
+                attempt,
+                max_retries,
+                e,
+            )
+        except PydanticAIUserError:
+            raise
+
+    raise last_error or RuntimeError("Échec de la génération de recette")
+
+
 def verify_quantity_consistency(formalized_recipe: RecipeFormalized) -> dict:
     """
     Vérifie la cohérence des quantités entre les ingrédients globaux et les étapes

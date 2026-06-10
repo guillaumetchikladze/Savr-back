@@ -64,6 +64,38 @@ class Message(models.Model):
         return f'{self.role}/{self.message_type} in conv {self.conversation_id}'
 
 
+class MessageFeedback(models.Model):
+    RATING_UP = 'up'
+    RATING_DOWN = 'down'
+    RATING_CHOICES = [
+        (RATING_UP, 'Thumbs up'),
+        (RATING_DOWN, 'Thumbs down'),
+    ]
+
+    message = models.ForeignKey(
+        Message,
+        on_delete=models.CASCADE,
+        related_name='feedbacks',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='chat_message_feedbacks',
+    )
+    rating = models.CharField(max_length=10, choices=RATING_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['message', 'user'], name='unique_message_feedback_per_user'),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.rating} on message {self.message_id} by {self.user_id}'
+
+
 class PendingAction(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_CONFIRMED = 'confirmed'

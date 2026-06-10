@@ -10,4 +10,9 @@ urlpatterns = [
         views.MessageListView.as_view(),
         name='chat-messages',
     ),
+    path(
+        'messages/<int:message_id>/feedback/',
+        views.MessageFeedbackView.as_view(),
+        name='chat-message-feedback',
+    ),
 ]

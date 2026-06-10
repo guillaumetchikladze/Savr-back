@@ -2818,12 +2818,27 @@ class RecipeFormalizeSerializer(serializers.Serializer):
 # Serializers for legacy meal plan groups removed (schema simplification)
 
 
+class RecipeGenerateFromIdeaSerializer(serializers.Serializer):
+    idea_text = serializers.CharField(max_length=2000)
+    servings = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=20)
+
+    def validate_idea_text(self, value):
+        cleaned = (value or '').strip()
+        if len(cleaned) < 5:
+            raise serializers.ValidationError(
+                "Décrivez votre idée en au moins quelques mots (5 caractères minimum)."
+            )
+        return cleaned
+
+
 class RecipeImportRequestSerializer(serializers.ModelSerializer):
     recipe = RecipeSerializer(read_only=True)
     recipe_id = serializers.SerializerMethodField()
     import_progress = serializers.SerializerMethodField()
     import_extractor = serializers.SerializerMethodField()
     url = serializers.SerializerMethodField()
+    idea_text = serializers.SerializerMethodField()
+    job_type = serializers.SerializerMethodField()
 
     class Meta:
         model = RecipeImportRequest
@@ -2833,6 +2848,8 @@ class RecipeImportRequestSerializer(serializers.ModelSerializer):
             'recipe',
             'recipe_id',
             'url',
+            'idea_text',
+            'job_type',
             'import_extractor',
             'import_progress',
             'error_message',
@@ -2855,6 +2872,18 @@ class RecipeImportRequestSerializer(serializers.ModelSerializer):
         payload = obj.payload or {}
         return payload.get('url') or payload.get('import_source_url')
 
+    def get_idea_text(self, obj):
+        payload = obj.payload or {}
+        return payload.get('idea_text') or ''
+
+    def get_job_type(self, obj):
+        payload = obj.payload or {}
+        if payload.get('job_type'):
+            return payload['job_type']
+        if payload.get('idea_text'):
+            return 'generate'
+        return 'import'
+
 
 class RecipeImportRequestLightSerializer(serializers.ModelSerializer):
     """
@@ -2866,6 +2895,8 @@ class RecipeImportRequestLightSerializer(serializers.ModelSerializer):
     import_progress = serializers.SerializerMethodField()
     import_extractor = serializers.SerializerMethodField()
     url = serializers.SerializerMethodField()
+    idea_text = serializers.SerializerMethodField()
+    job_type = serializers.SerializerMethodField()
 
     class Meta:
         model = RecipeImportRequest
@@ -2875,6 +2906,8 @@ class RecipeImportRequestLightSerializer(serializers.ModelSerializer):
             'recipe_id',
             'recipe_title',
             'url',
+            'idea_text',
+            'job_type',
             'import_extractor',
             'import_progress',
             'error_message',
@@ -2899,3 +2932,15 @@ class RecipeImportRequestLightSerializer(serializers.ModelSerializer):
     def get_url(self, obj):
         payload = obj.payload or {}
         return payload.get('url') or payload.get('import_source_url')
+
+    def get_idea_text(self, obj):
+        payload = obj.payload or {}
+        return payload.get('idea_text') or ''
+
+    def get_job_type(self, obj):
+        payload = obj.payload or {}
+        if payload.get('job_type'):
+            return payload['job_type']
+        if payload.get('idea_text'):
+            return 'generate'
+        return 'import'

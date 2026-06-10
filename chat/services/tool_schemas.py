@@ -60,7 +60,9 @@ class CreateMealPlanSlotResult(BaseModel):
 
 class ImportJobStarted(BaseModel):
     request_id: str
-    url: str
+    url: str = ''
+    idea_text: str = ''
+    job_type: str = 'import'
 
 
 class SearchRecipesResult(BaseModel):

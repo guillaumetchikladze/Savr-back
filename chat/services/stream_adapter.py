@@ -12,7 +12,7 @@ from agents.items import ItemHelpers
 
 from chat.services.agent_context import AgentContext
 from chat.services.async_tools import MUTATION_TOOL_NAMES
-from chat.services.session_context import build_session_context_prompt
+from chat.services.context_refs import build_context_prompt_for_agent
 from chat.services.text_sanitize import (
     extract_tool_args_from_item,
     is_tool_args_leak,
@@ -28,6 +28,11 @@ STREAM_PHASE_TEXT = 'text'
 STREAM_PHASE_TOOL = 'tool'
 STREAM_PHASE_MUTATION = 'mutation'
 STREAM_PHASE_COMPLETE = 'complete'
+
+RECIPE_JOB_TOOL_NAMES = frozenset({
+    'import_recipe_from_url',
+    'generate_recipe_from_idea',
+})
 
 
 @dataclass
@@ -186,7 +191,7 @@ class BlockStreamAdapter:
                                 ))
                                 break
 
-                            if current_tool == 'import_recipe_from_url' and isinstance(output, ImportJobStarted):
+                            if current_tool in RECIPE_JOB_TOOL_NAMES and isinstance(output, ImportJobStarted):
                                 self._import_job = output
 
                             await emit(self._evt(
@@ -262,17 +267,25 @@ def _summarize_tool_output(output) -> str:
 
 
 def build_agent_history(messages: list, user) -> list[dict]:
-    """Convertit les Message ORM en input agent + contexte session (date, semaine)."""
-    history = [
-        {'role': 'system', 'content': build_session_context_prompt(user)},
-    ]
+    """Convertit les Message ORM en input agent (contexte session dans les instructions agent)."""
+    history: list[dict] = []
     for msg in messages:
         if msg.role == 'user' and msg.message_type == 'text':
-            history.append({'role': 'user', 'content': msg.content})
+            content = (msg.content or '').strip()
+            refs = (msg.ui_payload or {}).get('context_refs')
+            if refs:
+                ctx = build_context_prompt_for_agent(user, refs)
+                if ctx:
+                    # Gemini (OpenAI compat) : un seul bloc system en tête — le contexte
+                    # attaché est préfixé au message user, pas en role=system séparé.
+                    content = f'{ctx}\n\n{content}' if content else ctx
+            if content:
+                history.append({'role': 'user', 'content': content})
         elif msg.role == 'assistant' and msg.message_type == 'text' and msg.content:
             clean = strip_tool_json_segments(msg.content)
             if clean:
                 history.append({'role': 'assistant', 'content': clean})
         elif msg.role == 'system' and msg.message_type == 'system_event':
-            history.append({'role': 'system', 'content': msg.content})
+            # Éviter un 2e/3e message system (INVALID_ARGUMENT côté Gemini).
+            history.append({'role': 'user', 'content': msg.content})
     return history

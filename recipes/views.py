@@ -49,7 +49,8 @@ from .serializers import (
     ShoppingListSerializer, ShoppingListItemSerializer,
     CollectionSerializer, CollectionCreateSerializer, CollectionUpdateSerializer,
     CollectionRecipeSerializer, CollectionMemberSerializer,
-    RecipeFormalizeSerializer, RecipeImportRequestSerializer, RecipeImportRequestLightSerializer,
+    RecipeFormalizeSerializer, RecipeGenerateFromIdeaSerializer,
+    RecipeImportRequestSerializer, RecipeImportRequestLightSerializer,
     RecipeBatchLightSerializer,
     UserLightSerializer
 )
@@ -1457,6 +1458,55 @@ class RecipeViewSet(viewsets.ModelViewSet):
         qs = RecipeImportRequest.objects.filter(user=request.user).order_by('-created_at')[:20]
         serializer = RecipeImportRequestLightSerializer(qs, many=True, context={'request': request})
         return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='generate_from_idea')
+    def generate_from_idea(self, request):
+        """
+        Génère une recette via IA à partir d'une idée libre (asynchrone via Celery).
+        """
+        logger = logging.getLogger(__name__)
+        serializer = RecipeGenerateFromIdeaSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        try:
+            import_request = RecipeImportRequest.objects.create(
+                user=request.user,
+                payload={
+                    'idea_text': data['idea_text'],
+                    'servings': data.get('servings'),
+                    'job_type': 'generate',
+                    'source_type': 'generated',
+                },
+                status=RecipeImportRequest.STATUS_PENDING,
+            )
+
+            from .tasks import process_recipe_generate_from_idea
+            task = process_recipe_generate_from_idea.delay(str(import_request.id))
+            import_request.task_id = task.id
+            import_request.save(update_fields=['task_id'])
+
+            logger.info(
+                "[RecipeGenerate] Idea generation queued - request_id=%s",
+                import_request.id,
+            )
+
+            return Response(
+                {
+                    'request_id': import_request.id,
+                    'status': import_request.status,
+                    'idea_text': data['idea_text'],
+                    'job_type': 'generate',
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except Exception as e:
+            logger.error("Erreur lors de la génération de recette: %s", e, exc_info=True)
+            return Response(
+                {'error': f'Erreur lors de la génération: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     @action(detail=False, methods=['post'], url_path='import_from_url')
     def import_from_url(self, request):
