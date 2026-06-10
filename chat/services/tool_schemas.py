@@ -20,6 +20,14 @@ class MealPlanRecipeSummary(BaseModel):
     recipe_batch_id: Optional[int] = None
 
 
+class MealPlanInviteeSummary(BaseModel):
+    username: str
+    status: str = Field(
+        'pending',
+        description='pending, accepted ou declined',
+    )
+
+
 class MealPlanSummary(BaseModel):
     id: int
     date: str
@@ -28,6 +36,10 @@ class MealPlanSummary(BaseModel):
     confirmed: bool = False
     is_owner: bool = True
     recipes: list[MealPlanRecipeSummary] = Field(default_factory=list)
+    invitees: list[MealPlanInviteeSummary] = Field(
+        default_factory=list,
+        description='Invitations envoyées pour ce repas (repas dont tu es propriétaire).',
+    )
 
 
 class CompliceSummary(BaseModel):
@@ -76,3 +88,31 @@ class GetMealPlansResult(BaseModel):
     end_date: str
     count: int
     meal_plans: list[MealPlanSummary] = Field(default_factory=list)
+
+
+class ShoppingListItemSummary(BaseModel):
+    item_id: int
+    ingredient_name: str
+    remaining_quantity: float = Field(
+        0,
+        description='Quantité restant à acheter (après déduction du déjà coché et du placard).',
+    )
+    unit: str = ''
+    status: str = Field('to_buy', description='to_buy ou purchased')
+
+
+class GetShoppingListItemsResult(BaseModel):
+    shopping_list_id: int
+    shopping_list_name: str = ''
+    count: int = 0
+    items: list[ShoppingListItemSummary] = Field(default_factory=list)
+
+
+class AddShoppingListItemResult(BaseModel):
+    shopping_list_id: int
+    item_id: int
+    ingredient_name: str
+    quantity: float = 1
+    unit: str = 'piece'
+    created: bool = True
+    message: str = ''

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AbstractBaseUser
 from django.db.models import Prefetch, Q
 
@@ -11,16 +12,20 @@ from recipes.models import (
     Recipe,
     RecipeIngredient,
     ShoppingList,
-    ShoppingListItem,
     ShoppingListMember,
     Step,
 )
+from recipes.services.invitation_service import _complice_ids_for_user
+from recipes.services.shopping_list_service import get_shopping_list_items_for_user
 from recipes.utils import get_accessible_meal_plan_filter
+
+User = get_user_model()
 
 TYPE_LABELS = {
     'recipe': 'Recette',
     'meal_plan': 'Repas planifié',
     'shopping_list': 'Liste de courses',
+    'friend': 'Ami',
 }
 
 META_LABELS = {
@@ -179,6 +184,22 @@ def _resolve_meal_plan_details(user: AbstractBaseUser, ref: dict) -> list[str]:
     return lines
 
 
+def _resolve_friend_details(user: AbstractBaseUser, ref: dict) -> list[str]:
+    ref_id = ref.get('id')
+    if ref_id is None:
+        return []
+    friend_ids = _complice_ids_for_user(user)
+    if int(ref_id) not in friend_ids:
+        return ['  (ami introuvable ou hors de votre réseau)']
+    friend = User.objects.filter(pk=ref_id).only('id', 'username').first()
+    if not friend:
+        return ['  (ami introuvable)']
+    return [
+        f'  Username : {friend.username}',
+        f'  ID utilisateur : {friend.id} (utilise cet id dans invitee_ids)',
+    ]
+
+
 def _resolve_shopping_list_details(user: AbstractBaseUser, ref: dict) -> list[str]:
     ref_id = ref.get('id')
     if ref_id is None:
@@ -195,16 +216,20 @@ def _resolve_shopping_list_details(user: AbstractBaseUser, ref: dict) -> list[st
         return ['  (liste introuvable ou accès refusé)']
 
     lines = [f'  Nom : {shopping_list.name or "Liste de courses"}']
-    to_buy = list(
-        ShoppingListItem.objects.filter(shopping_list_id=ref_id, checked_at__isnull=True)
-        .select_related('ingredient')
-        .order_by('ingredient__name')[:25]
-    )
-    if to_buy:
-        names = [item.ingredient.name for item in to_buy if item.ingredient_id]
-        lines.append(f'  À acheter ({len(names)}) : ' + ', '.join(names))
+    snapshot = get_shopping_list_items_for_user(user, ref_id, include_purchased=False)
+    if snapshot.items:
+        lines.append(f'  À acheter ({snapshot.count}) — aperçu (peut être périmé) :')
+        for item in snapshot.items[:15]:
+            qty = item.remaining_quantity
+            unit = item.unit or 'piece'
+            lines.append(f'    · {item.ingredient_name} : {qty} {unit}')
+        if snapshot.count > 15:
+            lines.append(f'    … et {snapshot.count - 15} autre(s)')
+        lines.append(
+            '  Important : pour la liste à jour, appelle get_shopping_list_items (ne te fie pas à cet aperçu seul).'
+        )
     else:
-        lines.append('  À acheter : (rien en attente ou liste vide)')
+        lines.append('  À acheter : (rien — liste vide ou tout est déjà acheté)')
     return lines
 
 
@@ -216,6 +241,8 @@ def format_context_refs_prompt(context_refs: list[dict] | None) -> str:
         if not isinstance(ref, dict):
             continue
         kind = ref.get('type') or ''
+        if kind == 'complice':
+            kind = 'friend'
         label = (ref.get('label') or '').strip()
         ref_id = ref.get('id')
         type_label = TYPE_LABELS.get(kind, kind)
@@ -251,6 +278,8 @@ def build_context_prompt_for_agent(
         if not isinstance(ref, dict):
             continue
         kind = ref.get('type')
+        if kind == 'complice':
+            kind = 'friend'
         label = (ref.get('label') or TYPE_LABELS.get(kind, kind)).strip()
         ref_id = ref.get('id')
         if ref_id is None:
@@ -262,17 +291,47 @@ def build_context_prompt_for_agent(
             details = _resolve_meal_plan_details(user, ref)
         elif kind == 'shopping_list':
             details = _resolve_shopping_list_details(user, ref)
+        elif kind == 'friend':
+            details = _resolve_friend_details(user, ref)
         else:
             continue
 
         if details:
             detail_sections.append(f'Détails — {label} (id={ref_id}) :\n' + '\n'.join(details))
 
+    friend_ids: list[int] = []
+    for ref in context_refs:
+        if not isinstance(ref, dict):
+            continue
+        kind = ref.get('type')
+        if kind == 'complice':
+            kind = 'friend'
+        if kind != 'friend' or ref.get('id') is None:
+            continue
+        try:
+            friend_ids.append(int(ref['id']))
+        except (TypeError, ValueError):
+            continue
+
+    friend_hint = ''
+    if friend_ids:
+        ids_literal = ', '.join(str(uid) for uid in friend_ids)
+        friend_hint = (
+            '\n\n[Instruction ami @]\n'
+            f'Ami(s) attaché(s) via @ (ids={ids_literal}). '
+            "Si l'utilisateur demande d'inviter : invitee_ids dans send_invitation_proposal. "
+            "Si l'utilisateur demande qui est invité / qui vient : get_meal_plans + champ invitees — "
+            "pas send_invitation_proposal."
+        )
+
     if detail_sections:
         return (
             header
             + '\n\n[Contenu résolu depuis Tchikook Agent]\n'
             + '\n\n'.join(detail_sections)
+            + friend_hint
             + '\n\nRéponds en tenant compte de ce contexte sans redemander ces informations de base.'
         )
+    if friend_hint:
+        return header + friend_hint
     return header

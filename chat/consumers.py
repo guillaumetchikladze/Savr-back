@@ -290,8 +290,13 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
     async def _finalize_agent_result(self, conv, turn_id, result, *, continuation=False):
         if result.mutation_proposal:
+            tool_trace = result.tool_traces[-1] if result.tool_traces else None
             msg, action = await database_sync_to_async(_save_mutation)(
-                conv, turn_id, result.mutation_proposal, result.mutation_tool_name
+                conv,
+                turn_id,
+                result.mutation_proposal,
+                result.mutation_tool_name,
+                tool_trace,
             )
             close_old_connections()
             await self.send_json({
@@ -404,11 +409,17 @@ def _normalize_context_refs(raw):
         if not isinstance(item, dict):
             continue
         kind = item.get('type')
+        if kind == 'complice':
+            kind = 'friend'
         ref_id = item.get('id')
         label = (item.get('label') or '').strip()
-        if kind not in ('recipe', 'meal_plan', 'shopping_list'):
+        if kind not in ('recipe', 'meal_plan', 'shopping_list', 'friend'):
             continue
         if ref_id is None:
+            continue
+        try:
+            ref_id = int(ref_id)
+        except (TypeError, ValueError):
             continue
         entry = {'type': kind, 'id': ref_id, 'label': label[:200]}
         meta = item.get('meta')
@@ -459,12 +470,16 @@ def _save_assistant_message(conv, turn_id, text, tool_traces, ui_payload):
     )
 
 
-def _save_mutation(conv, turn_id, proposal, tool_name):
+def _save_mutation(conv, turn_id, proposal, tool_name, tool_trace=None):
     action_type_map = {
         'propose_meal_deletion': PendingAction.ACTION_MEAL_DELETION,
         'send_invitation_proposal': PendingAction.ACTION_MEAL_INVITATION,
     }
     action_type = action_type_map.get(tool_name, PendingAction.ACTION_MEAL_DELETION)
+
+    ui_payload = proposal.model_dump()
+    if tool_trace:
+        ui_payload['preparation_tool'] = tool_trace
 
     msg = Message.objects.create(
         conversation=conv,
@@ -472,7 +487,7 @@ def _save_mutation(conv, turn_id, proposal, tool_name):
         message_type=Message.TYPE_MUTATION_PROPOSAL,
         content=proposal.subtitle,
         turn_id=turn_id,
-        ui_payload=proposal.model_dump(),
+        ui_payload=ui_payload,
     )
     action = PendingAction.objects.create(
         conversation=conv,
@@ -503,7 +518,7 @@ def _confirm_action(user, action_id):
         role=Message.ROLE_SYSTEM,
         message_type=Message.TYPE_SYSTEM_EVENT,
         content=f'Action confirmée: {action.action_type}',
-        ui_payload={'action_id': str(action.id), 'result': result},
+        ui_payload={'action_id': str(action.id), 'result': result, 'hidden': True},
     )
     return result, system_msg
 

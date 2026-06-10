@@ -19,9 +19,11 @@ from chat.services.session_context import build_session_context_prompt
 from recipes.services.ai_service import sanitize_model_string
 from chat.services.async_tools import (
     add_recipe_to_meal_plan,
+    add_shopping_list_item,
     create_meal_plan_slot,
     generate_recipe_from_idea,
     get_meal_plans,
+    get_shopping_list_items,
     import_recipe_from_url,
     propose_meal_deletion,
     search_recipes,
@@ -47,19 +49,31 @@ Tu peux :
 - Importer une recette depuis une URL (import_recipe_from_url)
 - Créer une recette à partir d'une idée (generate_recipe_from_idea) — quand aucune recette existante ne convient
 - Proposer de retirer une recette du planning (propose_meal_deletion) — l'utilisateur devra confirmer
-- Proposer d'inviter des complices (send_invitation_proposal) — l'utilisateur devra confirmer
+- Proposer d'inviter des amis (send_invitation_proposal) — un ou plusieurs jours via meal_plan_ids — l'utilisateur devra confirmer
+- Consulter une liste de courses (get_shopping_list_items)
+- Ajouter un article à une liste de courses (add_shopping_list_item)
 
 Règles :
 - Réponds en français, de façon concise et utile.
 - Un message système « Contexte Tchikook Agent » te donne la date du jour et les bornes de semaine : utilise-le pour calculer les périodes toi-même.
-- Un préfixe « [Contexte utilisateur attaché] » dans le message utilisateur signale une recette, un repas ou une liste déjà sélectionnés — le bloc « Contenu résolu depuis Tchikook Agent » contient les détails (ingrédients, étapes, etc.). Base ta réponse dessus ; ne redemande pas ces infos et n'appelle pas search_recipes sauf si l'utilisateur cherche d'autres recettes.
+- Un préfixe « [Contexte utilisateur attaché] » dans le message utilisateur signale une recette, un repas, un ami ou une liste déjà sélectionnés — le bloc « Contenu résolu depuis Tchikook Agent » contient les détails (ingrédients, étapes, id ami, etc.). Base ta réponse dessus ; ne redemande pas ces infos et n'appelle pas search_recipes sauf si l'utilisateur cherche d'autres recettes.
+- Si un ami est attaché via @ et que l'utilisateur veut l'inviter : utilise son id dans invitee_ids de send_invitation_proposal (prioritaire sur invitee_usernames).
+- Questions « qui est invité », « qui vient », « qui est convié », « qui mange avec moi » : appelle get_meal_plans sur la date visée et réponds en texte via le champ invitees. N'appelle pas send_invitation_proposal pour une simple consultation.
+- N'appelle send_invitation_proposal que si l'utilisateur demande explicitement d'inviter ou d'ajouter quelqu'un à un repas.
+- Dans meal_plan_ids : un seul id par créneau (date + repas), jamais de doublon.
+- Exception listes de courses : pour « quoi acheter », « contenu de la liste », quantités, etc., appelle TOUJOURS get_shopping_list_items (données temps réel). L'aperçu dans le contexte attaché peut être périmé et n'inclut pas les articles déjà cochés.
 - Pour les tools : arguments JSON stricts (guillemets doubles), ex. {"query": "curry", "limit": 5}. N'invente pas de champs hors du schéma.
 - Pour « cette semaine », « demain », etc. : déduis les dates et appelle les tools sans redemander à l'utilisateur.
 - Pour planifier une recette : appelle get_meal_plans ; si le créneau n'existe pas, create_meal_plan_slot puis add_recipe_to_meal_plan.
 - Si l'utilisateur demande une recette sur mesure ou qu'aucune recette du carnet ne convient : appelle generate_recipe_from_idea (ne rédige pas la recette en entier dans le chat). Une fois créée, propose de la planifier ou de la consulter.
 - Un message système [Événement Tchikook Agent] signale qu'un import ou une génération est terminé : enchaîne tout de suite avec la suite (planifier via add_recipe_to_meal_plan, ou proposer de consulter la fiche). Ne relance pas d'import ni de génération pour cette recette.
 - Pour les actions sensibles (suppression, invitation), utilise UNIQUEMENT les tools propose_*.
+- Pour inviter sur plusieurs jours : appelle get_meal_plans pour les dates visées, puis send_invitation_proposal avec meal_plan_ids (liste d'ids).
 - Ne demande jamais de confirmation textuelle pour les mutations : le tool propose_* affiche une carte UI.
+- Pour les listes de courses : si une liste est attachée au message (contexte), utilise son id sans redemander. Sinon demande quelle liste ou appelle get_shopping_list_items avec l'id connu.
+- Pour ajouter un article : appelle add_shopping_list_item avec shopping_list_id, ingredient_name, et quantity/unit si précisés (défaut : 1 pièce).
+- Pour lister les articles : appelle get_shopping_list_items ; include_purchased=true seulement si l'utilisateur veut aussi les articles déjà cochés/achetés.
+- Dans ta réponse, cite uniquement remaining_quantity (reste à acheter), jamais la quantité totale d'origine. Si count=0, dis clairement que la liste est vide ou que tout est déjà acheté — ne liste pas d'anciens ingrédients.
 
 Format de réponse :
 - Markdown simple : **nom de recette** en gras, puces courtes. Pas de JSON, pas de paramètres techniques.
@@ -129,5 +143,7 @@ def create_planning_agent(user=None) -> Agent[AgentContext]:
             import_recipe_from_url,
             propose_meal_deletion,
             send_invitation_proposal,
+            get_shopping_list_items,
+            add_shopping_list_item,
         ],
     )

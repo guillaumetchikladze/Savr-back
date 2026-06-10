@@ -10,11 +10,12 @@ from django.db.models import Case, IntegerField, Max, Prefetch, When
 from chat.services.tool_schemas import (
     AddRecipeResult,
     CreateMealPlanSlotResult,
+    MealPlanInviteeSummary,
     MealPlanRecipeSummary,
     MealPlanSummary,
     MutationProposal,
 )
-from recipes.models import MealPlan, MealPlanRecipeBatch, Recipe, RecipeBatch
+from recipes.models import MealInvitation, MealPlan, MealPlanRecipeBatch, Recipe, RecipeBatch
 from recipes.utils import get_accessible_meal_plan_filter
 
 
@@ -43,7 +44,11 @@ def get_meal_plans_for_user(
                 queryset=MealPlanRecipeBatch.objects.select_related(
                     'recipe_batch__recipe'
                 ).order_by('order'),
-            )
+            ),
+            Prefetch(
+                'invitations',
+                queryset=MealInvitation.objects.select_related('invitee').order_by('invitee__username'),
+            ),
         )
         .order_by('date', _meal_time_order())
         .distinct()
@@ -61,6 +66,17 @@ def get_meal_plans_for_user(
                     recipe_batch_id=mprb.recipe_batch_id,
                 )
             )
+        invitees = []
+        if mp.user_id == user.id:
+            for invitation in mp.invitations.all():
+                if not invitation.invitee_id:
+                    continue
+                invitees.append(
+                    MealPlanInviteeSummary(
+                        username=invitation.invitee.username,
+                        status=invitation.status,
+                    )
+                )
         summaries.append(
             MealPlanSummary(
                 id=mp.id,
@@ -70,6 +86,7 @@ def get_meal_plans_for_user(
                 confirmed=mp.confirmed,
                 is_owner=mp.user_id == user.id,
                 recipes=recipes,
+                invitees=invitees,
             )
         )
     return summaries

@@ -8,13 +8,16 @@ from agents import RunContextWrapper, function_tool
 from chat.services.agent_context import AgentContext
 from chat.services.tool_schemas import (
     AddRecipeResult,
+    AddShoppingListItemResult,
     CreateMealPlanSlotResult,
     GetMealPlansResult,
+    GetShoppingListItemsResult,
     ImportJobStarted,
     MutationProposal,
     SearchRecipesResult,
 )
 from recipes.services.invitation_service import (
+    _normalize_meal_plan_ids,
     propose_meal_invitation,
     resolve_complices_by_name,
 )
@@ -25,6 +28,10 @@ from recipes.services.meal_plan_service import (
     propose_meal_deletion_data,
 )
 from recipes.services.recipe_search_service import search_recipes_for_user
+from recipes.services.shopping_list_service import (
+    add_item_to_shopping_list,
+    get_shopping_list_items_for_user,
+)
 
 
 async def _run_sync(fn, *args, **kwargs):
@@ -77,16 +84,43 @@ async def propose_meal_deletion(
 @function_tool(strict_mode=False)
 async def send_invitation_proposal(
     ctx: RunContextWrapper[AgentContext],
-    meal_plan_id: int,
-    invitee_usernames: list[str],
+    meal_plan_ids: list[int] | None = None,
+    meal_plan_id: int | None = None,
+    invitee_ids: list[int] | None = None,
+    invitee_usernames: list[str] | None = None,
 ) -> MutationProposal:
-    """Propose d'inviter des complices à un repas (nécessite confirmation utilisateur)."""
+    """Propose d'inviter des amis à un ou plusieurs repas (nécessite confirmation utilisateur)."""
     user = ctx.context.user
-    complices = await _run_sync(resolve_complices_by_name, user, invitee_usernames)
-    if not complices:
-        raise ValueError('Aucun complice trouvé pour ces noms.')
-    invitee_ids = [c.id for c in complices]
-    return await _run_sync(propose_meal_invitation, user, meal_plan_id, invitee_ids)
+    raw_meal_plan_ids = list(meal_plan_ids or [])
+    if meal_plan_id is not None:
+        raw_meal_plan_ids.append(meal_plan_id)
+    normalized_meal_plan_ids = _normalize_meal_plan_ids(raw_meal_plan_ids)
+    if not normalized_meal_plan_ids:
+        raise ValueError('Indique au moins un repas (meal_plan_ids).')
+
+    resolved_invitee_ids: list[int] = []
+    seen_invitee_ids: set[int] = set()
+    for raw_id in invitee_ids or []:
+        invitee_id = int(raw_id)
+        if invitee_id in seen_invitee_ids:
+            continue
+        seen_invitee_ids.add(invitee_id)
+        resolved_invitee_ids.append(invitee_id)
+
+    if invitee_usernames:
+        complices = await _run_sync(resolve_complices_by_name, user, invitee_usernames)
+        for complice in complices:
+            if complice.id in seen_invitee_ids:
+                continue
+            seen_invitee_ids.add(complice.id)
+            resolved_invitee_ids.append(complice.id)
+
+    if not resolved_invitee_ids:
+        raise ValueError('Aucun ami trouvé (invitee_ids ou invitee_usernames requis).')
+
+    return await _run_sync(
+        propose_meal_invitation, user, normalized_meal_plan_ids, resolved_invitee_ids
+    )
 
 
 @function_tool(strict_mode=False)
@@ -129,6 +163,42 @@ async def import_recipe_from_url(
     user = ctx.context.user
     return await _run_sync(
         _start_import_from_url, user, url, ctx.context.conversation_id
+    )
+
+
+@function_tool(strict_mode=False)
+async def get_shopping_list_items(
+    ctx: RunContextWrapper[AgentContext],
+    shopping_list_id: int,
+    include_purchased: bool = False,
+) -> GetShoppingListItemsResult:
+    """Liste les articles restant à acheter dans une liste (temps réel, exclut le déjà coché)."""
+    user = ctx.context.user
+    return await _run_sync(
+        get_shopping_list_items_for_user,
+        user,
+        shopping_list_id,
+        include_purchased=include_purchased,
+    )
+
+
+@function_tool(strict_mode=False)
+async def add_shopping_list_item(
+    ctx: RunContextWrapper[AgentContext],
+    shopping_list_id: int,
+    ingredient_name: str,
+    quantity: float = 1,
+    unit: str = 'piece',
+) -> AddShoppingListItemResult:
+    """Ajoute un article à une liste de courses (exécution immédiate)."""
+    user = ctx.context.user
+    return await _run_sync(
+        add_item_to_shopping_list,
+        user,
+        shopping_list_id,
+        ingredient_name,
+        quantity=quantity,
+        unit=unit,
     )
 
 

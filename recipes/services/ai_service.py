@@ -546,22 +546,6 @@ async def formalize_recipe(
                     len(formalized_recipe.steps)
                 )
                 
-                # Post-traitement: normaliser les noms d'ingrédients via un agent dédié (sans perte)
-                all_names = set()
-                for ri in formalized_recipe.recipe_ingredients:
-                    all_names.add(ri.ingredient_name)
-                for step in formalized_recipe.steps:
-                    for si in step.step_ingredients:
-                        all_names.add(si.ingredient_name)
-
-                if all_names:
-                    mapping = await normalize_ingredient_names(sorted(all_names))
-                    for ri in formalized_recipe.recipe_ingredients:
-                        ri.ingredient_name = mapping.get(ri.ingredient_name, ri.ingredient_name)
-                    for step in formalized_recipe.steps:
-                        for si in step.step_ingredients:
-                            si.ingredient_name = mapping.get(si.ingredient_name, si.ingredient_name)
-
                 return formalized_recipe
                 
             except UnexpectedModelBehavior as e:

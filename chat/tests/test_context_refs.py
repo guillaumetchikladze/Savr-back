@@ -1,12 +1,25 @@
 """Tests injection contexte @ recette / repas / liste dans l'historique agent."""
 
+from datetime import timedelta
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from chat.models import Conversation, Message
 from chat.services.context_refs import build_context_prompt_for_agent, format_context_refs_prompt
 from chat.services.stream_adapter import build_agent_history
-from recipes.models import Ingredient, Recipe, RecipeIngredient
+from recipes.models import (
+    Ingredient,
+    Recipe,
+    RecipeBatch,
+    RecipeIngredient,
+    ShoppingList,
+    ShoppingListItem,
+    ShoppingListItemQuantity,
+    ShoppingListMember,
+)
 
 User = get_user_model()
 
@@ -93,3 +106,36 @@ class ContextRefsPromptTests(TestCase):
         self.assertEqual(len(system_msgs), 0)
         self.assertEqual(history[-1]['role'], 'user')
         self.assertIn('Événement Tchikook Agent', history[-1]['content'])
+
+    def test_shopping_list_context_excludes_fully_checked_stale_items(self):
+        shopping_list = ShoppingList.objects.create(name='ABC')
+        ShoppingListMember.objects.create(
+            shopping_list=shopping_list,
+            user=self.user,
+            role='owner',
+        )
+        ingredient = Ingredient.objects.create(name='Noix')
+        batch = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
+        item = ShoppingListItem.objects.create(
+            shopping_list=shopping_list,
+            ingredient=ingredient,
+            unit_group='weight',
+            pantry_unit='g',
+            checked_at=timezone.now() - timedelta(hours=30),
+        )
+        ShoppingListItemQuantity.objects.create(
+            shopping_list_item=item,
+            recipe_batch=batch,
+            quantity=Decimal('30'),
+            checked_quantity=Decimal('30'),
+            unit='g',
+            checked_at=timezone.now() - timedelta(hours=30),
+        )
+
+        prompt = build_context_prompt_for_agent(self.user, [{
+            'type': 'shopping_list',
+            'id': shopping_list.id,
+            'label': 'ABC',
+        }])
+        self.assertIn('tout est déjà acheté', prompt)
+        self.assertNotIn('Noix', prompt)

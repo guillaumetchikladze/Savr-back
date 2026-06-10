@@ -10,11 +10,7 @@ from ..models import (
     StepIngredient,
 )
 from .ai_service import verify_quantity_consistency
-from .ingredient_matcher import (
-    normalize_ingredient_name,
-    get_batch_embeddings,
-    find_similar_ingredient,
-)
+from .ingredient_matcher import find_ingredient_by_name
 from .recipe_search_index import schedule_recipe_search_reindex
 
 logger = logging.getLogger(__name__)
@@ -47,48 +43,21 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
         ingredient_map = {}
         ingredients_to_create = []
 
-        # Recherche textuelle
         for ingredient_name in all_ingredient_names:
-            normalized_name = normalize_ingredient_name(ingredient_name)
-
-            exact_match = Ingredient.objects.filter(name__iexact=ingredient_name).first()
-            if exact_match:
-                ingredient_map[ingredient_name] = exact_match
-                continue
-
-            found = False
-            for ingredient in Ingredient.objects.all():
-                if normalize_ingredient_name(ingredient.name) == normalized_name:
-                    ingredient_map[ingredient_name] = ingredient
-                    found = True
-                    break
-
-            if not found:
+            existing = find_ingredient_by_name(ingredient_name)
+            if existing:
+                ingredient_map[ingredient_name] = existing
+            else:
                 ingredients_to_create.append(ingredient_name)
 
         logger.info(
-            "[FormalizationPipeline] %d ingrédients trouvés textuellement, %d à enrichir via embeddings",
+            "[FormalizationPipeline] %d ingrédients trouvés textuellement, %d à créer",
             len(ingredient_map),
-            len(ingredients_to_create)
+            len(ingredients_to_create),
         )
 
-        if ingredients_to_create:
-            embeddings = get_batch_embeddings(ingredients_to_create)
-            for ingredient_name, embedding in zip(ingredients_to_create, embeddings):
-                if embedding:
-                    similar = find_similar_ingredient(ingredient_name, embedding)
-                    if similar:
-                        ingredient_map[ingredient_name] = similar
-                        continue
-
-                    ingredient = Ingredient.objects.create(
-                        name=ingredient_name,
-                        embedding=embedding
-                    )
-                    ingredient_map[ingredient_name] = ingredient
-                else:
-                    ingredient = Ingredient.objects.create(name=ingredient_name)
-                    ingredient_map[ingredient_name] = ingredient
+        for ingredient_name in ingredients_to_create:
+            ingredient_map[ingredient_name] = Ingredient.objects.create(name=ingredient_name)
 
         recipe = Recipe.objects.create(
             title=formalized_recipe.title,

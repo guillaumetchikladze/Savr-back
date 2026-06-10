@@ -263,6 +263,13 @@ def _summarize_tool_output(output) -> str:
             return str(data['message'])
         if 'title' in data:
             return str(data['title'])
+        if data.get('card_type') == 'meal_invitation':
+            details = data.get('details') or {}
+            names = details.get('invitee_usernames') or []
+            if names:
+                return f"Inviter {', '.join(names)}"
+            if data.get('subtitle'):
+                return str(data['subtitle'])
     return str(output)[:200]
 
 
