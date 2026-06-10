@@ -2002,6 +2002,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         - recipe_ids : liste obligatoire (crée un batch par recette)
         - portions par défaut = None (suit le nombre de personnes).
         """
+        from recipes.services.meal_plan_service import add_recipes_to_meal_plan
 
         meal_plan = self.get_object()
         recipe_ids = request.data.get('recipe_ids') or []
@@ -2009,44 +2010,17 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not isinstance(recipe_ids, list) or len(recipe_ids) == 0:
             return Response({'error': 'recipe_ids must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
 
-        existing_recipe_ids = set(
-            MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).values_list('recipe_batch__recipe_id', flat=True)
-        )
-        current_max_order = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).aggregate(Max('order'))['order__max'] or 0
+        try:
+            result = add_recipes_to_meal_plan(request.user, meal_plan.id, recipe_ids)
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = status.HTTP_404_NOT_FOUND if 'introuvable' in msg.lower() else status.HTTP_400_BAD_REQUEST
+            return Response({'error': msg}, status=status_code)
 
-        already_present_recipe_ids = [rid for rid in recipe_ids if rid in existing_recipe_ids]
-
-        # Garder l'ordre demandé par le client tout en évitant les doublons déjà associés
-        recipe_ids_to_add = [rid for rid in recipe_ids if rid not in existing_recipe_ids]
-
-        # Valider l'existence des recettes en un seul hit DB
-        if recipe_ids_to_add:
-            existing_in_db = set(Recipe.objects.filter(id__in=recipe_ids_to_add).values_list('id', flat=True))
-            missing = [rid for rid in recipe_ids_to_add if rid not in existing_in_db]
-            if missing:
-                return Response({'error': f'recipe(s) not found: {missing}'}, status=status.HTTP_404_NOT_FOUND)
-
-        with transaction.atomic():
-            if recipe_ids_to_add:
-                batches = [RecipeBatch(recipe_id=rid, created_by=request.user) for rid in recipe_ids_to_add]
-                RecipeBatch.objects.bulk_create(batches)
-                mprs = [
-                    MealPlanRecipeBatch(
-                        meal_plan=meal_plan,
-                        recipe_batch=batches[i],
-                        portions=None,
-                        is_portions_overridden=False,
-                        order=current_max_order + i + 1,
-                    )
-                    for i in range(len(batches))
-                ]
-                MealPlanRecipeBatch.objects.bulk_create(mprs)
-
-        # Réponse légère (JSON minimal): évite un body vide avec Content-Type JSON qui peut faire planter certains clients.
         return Response(
             {
-                'added_recipe_ids': recipe_ids_to_add,
-                'already_present_recipe_ids': already_present_recipe_ids,
+                'added_recipe_ids': result.added_recipe_ids,
+                'already_present_recipe_ids': result.already_present_recipe_ids,
             },
             status=status.HTTP_200_OK,
         )
@@ -2057,12 +2031,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Retire ce recipe_batch du repas planifié (supprime la ligne MealPlanRecipeBatch).
         Si le RecipeBatch n'est plus lié à aucun meal plan, le batch est supprimé.
         """
+        from recipes.services.meal_plan_service import remove_recipe_from_meal_plan
+
         meal_plan = self.get_object()
-        if meal_plan.user_id != request.user.id:
-            return Response(
-                {'detail': 'Seul le propriétaire du repas peut retirer cette recette du créneau.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
         recipe_batch_id = request.data.get('recipe_batch_id')
         if recipe_batch_id is None:
             return Response({'error': 'recipe_batch_id required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2071,29 +2042,16 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             return Response({'error': 'Invalid recipe_batch_id'}, status=status.HTTP_400_BAD_REQUEST)
 
-        mprb = (
-            MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan, recipe_batch_id=recipe_batch_id)
-            .select_related('recipe_batch')
-            .first()
-        )
-        if not mprb:
-            return Response({'error': 'Association not found'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            result = remove_recipe_from_meal_plan(request.user, meal_plan.id, recipe_batch_id)
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = status.HTTP_404_NOT_FOUND if 'introuvable' in msg.lower() else status.HTTP_400_BAD_REQUEST
+            return Response({'error': msg}, status=status_code)
 
-        batch_deleted = False
-        with transaction.atomic():
-            batch = mprb.recipe_batch
-            mprb.delete()
-            if not MealPlanRecipeBatch.objects.filter(recipe_batch_id=batch.id).exists():
-                batch.delete()
-                batch_deleted = True
-
-        return Response(
-            {
-                'batch_deleted': batch_deleted,
-                'recipe_batch_id': recipe_batch_id,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(result, status=status.HTTP_200_OK)
 
     def list(self, request, *args, **kwargs):
         """
@@ -3194,104 +3152,36 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def invite(self, request, pk=None):
         """Inviter des utilisateurs à un repas"""
-        from django.contrib.auth import get_user_model
-        from django.db import transaction
-        from accounts.models import Follow, Notification
-        User = get_user_model()
-        
+        from recipes.services.invitation_service import execute_meal_invitation
+
         meal_plan = self.get_object()
         invitee_ids = request.data.get('invitee_ids', [])
-        
+
         if not invitee_ids:
             return Response({'error': 'invitee_ids is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Vérifier que les utilisateurs sont des complices
-        following_ids = Follow.objects.filter(follower=request.user).values_list('following_id', flat=True)
-        followers_ids = Follow.objects.filter(following=request.user).values_list('follower_id', flat=True)
-        complice_ids = set(list(following_ids) + list(followers_ids))
-        
-        valid_invitee_ids = [user_id for user_id in invitee_ids if user_id in complice_ids]
-        
-        if not valid_invitee_ids:
-            return Response({'error': 'No valid complices found'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Précharger les utilisateurs pour éviter les requêtes N+1
-        invitees = {user.id: user for user in User.objects.filter(id__in=valid_invitee_ids)}
-        
-        # Créer les invitations
-        invitations = []
-        notification_data = []  # Stocker les données de notification pour les créer après commit
-        
-        for invitee_id in valid_invitee_ids:
-            invitee = invitees.get(invitee_id)
-            if not invitee:
-                continue
-                
-            invitation, created = MealInvitation.objects.get_or_create(
-                inviter=request.user,
-                invitee=invitee,
-                meal_plan=meal_plan,
-                defaults={'status': 'pending'}
+
+        try:
+            result = execute_meal_invitation(
+                request.user,
+                {'meal_plan_id': meal_plan.id, 'invitee_ids': invitee_ids},
             )
-            if created:
-                invitations.append(invitation)
-                # Stocker les données de notification pour les créer après commit (asynchrone)
-                notification_data.append({
-                    'user': invitee,
-                    'notification_type': 'meal_invitation',
-                    'title': f"{request.user.username} vous invite à un repas",
-                    'message': f"{request.user.username} vous invite à {meal_plan.get_meal_time_display()} le {meal_plan.date.strftime('%d/%m/%Y')}",
-                    'related_user': request.user
-                })
-        
-        # Créer les notifications après le commit de la transaction (asynchrone)
-        # Cela rend l'endpoint plus rapide car les notifications sont créées en arrière-plan
-        if notification_data:
-            def create_notifications_and_pushes():
-                for notif_data in notification_data:
-                    notification = Notification.objects.create(**notif_data)
-                    user = notif_data.get('user')
-                    if not user:
-                        continue
-                    devices = PushDevice.objects.filter(
-                        user=user,
-                        is_active=True
-                    ).exclude(expo_push_token='')
-                    messages = []
-                    for device in devices:
-                        messages.append(
-                            {
-                                'to': device.expo_push_token,
-                                'title': notification.title,
-                                'body': notification.message,
-                                'data': {
-                                    'source': 'social',
-                                    'kind': 'meal_invitation',
-                                    'notification_id': notification.id,
-                                    'meal_plan_id': meal_plan.id,
-                                    'meal_plan_date': meal_plan.date.isoformat(),
-                                    'meal_time': meal_plan.meal_time,
-                                },
-                                'sound': 'default',
-                            }
-                        )
-                    if messages:
-                        send_expo_push_notifications(messages)
-            
-            transaction.on_commit(create_notifications_and_pushes)
-        
-        # Rafraîchir le meal_plan depuis la DB pour avoir les invitations à jour
-        # (nécessaire car le serializer utilise obj.invitations.all() qui peut être mis en cache)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
         meal_plan.refresh_from_db()
-        
-        # Retourner le meal plan mis à jour avec les participants pour que le frontend ait les données à jour
         from .serializers import MealPlanSerializer
         meal_plan_serializer = MealPlanSerializer(meal_plan, context={'request': request})
-        
-        serializer = MealInvitationSerializer(invitations, many=True, context={'request': request})
+
+        new_invitations = MealInvitation.objects.filter(
+            meal_plan=meal_plan,
+            invitee_id__in=invitee_ids,
+            status='pending',
+        ).order_by('-created_at')
+        serializer = MealInvitationSerializer(new_invitations, many=True, context={'request': request})
         return Response({
             'invitations': serializer.data,
-            'meal_plan': meal_plan_serializer.data  # Inclure le meal plan mis à jour
+            'meal_plan': meal_plan_serializer.data,
+            'result': result,
         }, status=status.HTTP_201_CREATED)
 
 
