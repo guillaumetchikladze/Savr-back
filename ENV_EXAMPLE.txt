@@ -12,6 +12,8 @@ DB_PORT=5432
 # Redis / Celery Configuration
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/0
+# Django Channels (WebSocket chat) — en Docker utiliser redis://redis:6379/1
+CHANNEL_REDIS_URL=redis://localhost:6379/1
 
 # Délai (secondes) avant push « photo à table » après fin de cuisine (défaut 10800 = 3 h). Ex. 90 pour tests.
 # MEAL_TIME_PHOTO_REMINDER_DELAY_SECONDS=10800
