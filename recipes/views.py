@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q, Count, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef
+from django.db.models import Q, Count, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef, F
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, date, timedelta, time
 from time import perf_counter
@@ -22,7 +22,7 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
 from .services.ingredient_matcher import get_batch_embeddings
-from .services.recipe_search import hybrid_recipe_queryset
+from .services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryset
 from .services.recipe_search_index import schedule_recipe_search_reindex
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
@@ -880,7 +880,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return RecipeCreateSerializer
         # Utiliser RecipeLightSerializer pour les listes (pas besoin de steps/ingredients)
-        if self.action in ['list', 'search', 'search_semantic', 'my_imports', 'my_favorites', 'my_recipes']:
+        if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic', 'my_imports', 'my_favorites', 'my_recipes']:
             return RecipeLightSerializer
         # Utiliser RecipeDetailSerializer pour retrieve (léger, sans steps/ingredients)
         if self.action == 'retrieve':
@@ -904,14 +904,32 @@ class RecipeViewSet(viewsets.ModelViewSet):
         meal_type = self.request.query_params.get('meal_type', None)
         difficulty = self.request.query_params.get('difficulty', None)
         search = self.request.query_params.get('search', None)
+        max_total_time = self.request.query_params.get('max_total_time', None)
+        mine = self.request.query_params.get('mine', '').lower() in ('1', 'true', 'yes')
+        created_by = self.request.query_params.get('created_by', None)
         
         if meal_type:
             queryset = queryset.filter(meal_type=meal_type)
         if difficulty:
             queryset = queryset.filter(difficulty=difficulty)
+        if mine:
+            queryset = queryset.filter(created_by=user)
+        if created_by:
+            try:
+                queryset = queryset.filter(created_by_id=int(created_by))
+            except (ValueError, TypeError):
+                pass
+        if max_total_time:
+            try:
+                max_mins = int(max_total_time)
+                queryset = queryset.annotate(
+                    total_time_mins=F('prep_time') + F('cook_time')
+                ).filter(total_time_mins__lte=max_mins)
+            except (ValueError, TypeError):
+                pass
         if search:
             # Pour les listes, chercher uniquement dans le titre (plus rapide)
-            if self.action in ['list', 'search', 'search_semantic']:
+            if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic']:
                 queryset = queryset.filter(title__icontains=search)
             else:
                 queryset = queryset.filter(
@@ -920,16 +938,20 @@ class RecipeViewSet(viewsets.ModelViewSet):
         
         # Pour les listes, ne pas précharger steps et ingredients (inutiles)
         # Utiliser defer() pour exclure les gros champs
-        if self.action in ['list', 'search', 'search_semantic']:
-            queryset = queryset.defer(
+        if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic']:
+            defer_fields = [
                 'description',
                 'created_at',
                 'updated_at',
-                'created_by_id',
                 'search_index_text',
                 'search_context_tags',
                 'search_index_hash',
-            )
+            ]
+            if self.action != 'search_fuzzy':
+                defer_fields.append('created_by_id')
+            queryset = queryset.defer(*defer_fields)
+            if self.action == 'search_fuzzy':
+                queryset = queryset.select_related('created_by')
         elif self.action == 'retrieve':
             # Pour retrieve : ne pas précharger steps et ingredients (chargés via endpoints séparés)
             # Juste select_related pour created_by
@@ -1597,6 +1619,28 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 {'error': f'Erreur lors de la soumission: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'], url_path='search_fuzzy')
+    def search_fuzzy(self, request):
+        """
+        Recherche rapide par similarité trigram sur le titre (sans embedding).
+        ``q`` est optionnel : sans texte, les filtres query (difficulty, meal_type,
+        max_total_time, mine, created_by) suffisent ; sans rien, liste paginée.
+        """
+        query = request.query_params.get('q', '').strip()
+        base_qs = self.filter_queryset(self.get_queryset())
+        queryset = fuzzy_recipe_queryset(base_qs, query) if query else base_qs
+
+        paginated_queryset = self.paginate_queryset(queryset)
+        if paginated_queryset is not None:
+            serializer = RecipeLightSerializer(
+                paginated_queryset, many=True, context={'request': request},
+            )
+            return self.get_paginated_response(serializer.data)
+
+        page_size = min(int(request.query_params.get('page_size', 20)), 50)
+        serializer = RecipeLightSerializer(queryset[:page_size], many=True, context={'request': request})
+        return Response(serializer.data)
 
     @action(detail=False, methods=['get'], url_path='search_semantic')
     def search_semantic(self, request):

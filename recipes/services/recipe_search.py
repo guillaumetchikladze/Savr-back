@@ -61,3 +61,16 @@ def hybrid_recipe_queryset(base_qs, query: str, query_vector: Optional[List[floa
     ).order_by('-hybrid_score', '-trgm_score')
 
     return qs
+
+
+def fuzzy_recipe_queryset(base_qs, query: str):
+    """
+    Recherche rapide : trigram sur le titre uniquement.
+    Évite search_index_text (lent sur toute la table) et les embeddings.
+    """
+    min_trgm = settings.SEARCH_TRIGRAM_MIN_SCORE
+    return base_qs.annotate(
+        trgm_title=TrigramSimilarity('title', query),
+    ).filter(
+        Q(trgm_title__gte=min_trgm) | Q(title__icontains=query)
+    ).order_by('-trgm_title', '-created_at')

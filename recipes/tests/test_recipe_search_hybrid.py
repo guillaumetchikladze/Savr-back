@@ -8,7 +8,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from recipes.models import Recipe
-from recipes.services.recipe_search import hybrid_recipe_queryset
+from recipes.services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryset
 
 User = get_user_model()
 
@@ -67,6 +67,39 @@ class RecipeSearchHybridTests(TestCase):
         )
         ids = list(qs.values_list('id', flat=True))
         self.assertIn(self.public_recipe.id, ids)
+
+    def test_search_fuzzy_finds_public_recipe_without_embedding(self):
+        url = reverse('recipe-search-fuzzy')
+        response = self.client.get(url, {'q': 'tartiflette'})
+        self.assertEqual(response.status_code, 200)
+        titles = [r['title'] for r in response.data.get('results', response.data)]
+        self.assertTrue(any('Tartiflette savoyarde' in t for t in titles))
+        self.assertFalse(any('secrète' in t for t in titles))
+
+    def test_fuzzy_queryset_title_only(self):
+        qs = fuzzy_recipe_queryset(
+            Recipe.objects.filter(is_public=True),
+            'tartiflette',
+        )
+        ids = list(qs.values_list('id', flat=True))
+        self.assertIn(self.public_recipe.id, ids)
+        row = qs.filter(pk=self.public_recipe.pk).first()
+        self.assertTrue(hasattr(row, 'trgm_title'))
+        self.assertFalse(hasattr(row, 'trgm_index_word'))
+
+    def test_search_fuzzy_filter_only_without_query(self):
+        url = reverse('recipe-search-fuzzy')
+        response = self.client.get(url, {'difficulty': 'medium', 'mine': 'true'})
+        self.assertEqual(response.status_code, 200)
+        titles = [r['title'] for r in response.data.get('results', response.data)]
+        self.assertIn('Tartiflette savoyarde', titles)
+
+    def test_search_fuzzy_without_query_or_filters(self):
+        url = reverse('recipe-search-fuzzy')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        titles = [r['title'] for r in response.data.get('results', response.data)]
+        self.assertTrue(any('Tartiflette savoyarde' in t for t in titles))
 
     @patch('recipes.views.get_batch_embeddings')
     def test_search_semantic_excludes_private_recipes_of_others(self, mock_embed):

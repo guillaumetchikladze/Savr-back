@@ -376,8 +376,11 @@ def build_s3_client():
     return _S3_CLIENT
 
 
+_PRESIGNED_URL_CACHE = {}
+
+
 def build_presigned_get_url(image_path, expires_in=3600):
-    """Générer une URL pré-signée pour télécharger une image."""
+    """Générer une URL pré-signée pour télécharger une image (cache en mémoire)."""
     if not image_path:
         return None
 
@@ -386,13 +389,23 @@ def build_presigned_get_url(image_path, expires_in=3600):
     if not AWS_BUCKET or not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
         return build_s3_url(clean_path)
 
+    import time
+    cache_key = (clean_path, expires_in)
+    now = time.time()
+    cached = _PRESIGNED_URL_CACHE.get(cache_key)
+    if cached and cached[1] > now:
+        return cached[0]
+
     try:
         client = build_s3_client()
-        return client.generate_presigned_url(
+        url = client.generate_presigned_url(
             'get_object',
             Params={'Bucket': AWS_BUCKET, 'Key': clean_path},
-            ExpiresIn=expires_in
+            ExpiresIn=expires_in,
         )
+        # Rafraîchir 5 min avant expiration
+        _PRESIGNED_URL_CACHE[cache_key] = (url, now + max(expires_in - 300, 60))
+        return url
     except Exception:
         return build_s3_url(clean_path)
 
