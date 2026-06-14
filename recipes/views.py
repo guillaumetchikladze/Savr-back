@@ -3693,9 +3693,21 @@ class PostViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Pour retrieve (GET /posts/{id}/), autoriser tout post publié (ex: depuis une notification)
         if self.action == 'retrieve':
+            from .models import MealPlanRecipeBatch
             return Post.objects.filter(is_published=True).select_related(
                 'user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan'
-            ).prefetch_related('photos', 'cookies', 'comments').order_by('-created_at')
+            ).prefetch_related(
+                Prefetch(
+                    'photos',
+                    queryset=PostPhoto.objects.select_related('recipe_batch__recipe').order_by('order'),
+                ),
+                Prefetch(
+                    'meal_plan__meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+                ),
+                'cookies',
+                'comments',
+            ).order_by('-created_at')
 
         # Si on demande les posts publiés, montrer tous les posts publiés de tous les utilisateurs
         # Sinon, montrer uniquement les posts de l'utilisateur connecté

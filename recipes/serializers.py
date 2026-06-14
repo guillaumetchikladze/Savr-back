@@ -1984,6 +1984,7 @@ class PostSerializer(serializers.ModelSerializer):
     has_all_photos = serializers.BooleanField(read_only=True)
     recipe_meta = serializers.SerializerMethodField()
     recipe = serializers.SerializerMethodField()
+    recipes = serializers.SerializerMethodField()
     cookies_count = serializers.SerializerMethodField()
     has_cookie_from_user = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
@@ -1992,7 +1993,7 @@ class PostSerializer(serializers.ModelSerializer):
         model = Post
         fields = [
             'id', 'user', 'recipe_batch', 'meal_plan',
-            'comment', 'is_published', 'recipe_meta', 'recipe',
+            'comment', 'is_published', 'recipe_meta', 'recipe', 'recipes',
             'photos', 'photos_count', 'has_all_photos',
             'cookies_count', 'has_cookie_from_user', 'comments_count',
             'created_at', 'updated_at'
@@ -2020,6 +2021,51 @@ class PostSerializer(serializers.ModelSerializer):
             'title': recipe.title,
             'image_url': getattr(recipe, 'image_url', None),
         }
+
+    def get_recipes(self, obj):
+        """Toutes les recettes du post (repas multi-recettes ou batches des photos)."""
+        entries = []
+        seen_batch_ids = set()
+
+        def recipe_payload(recipe):
+            if not recipe:
+                return None
+            return {
+                'id': recipe.id,
+                'title': recipe.title,
+                'image_url': getattr(recipe, 'image_url', None),
+                'prep_time': recipe.prep_time,
+                'cook_time': recipe.cook_time,
+                'servings': recipe.servings,
+            }
+
+        def add_batch(batch, order=None):
+            if not batch or not batch.id or batch.id in seen_batch_ids:
+                return
+            recipe = getattr(batch, 'recipe', None)
+            if not recipe or not recipe.id:
+                return
+            seen_batch_ids.add(batch.id)
+            entries.append({
+                'recipe_batch_id': batch.id,
+                'order': order if order is not None else len(entries),
+                'recipe': recipe_payload(recipe),
+            })
+
+        if obj.meal_plan_id and obj.meal_plan:
+            mprbs = obj.meal_plan.meal_plan_recipe_batches.all()
+            for idx, mprb in enumerate(mprbs):
+                add_batch(getattr(mprb, 'recipe_batch', None), order=getattr(mprb, 'order', idx))
+
+        if not entries:
+            for photo in obj.photos.all():
+                add_batch(getattr(photo, 'recipe_batch', None))
+
+        if obj.recipe_batch_id:
+            add_batch(obj.recipe_batch)
+
+        entries.sort(key=lambda item: item.get('order', 0))
+        return entries
     
     def get_recipe_meta(self, obj):
         recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
