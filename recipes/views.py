@@ -66,7 +66,7 @@ from accounts.services.expo_push import send_expo_push_notifications
 from .tasks import process_recipe_import
 from accounts.tasks import send_timer_almost_finished_push, send_meal_time_photo_reminder_push
 from savr_back.celery import app as celery_app
-from .utils import get_accessible_meal_plan_filter, shopping_list_item_quantity_is_stale, meal_plan_slot_api_fields
+from .utils import get_accessible_meal_plan_filter, get_invited_recipe_filter, shopping_list_item_quantity_is_stale, meal_plan_slot_api_fields
 from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
 
 
@@ -898,14 +898,19 @@ class RecipeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filtrer selon is_public et user, puis appliquer les autres filtres"""
         user = self.request.user
-        
-        # Si l'utilisateur est connecté, voir ses recettes privées + toutes les publiques
+        list_actions = ['list', 'search', 'search_fuzzy', 'search_semantic', 'my_imports', 'my_favorites', 'my_recipes']
+
+        # Recherche / listes : publiques + propres recettes uniquement
         if user.is_authenticated:
-            queryset = Recipe.objects.filter(
-                Q(is_public=True) | Q(created_by=user)
-            )
+            if self.action in list_actions:
+                queryset = Recipe.objects.filter(
+                    Q(is_public=True) | Q(created_by=user)
+                )
+            else:
+                queryset = Recipe.objects.filter(
+                    Q(is_public=True) | Q(created_by=user) | get_invited_recipe_filter(user)
+                ).distinct()
         else:
-            # Sinon, seulement les publiques
             queryset = Recipe.objects.filter(is_public=True)
         
         meal_type = self.request.query_params.get('meal_type', None)
@@ -2503,11 +2508,11 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """Liste optimisée avec pagination pour les meal plans"""
         queryset = self.filter_queryset(self.get_queryset())
         
-        # En mode minimal, désactiver la pagination car les données sont légères
+        # En mode minimal ou timeline, désactiver la pagination (plage de dates limitée côté client).
         is_minimal = request.query_params.get('minimal', '').lower() == 'true'
+        view_mode = (request.query_params.get('view') or '').strip().lower()
         
-        if is_minimal:
-            # Mode minimal : pas de pagination, retourner tous les résultats
+        if is_minimal or view_mode == 'timeline':
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data)
         

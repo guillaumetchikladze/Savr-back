@@ -1046,6 +1046,30 @@ class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
         ]
 
 
+def _meal_plan_recipe_previews(meal_plan, limit=3):
+    """
+    Retourne max `limit` previews {image_url, title} pour la timeline.
+    Inclut les recettes sans photo (title seulement).
+    """
+    previews = []
+    try:
+        mprbs = meal_plan.meal_plan_recipe_batches.all()
+    except Exception:
+        mprbs = []
+    for mprb in mprbs:
+        recipe = getattr(getattr(mprb, 'recipe_batch', None), 'recipe', None)
+        if not recipe:
+            continue
+        title = (getattr(recipe, 'title', None) or '').strip() or 'Recette'
+        previews.append({
+            'image_url': getattr(recipe, 'image_url', None) or None,
+            'title': title,
+        })
+        if len(previews) >= limit:
+            break
+    return previews
+
+
 class MealPlanTimelineSerializer(serializers.ModelSerializer):
     """
     Serializer ultra-léger pour MealPlanTimelineScreen:
@@ -1056,6 +1080,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
     meal_time_display = serializers.SerializerMethodField()
     is_guest = serializers.SerializerMethodField()
     recipe_thumbs = serializers.SerializerMethodField()
+    recipe_previews = serializers.SerializerMethodField()
     recipes_count = serializers.SerializerMethodField()
     people_count = serializers.SerializerMethodField()
     people_preview = serializers.SerializerMethodField()
@@ -1074,6 +1099,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             'guest_count',
             'is_guest',
             'recipe_thumbs',
+            'recipe_previews',
             'recipes_count',
             'people_count',
             'people_preview',
@@ -1092,6 +1118,9 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             return False
         from .models import MealInvitation
         return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
+
+    def get_recipe_previews(self, obj: MealPlan):
+        return _meal_plan_recipe_previews(obj)
 
     def get_recipe_thumbs(self, obj: MealPlan):
         """
@@ -1213,6 +1242,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
 class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
     meal_time_display = serializers.SerializerMethodField()
     recipe_thumbs = serializers.SerializerMethodField()
+    recipe_previews = serializers.SerializerMethodField()
     recipes_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -1226,6 +1256,7 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
             'custom_label',
             'scheduled_time',
             'recipe_thumbs',
+            'recipe_previews',
             'recipes_count',
         ]
 
@@ -1233,6 +1264,9 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
             return (obj.custom_label or '').strip() or obj.get_meal_time_display()
         return obj.get_meal_time_display()
+
+    def get_recipe_previews(self, obj: MealPlan):
+        return _meal_plan_recipe_previews(obj)
 
     def get_recipe_thumbs(self, obj: MealPlan):
         thumbs = []

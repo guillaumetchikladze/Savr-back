@@ -58,6 +58,17 @@ def get_accessible_meal_plan_filter(user):
     )
 
 
+def get_invited_recipe_filter(user):
+    """
+    Recettes privées accessibles via un meal plan auquel l'utilisateur est invité.
+    N'inclut pas les recettes publiques (gérées ailleurs) ni celles dont il est auteur.
+    """
+    return Q(
+        batches__meal_plan_recipe_batches__meal_plan__invitations__invitee=user,
+        batches__meal_plan_recipe_batches__meal_plan__invitations__status__in=['accepted', 'pending'],
+    )
+
+
 def canonicalize_import_url(url: str) -> str:
     """
     Normalise une URL d'import pour faciliter la déduplication.
