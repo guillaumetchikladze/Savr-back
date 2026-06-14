@@ -1979,6 +1979,7 @@ class PostSerializer(serializers.ModelSerializer):
     photos = PostPhotoSerializer(many=True, read_only=True)
     user = UserLightSerializer(read_only=True)
     recipe_batch = RecipeBatchLightSerializer(read_only=True)
+    meal_plan = serializers.SerializerMethodField()
     photos_count = serializers.IntegerField(read_only=True)
     has_all_photos = serializers.BooleanField(read_only=True)
     recipe_meta = serializers.SerializerMethodField()
@@ -1990,13 +1991,24 @@ class PostSerializer(serializers.ModelSerializer):
     class Meta:
         model = Post
         fields = [
-            'id', 'user', 'recipe_batch',
+            'id', 'user', 'recipe_batch', 'meal_plan',
             'comment', 'is_published', 'recipe_meta', 'recipe',
             'photos', 'photos_count', 'has_all_photos',
             'cookies_count', 'has_cookie_from_user', 'comments_count',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
+
+    def get_meal_plan(self, obj):
+        mp = obj.meal_plan
+        if not mp:
+            return None
+        return {
+            'id': mp.id,
+            'date': mp.date.isoformat() if mp.date else None,
+            'meal_time': mp.meal_time,
+            **meal_plan_slot_api_fields(mp),
+        }
     
     def get_recipe(self, obj):
         """Retourner les infos de base de la recette pour compatibilité avec PostDetailModal"""
@@ -2128,6 +2140,7 @@ class PostListSerializer(serializers.ModelSerializer):
     photos = PostPhotoListSerializer(many=True, read_only=True)
     recipe = serializers.SerializerMethodField()
     recipe_batch = serializers.SerializerMethodField()
+    meal_plan = serializers.SerializerMethodField()
     cookies_count = serializers.SerializerMethodField()
     has_cookie_from_user = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
@@ -2140,11 +2153,22 @@ class PostListSerializer(serializers.ModelSerializer):
             'comment', 'is_published',
             'photos',
             'cookies_count', 'has_cookie_from_user', 'comments_count',
-            'recipe', 'recipe_batch',
+            'recipe', 'recipe_batch', 'meal_plan',
             'author_is_following',
             'created_at',
         ]
         read_only_fields = ['user', 'created_at']
+
+    def get_meal_plan(self, obj):
+        mp = obj.meal_plan
+        if not mp:
+            return None
+        return {
+            'id': mp.id,
+            'date': mp.date.isoformat() if mp.date else None,
+            'meal_time': mp.meal_time,
+            **meal_plan_slot_api_fields(mp),
+        }
 
     def get_author_is_following(self, obj):
         request = self.context.get('request')
