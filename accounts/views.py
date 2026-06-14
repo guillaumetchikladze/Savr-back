@@ -344,11 +344,11 @@ def follow_user_view(request, user_id):
         if created:
             # Créer une notification pour l'utilisateur suivi
             follow_titles = [
-                "Un nouveau complice arrive",
+                "Un nouvel ami arrive",
                 "Tu as gagné un nouvel allié",
             ]
             follow_messages = [
-                f"{request.user.username} t'a ajouté comme complice.",
+                f"{request.user.username} t'a ajouté comme ami.",
                 f"{request.user.username} a commencé à te suivre.",
             ]
 
