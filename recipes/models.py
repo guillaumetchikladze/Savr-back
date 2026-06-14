@@ -4,7 +4,7 @@ from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.conf import settings
-from pgvector.django import VectorField
+from pgvector.django import VectorField, HnswIndex
 
 
 class Category(models.Model):
@@ -257,6 +257,15 @@ class Recipe(models.Model):
     
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            HnswIndex(
+                name='recipe_embedding_hnsw_idx',
+                fields=['embedding'],
+                m=16,
+                ef_construction=64,
+                opclasses=['vector_cosine_ops'],
+            ),
+        ]
     
     def __str__(self):
         return f"{self.title} - {self.get_meal_type_display()}"
