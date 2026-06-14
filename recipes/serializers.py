@@ -1079,6 +1079,8 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
     """
     meal_time_display = serializers.SerializerMethodField()
     is_guest = serializers.SerializerMethodField()
+    has_published_post = serializers.SerializerMethodField()
+    workflow_status = serializers.SerializerMethodField()
     recipe_thumbs = serializers.SerializerMethodField()
     recipe_previews = serializers.SerializerMethodField()
     recipes_count = serializers.SerializerMethodField()
@@ -1098,6 +1100,8 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             'confirmed',
             'guest_count',
             'is_guest',
+            'has_published_post',
+            'workflow_status',
             'recipe_thumbs',
             'recipe_previews',
             'recipes_count',
@@ -1118,6 +1122,17 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             return False
         from .models import MealInvitation
         return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
+
+    def get_has_published_post(self, obj: MealPlan):
+        if hasattr(obj, 'has_published_post_annot'):
+            return bool(getattr(obj, 'has_published_post_annot'))
+        from .models import Post
+        return Post.objects.filter(meal_plan=obj, is_published=True).exists()
+
+    def get_workflow_status(self, obj: MealPlan):
+        if self.get_has_published_post(obj):
+            return {'key': 'done', 'label': 'Terminé'}
+        return {'key': 'in_progress', 'label': 'En cuisine'}
 
     def get_recipe_previews(self, obj: MealPlan):
         return _meal_plan_recipe_previews(obj)

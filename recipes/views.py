@@ -30,6 +30,8 @@ from .services.meal_plan_service import (
     update_composer_slot,
     add_recipes_to_meal_plan,
     infer_meal_time_from_hour,
+    complete_recipe_batch_workflow,
+    complete_meal_plan_batches_for_publish,
 )
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
@@ -628,6 +630,8 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
             # Préserver l'ordre de sélection
             photos = [photos_dict[pid] for pid in photo_ids]
+
+        complete_recipe_batch_workflow(request.user, batch)
 
         post = Post.objects.create(
             user=request.user,
@@ -1914,7 +1918,6 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 # Timeline: pas besoin de shopping_list ni de champs user lourds, mais besoin de user + invitations + recipes thumbs
                 if view_mode == 'timeline':
                     include_shopping_list = False
-                    from django.db.models import Exists, OuterRef
                     qs = qs.annotate(
                         is_guest_annot=Exists(
                             MealInvitation.objects.filter(
@@ -1922,7 +1925,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                                 invitee=self.request.user,
                                 status='accepted',
                             )
-                        )
+                        ),
+                        has_published_post_annot=Exists(
+                            Post.objects.filter(
+                                meal_plan_id=OuterRef('pk'),
+                                is_published=True,
+                            )
+                        ),
                     )
                 qs = qs.select_related('user').prefetch_related(
                     Prefetch(
@@ -2810,11 +2819,10 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
         cover_batch_id = batch_ids[0] if batch_ids else None
 
-        if cover_batch_id:
-            batch = RecipeBatch.objects.filter(id=cover_batch_id).first()
-            if batch and not batch.is_cooked:
-                batch.is_cooked = True
-                batch.save(update_fields=['is_cooked', 'updated_at'])
+        if batch_ids:
+            batches = RecipeBatch.objects.filter(id__in=batch_ids).select_related('recipe')
+            for batch in batches:
+                complete_recipe_batch_workflow(request.user, batch)
 
         cooking_time_value = None
         if cooking_time_minutes is not None and cooking_time_minutes != '':
@@ -4459,10 +4467,13 @@ class PostViewSet(viewsets.ModelViewSet):
         main_batch = meal_plan.meal_plan_recipe_batches.select_related('recipe_batch').first()
         if not main_batch or not main_batch.recipe_batch:
             return Response({'error': 'No recipe batch found for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+
+        complete_meal_plan_batches_for_publish(request.user, meal_plan)
         
         # Créer le post
         post = Post.objects.create(
             user=request.user,
+            meal_plan=meal_plan,
             recipe_batch=main_batch.recipe_batch,
             comment=comment,
             is_published=True
@@ -4553,6 +4564,11 @@ class PostViewSet(viewsets.ModelViewSet):
         
         post.is_published = True
         post.save()
+
+        if post.meal_plan_id:
+            complete_meal_plan_batches_for_publish(request.user, post.meal_plan)
+        elif post.recipe_batch_id:
+            complete_recipe_batch_workflow(request.user, post.recipe_batch)
         
         serializer = self.get_serializer(post)
         return Response(serializer.data)

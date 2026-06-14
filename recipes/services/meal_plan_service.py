@@ -16,6 +16,7 @@ from chat.services.tool_schemas import (
     MutationProposal,
 )
 from recipes.models import (
+    CookingProgress,
     MealInvitation,
     MealPlan,
     MealPlanRecipeBatch,
@@ -409,6 +410,82 @@ def create_composer_slot(
         created=True,
         message='Slot composeur créé.',
     )
+
+
+def _last_step_index_for_batch(batch: RecipeBatch) -> int:
+    recipe = getattr(batch, 'recipe', None)
+    if not recipe:
+        return 0
+    total_steps = recipe.steps.count()
+    return max(total_steps - 1, 0)
+
+
+def complete_recipe_batch_workflow(user: AbstractBaseUser, batch: RecipeBatch) -> RecipeBatch:
+    """
+    Marque un batch comme entièrement terminé lors de la publication d'un post :
+    courses faites, progression au dernier step, batch cuisiné.
+    """
+    last_index = _last_step_index_for_batch(batch)
+    batch_updates = []
+
+    if not batch.shopping_done:
+        batch.shopping_done = True
+        batch_updates.append('shopping_done')
+
+    progress = CookingProgress.objects.filter(
+        user=user,
+        recipe_batch=batch,
+        status='in_progress',
+    ).first()
+
+    if progress:
+        if progress.current_step_index < last_index:
+            progress.current_step_index = last_index
+            progress.save(update_fields=['current_step_index', 'updated_at'])
+        progress.complete()
+    else:
+        progress = (
+            CookingProgress.objects.filter(
+                user=user,
+                recipe_batch=batch,
+                status='completed',
+            )
+            .order_by('-updated_at')
+            .first()
+        )
+        if progress:
+            if progress.current_step_index < last_index:
+                progress.current_step_index = last_index
+                progress.save(update_fields=['current_step_index', 'updated_at'])
+            if not batch.is_cooked:
+                batch.is_cooked = True
+                batch_updates.append('is_cooked')
+        else:
+            progress = CookingProgress.objects.create(
+                user=user,
+                recipe_batch=batch,
+                current_step_index=last_index,
+                status='in_progress',
+            )
+            progress.complete()
+
+    if batch_updates:
+        batch.save(update_fields=batch_updates + ['updated_at'])
+        batch.refresh_from_db()
+    return batch
+
+
+def complete_meal_plan_batches_for_publish(user: AbstractBaseUser, meal_plan: MealPlan) -> None:
+    """Finalise tous les batches d'un meal plan (publication du repas)."""
+    batch_ids = list(
+        meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)
+    )
+    batch_ids = [bid for bid in batch_ids if bid]
+    if not batch_ids:
+        return
+    batches = RecipeBatch.objects.filter(id__in=batch_ids).select_related('recipe')
+    for batch in batches:
+        complete_recipe_batch_workflow(user, batch)
 
 
 def relink_composer_photos_to_meal_plan(
