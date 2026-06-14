@@ -843,6 +843,11 @@ class Post(models.Model):
         help_text="Repas associé (nouveau workflow : post du repas).",
     )
     comment = models.TextField(blank=True, help_text="Commentaire du post")
+    cooking_time_minutes = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Temps de cuisine saisi ou dérivé de la recette (minutes)",
+    )
     is_published = models.BooleanField(default=False, help_text="Le post est publié")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

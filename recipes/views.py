@@ -24,6 +24,13 @@ from savr_back.settings import build_s3_client, build_s3_url, build_presigned_ge
 from .services.ingredient_matcher import get_batch_embeddings
 from .services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryset
 from .services.recipe_search_index import schedule_recipe_search_reindex
+from .services.meal_plan_service import (
+    create_composer_slot,
+    relink_composer_photos_to_meal_plan,
+    update_composer_slot,
+    add_recipes_to_meal_plan,
+    infer_meal_time_from_hour,
+)
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
     MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment, PostReport,
@@ -2595,6 +2602,86 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(meal_plan)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['post'], url_path='create-composer-slot')
+    def create_composer_slot_action(self, request):
+        """Crée un slot draft pour le composeur de post (date + créneau, conflit → other)."""
+        date_str = request.data.get('date')
+        meal_time = request.data.get('meal_time') or infer_meal_time_from_hour()
+        scheduled_time = request.data.get('scheduled_time')
+        try:
+            result = create_composer_slot(
+                request.user,
+                date=date_str,
+                meal_time=meal_time,
+                scheduled_time=scheduled_time,
+            )
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        meal_plan = MealPlan.objects.filter(id=result.meal_plan_id).first()
+        return Response(
+            {
+                'meal_plan_id': result.meal_plan_id,
+                'date': result.date,
+                'meal_time': result.meal_time,
+                'slot_key': meal_plan.slot_key if meal_plan else None,
+                'scheduled_time': (
+                    meal_plan.scheduled_time.strftime('%H:%M') if meal_plan and meal_plan.scheduled_time else None
+                ),
+                'created': result.created,
+                'message': result.message,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['patch'], url_path='update-composer-slot')
+    def update_composer_slot_action(self, request, pk=None):
+        """Met à jour date/créneau d'un slot draft composeur."""
+        meal_plan = self.get_object()
+        if meal_plan.user_id != request.user.id:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+        date_str = request.data.get('date')
+        meal_time = request.data.get('meal_time')
+        scheduled_time = request.data.get('scheduled_time')
+        guest_count = request.data.get('guest_count')
+        slot_label = request.data.get('slot_label')
+        if not date_str or not meal_time:
+            return Response(
+                {'error': 'date and meal_time are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            guest_count_val = None
+            if guest_count is not None and guest_count != '':
+                guest_count_val = int(guest_count)
+            result = update_composer_slot(
+                request.user,
+                meal_plan_id=meal_plan.id,
+                date=date_str,
+                meal_time=meal_time,
+                scheduled_time=scheduled_time,
+                guest_count=guest_count_val,
+                update_scheduled_time='scheduled_time' in request.data,
+                slot_label=slot_label,
+            )
+        except (ValueError, TypeError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        meal_plan.refresh_from_db()
+        return Response(
+            {
+                'meal_plan_id': result.meal_plan_id,
+                'date': result.date,
+                'meal_time': result.meal_time,
+                'slot_key': meal_plan.slot_key,
+                'scheduled_time': (
+                    meal_plan.scheduled_time.strftime('%H:%M') if meal_plan.scheduled_time else None
+                ),
+                'custom_label': meal_plan.custom_label or '',
+                'guest_count': meal_plan.guest_count,
+                'message': result.message,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=['post'], url_path='publish-post')
     def publish_meal_plan_post(self, request, pk=None):
         """
@@ -2602,14 +2689,22 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
         - photo_ids: liste ordonnée (max 20)
         - comment: string (optionnel)
-
-        Note compat:
-        - on rattache aussi `recipe_batch` au premier batch du meal plan
-          pour préserver l'affichage existant côté app (recipe meta).
+        - cooking_time_minutes: int (optionnel)
+        - recipe_id: int (optionnel, lie un batch au repas)
+        - meal_type: cantine | takeaway | unknown (repas sans recette)
+        - custom_label: string (requis si pas de recipe_id)
         """
         meal_plan = self.get_object()
+        if meal_plan.user_id != request.user.id:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+
         photo_ids = request.data.get('photo_ids', [])
         comment = request.data.get('comment', '')
+        cooking_time_minutes = request.data.get('cooking_time_minutes')
+        recipe_id = request.data.get('recipe_id')
+        recipe_ids = request.data.get('recipe_ids')
+        meal_type = request.data.get('meal_type')
+        custom_label = (request.data.get('custom_label') or '').strip()
 
         if photo_ids is None:
             photo_ids = []
@@ -2619,10 +2714,66 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if Post.objects.filter(meal_plan=meal_plan, is_published=True).exists():
             return Response({'error': 'A post already exists for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
 
+        ids_to_link = []
+        if recipe_ids is not None:
+            if not isinstance(recipe_ids, list):
+                return Response({'error': 'recipe_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                ids_to_link = [int(rid) for rid in recipe_ids if rid is not None]
+            except (TypeError, ValueError):
+                return Response({'error': 'recipe_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
+            if not ids_to_link:
+                return Response(
+                    {'error': 'recipe_ids must contain at least one valid recipe id'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif recipe_id is not None:
+            try:
+                ids_to_link = [int(recipe_id)]
+            except (TypeError, ValueError):
+                return Response({'error': 'recipe_id must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if ids_to_link:
+            for rid in ids_to_link:
+                if not Recipe.objects.filter(id=rid).exists():
+                    return Response({'error': f'Recipe {rid} not found'}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                add_recipes_to_meal_plan(request.user, meal_plan.id, ids_to_link)
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        meal_plan.refresh_from_db()
         mprbs = list(meal_plan.meal_plan_recipe_batches.select_related('recipe_batch').all())
         batch_ids = [mprb.recipe_batch_id for mprb in mprbs if mprb.recipe_batch_id]
-        if not batch_ids:
-            return Response({'error': 'This meal plan has no recipe batches'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if batch_ids:
+            meal_plan.meal_type = 'recipe'
+            if custom_label and not meal_plan.custom_label:
+                meal_plan.custom_label = custom_label
+        else:
+            allowed_types = {'cantine', 'takeaway', 'unknown'}
+            resolved_meal_type = meal_type if meal_type in allowed_types else 'unknown'
+            if resolved_meal_type not in allowed_types:
+                return Response(
+                    {'error': f'meal_type must be one of: {", ".join(sorted(allowed_types))}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not custom_label:
+                return Response(
+                    {'error': 'custom_label is required when no recipe_id is provided'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            meal_plan.meal_type = resolved_meal_type
+            meal_plan.custom_label = custom_label
+
+        meal_plan.confirmed = True
+        meal_plan.save(update_fields=['meal_type', 'custom_label', 'confirmed', 'updated_at'])
+
+        if ids_to_link and not batch_ids:
+            return Response(
+                {'error': 'Failed to link recipe to this meal plan'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         photos = []
         if photo_ids:
@@ -2634,36 +2785,51 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             if len(photo_ids) > 20:
                 return Response({'error': 'You can select up to 20 photos'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Photos autorisées:
-            # - appartiennent à un batch du meal plan
-            #   OU sont restées au niveau meal plan (temp / non associées)
-            # - pas draft
+            relink_composer_photos_to_meal_plan(request.user, meal_plan, photo_ids)
+
+            photo_filter = Q(meal_plan_id=meal_plan.id)
+            if batch_ids:
+                photo_filter |= Q(recipe_batch_id__in=batch_ids)
+
             photos_qs = PostPhoto.objects.filter(
                 id__in=photo_ids,
                 is_draft=False,
-            ).filter(
-                Q(recipe_batch_id__in=batch_ids) | Q(meal_plan_id=meal_plan.id)
-            )
+            ).filter(photo_filter)
             photos_dict = {p.id: p for p in photos_qs}
             if len(photos_dict) != len(photo_ids):
                 return Response({'error': 'Some photos are invalid or do not belong to this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
 
             photos = [photos_dict[pid] for pid in photo_ids]
+        else:
+            return Response({'error': 'At least one photo is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         cover_batch_id = batch_ids[0] if batch_ids else None
+
+        if cover_batch_id:
+            batch = RecipeBatch.objects.filter(id=cover_batch_id).first()
+            if batch and not batch.is_cooked:
+                batch.is_cooked = True
+                batch.save(update_fields=['is_cooked', 'updated_at'])
+
+        cooking_time_value = None
+        if cooking_time_minutes is not None and cooking_time_minutes != '':
+            try:
+                cooking_time_value = max(0, int(cooking_time_minutes))
+            except (TypeError, ValueError):
+                return Response({'error': 'cooking_time_minutes must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
 
         post = Post.objects.create(
             user=request.user,
             meal_plan=meal_plan,
             recipe_batch_id=cover_batch_id,
             comment=comment,
+            cooking_time_minutes=cooking_time_value,
             is_published=True,
         )
 
         for order_index, photo in enumerate(photos, start=1):
             photo.post = post
             photo.order = order_index
-            # Si une photo est encore au niveau meal plan, on la garde telle quelle (meal_plan_id)
             photo.save(update_fields=['post', 'order'])
 
         return Response(
@@ -3693,7 +3859,6 @@ class PostViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Pour retrieve (GET /posts/{id}/), autoriser tout post publié (ex: depuis une notification)
         if self.action == 'retrieve':
-            from .models import MealPlanRecipeBatch
             return Post.objects.filter(is_published=True).select_related(
                 'user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan'
             ).prefetch_related(

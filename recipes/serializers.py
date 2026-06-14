@@ -1993,7 +1993,7 @@ class PostSerializer(serializers.ModelSerializer):
         model = Post
         fields = [
             'id', 'user', 'recipe_batch', 'meal_plan',
-            'comment', 'is_published', 'recipe_meta', 'recipe', 'recipes',
+            'comment', 'cooking_time_minutes', 'is_published', 'recipe_meta', 'recipe', 'recipes',
             'photos', 'photos_count', 'has_all_photos',
             'cookies_count', 'has_cookie_from_user', 'comments_count',
             'created_at', 'updated_at'
@@ -2008,6 +2008,8 @@ class PostSerializer(serializers.ModelSerializer):
             'id': mp.id,
             'date': mp.date.isoformat() if mp.date else None,
             'meal_time': mp.meal_time,
+            'meal_type': mp.meal_type,
+            'meal_type_display': mp.get_meal_type_display(),
             **meal_plan_slot_api_fields(mp),
         }
     
@@ -2071,7 +2073,10 @@ class PostSerializer(serializers.ModelSerializer):
         recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
         if not recipe:
             return None
-        total_time = (recipe.prep_time or 0) + (recipe.cook_time or 0)
+        if obj.cooking_time_minutes is not None:
+            total_time = obj.cooking_time_minutes
+        else:
+            total_time = (recipe.prep_time or 0) + (recipe.cook_time or 0)
         servings = recipe.servings or 1
         shared_with = 1
         # Optimisation : éviter la requête supplémentaire si possible
@@ -2196,7 +2201,7 @@ class PostListSerializer(serializers.ModelSerializer):
         model = Post
         fields = [
             'id', 'user',
-            'comment', 'is_published',
+            'comment', 'cooking_time_minutes', 'is_published',
             'photos',
             'cookies_count', 'has_cookie_from_user', 'comments_count',
             'recipe', 'recipe_batch', 'meal_plan',
@@ -2213,6 +2218,8 @@ class PostListSerializer(serializers.ModelSerializer):
             'id': mp.id,
             'date': mp.date.isoformat() if mp.date else None,
             'meal_time': mp.meal_time,
+            'meal_type': mp.meal_type,
+            'meal_type_display': mp.get_meal_type_display(),
             **meal_plan_slot_api_fields(mp),
         }
 
@@ -2260,7 +2267,11 @@ class PostListSerializer(serializers.ModelSerializer):
             return None
         prep = recipe.prep_time or 0
         cook = recipe.cook_time or 0
-        total_time = prep + cook if (prep or cook) else None
+        recipe_total = prep + cook if (prep or cook) else None
+        if obj.cooking_time_minutes is not None:
+            total_time = obj.cooking_time_minutes
+        else:
+            total_time = recipe_total
         return {
             'id': recipe.id,
             'title': recipe.title,

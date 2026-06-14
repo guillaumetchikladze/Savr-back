@@ -5,7 +5,7 @@ from datetime import date as date_type, datetime
 
 from django.contrib.auth.models import AbstractBaseUser
 from django.db import transaction
-from django.db.models import Case, IntegerField, Max, Prefetch, When
+from django.db.models import Case, IntegerField, Max, Prefetch, Q, When
 
 from chat.services.tool_schemas import (
     AddRecipeResult,
@@ -15,7 +15,15 @@ from chat.services.tool_schemas import (
     MealPlanSummary,
     MutationProposal,
 )
-from recipes.models import MealInvitation, MealPlan, MealPlanRecipeBatch, Recipe, RecipeBatch
+from recipes.models import (
+    MealInvitation,
+    MealPlan,
+    MealPlanRecipeBatch,
+    Post,
+    PostPhoto,
+    Recipe,
+    RecipeBatch,
+)
 from recipes.utils import get_accessible_meal_plan_filter
 
 
@@ -316,4 +324,175 @@ def execute_meal_deletion(user: AbstractBaseUser, payload: dict) -> dict:
         user,
         meal_plan_id=payload['meal_plan_id'],
         recipe_batch_id=payload['recipe_batch_id'],
+    )
+
+
+def infer_meal_time_from_hour(hour: int | None = None) -> str:
+    """Infère breakfast/lunch/dinner selon l'heure locale."""
+    if hour is None:
+        hour = datetime.now().hour
+    if hour < 11:
+        return 'breakfast'
+    if hour < 15:
+        return 'lunch'
+    return 'dinner'
+
+
+def _resolve_composer_slot_key(user, target_date, meal_time, exclude_meal_plan_id=None):
+    """
+    Détermine meal_time + slot_key pour un slot composeur.
+    Si le créneau standard est pris, bascule sur other + UUID.
+    """
+    meal_time = (meal_time or '').strip().lower()
+    if meal_time not in _STANDARD_MEAL_TIMES and meal_time != 'other':
+        meal_time = 'lunch'
+
+    custom_label = ''
+    if meal_time in _STANDARD_MEAL_TIMES:
+        slot_key = meal_time
+        conflict_qs = MealPlan.objects.filter(
+            user=user,
+            date=target_date,
+            slot_key=slot_key,
+        )
+        if exclude_meal_plan_id:
+            conflict_qs = conflict_qs.exclude(id=exclude_meal_plan_id)
+        if conflict_qs.exists():
+            meal_time = 'other'
+            slot_key = str(uuid.uuid4())
+            custom_label = 'Repas'
+    else:
+        slot_key = str(uuid.uuid4())
+        custom_label = 'Repas'
+
+    return meal_time, slot_key, custom_label
+
+
+def create_composer_slot(
+    user: AbstractBaseUser,
+    date: str | None = None,
+    meal_time: str | None = None,
+    scheduled_time: str | None = None,
+) -> CreateMealPlanSlotResult:
+    """Crée un slot draft pour le composeur de post (toujours un nouveau slot si conflit)."""
+    if date:
+        try:
+            target_date = date_type.fromisoformat(date)
+        except ValueError as exc:
+            raise ValueError('date invalide (attendu YYYY-MM-DD).') from exc
+    else:
+        target_date = date_type.today()
+
+    resolved_meal_time = meal_time or infer_meal_time_from_hour()
+    resolved_meal_time, slot_key, custom_label = _resolve_composer_slot_key(
+        user, target_date, resolved_meal_time
+    )
+
+    scheduled_save = None
+    if scheduled_time:
+        scheduled_save = _parse_scheduled_time(scheduled_time)
+
+    meal_plan = MealPlan.objects.create(
+        user=user,
+        date=target_date,
+        meal_time=resolved_meal_time,
+        slot_key=slot_key,
+        custom_label=custom_label,
+        scheduled_time=scheduled_save,
+        meal_type='unknown',
+        confirmed=False,
+    )
+    return CreateMealPlanSlotResult(
+        meal_plan_id=meal_plan.id,
+        date=meal_plan.date.isoformat(),
+        meal_time=meal_plan.meal_time,
+        created=True,
+        message='Slot composeur créé.',
+    )
+
+
+def relink_composer_photos_to_meal_plan(
+    user: AbstractBaseUser,
+    meal_plan: MealPlan,
+    photo_ids: list[int],
+) -> int:
+    """
+    Rattache les photos du composeur (brouillon) au meal plan courant.
+
+    Couvre le cas où le front a changé de slot draft ou uploadé sur un ancien
+    meal_plan_id — les photos restent en « ambiance générale » (recipe_batch null).
+    """
+    if not photo_ids:
+        return 0
+    return PostPhoto.objects.filter(
+        id__in=photo_ids,
+        post__isnull=True,
+        is_draft=False,
+        uploaded_by=user,
+    ).filter(
+        Q(meal_plan__isnull=True)
+        | Q(meal_plan__user=user, meal_plan__confirmed=False)
+    ).exclude(
+        meal_plan_id=meal_plan.id
+    ).update(meal_plan_id=meal_plan.id)
+
+
+def update_composer_slot(
+    user: AbstractBaseUser,
+    meal_plan_id: int,
+    date: str,
+    meal_time: str,
+    scheduled_time: str | None = None,
+    guest_count: int | None = None,
+    update_scheduled_time: bool = False,
+    slot_label: str | None = None,
+) -> CreateMealPlanSlotResult:
+    """Met à jour date/créneau d'un slot draft composeur (photos conservées sur le même meal_plan)."""
+    meal_plan = MealPlan.objects.filter(user=user, id=meal_plan_id).first()
+    if not meal_plan:
+        raise ValueError('Meal plan introuvable.')
+    if meal_plan.confirmed:
+        raise ValueError('Ce repas est déjà confirmé.')
+    if Post.objects.filter(meal_plan=meal_plan, is_published=True).exists():
+        raise ValueError('Un post est déjà publié pour ce repas.')
+
+    try:
+        target_date = date_type.fromisoformat(date)
+    except ValueError as exc:
+        raise ValueError('date invalide (attendu YYYY-MM-DD).') from exc
+
+    resolved_meal_time, slot_key, custom_label = _resolve_composer_slot_key(
+        user, target_date, meal_time, exclude_meal_plan_id=meal_plan.id
+    )
+
+    meal_plan.date = target_date
+    meal_plan.meal_time = resolved_meal_time
+    meal_plan.slot_key = slot_key
+    slot_label_clean = (slot_label or '').strip()
+    if resolved_meal_time == 'other':
+        if slot_label_clean:
+            meal_plan.custom_label = slot_label_clean[:80]
+        elif not (meal_plan.custom_label or '').strip():
+            meal_plan.custom_label = custom_label
+    elif slot_label_clean:
+        meal_plan.custom_label = ''
+
+    update_fields = ['date', 'meal_time', 'slot_key', 'custom_label', 'updated_at']
+    if update_scheduled_time:
+        meal_plan.scheduled_time = (
+            _parse_scheduled_time(scheduled_time) if scheduled_time else None
+        )
+        update_fields.append('scheduled_time')
+    if guest_count is not None:
+        meal_plan.guest_count = max(0, int(guest_count))
+        update_fields.append('guest_count')
+
+    meal_plan.save(update_fields=update_fields)
+
+    return CreateMealPlanSlotResult(
+        meal_plan_id=meal_plan.id,
+        date=meal_plan.date.isoformat(),
+        meal_time=meal_plan.meal_time,
+        created=False,
+        message='Slot composeur mis à jour.',
     )

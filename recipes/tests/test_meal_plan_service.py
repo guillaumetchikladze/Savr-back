@@ -5,12 +5,13 @@ from datetime import date
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from recipes.models import MealPlan, Recipe, RecipeBatch, MealPlanRecipeBatch
+from recipes.models import MealPlan, PostPhoto, Recipe, RecipeBatch, MealPlanRecipeBatch
 from recipes.services.meal_plan_service import (
     add_recipes_to_meal_plan,
     create_meal_plan_slot,
     get_meal_plans_for_user,
     propose_meal_deletion_data,
+    relink_composer_photos_to_meal_plan,
     remove_recipe_from_meal_plan,
 )
 
@@ -78,3 +79,25 @@ class MealPlanServiceTests(TestCase):
         proposal = propose_meal_deletion_data(self.user, self.meal_plan.id, batch.id)
         self.assertEqual(proposal.card_type, 'meal_deletion')
         self.assertEqual(proposal.details['recipe_batch_id'], batch.id)
+
+    def test_relink_composer_photos_to_meal_plan(self):
+        old_plan = MealPlan.objects.create(
+            user=self.user,
+            date=date(2026, 6, 9),
+            meal_time='lunch',
+            confirmed=False,
+        )
+        photo = PostPhoto.objects.create(
+            meal_plan=old_plan,
+            photo_type='spontaneous',
+            image_path='meal_plans/old/test.jpg',
+            is_draft=False,
+            uploaded_by=self.user,
+        )
+        updated = relink_composer_photos_to_meal_plan(
+            self.user, self.meal_plan, [photo.id]
+        )
+        self.assertEqual(updated, 1)
+        photo.refresh_from_db()
+        self.assertEqual(photo.meal_plan_id, self.meal_plan.id)
+        self.assertIsNone(photo.recipe_batch_id)
