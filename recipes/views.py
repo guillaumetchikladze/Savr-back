@@ -3930,7 +3930,6 @@ class PostViewSet(viewsets.ModelViewSet):
         
         # Optimisation : pour les listes, limiter les champs chargés
         if self.action == 'list':
-            from django.db.models import Exists, OuterRef, Prefetch
             queryset = queryset.select_related(
                 'user',
                 'recipe_batch',
