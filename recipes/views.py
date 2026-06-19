@@ -33,13 +33,14 @@ from .services.meal_plan_service import (
     complete_recipe_batch_workflow,
     complete_meal_plan_batches_for_publish,
 )
+from .services.repost_service import create_post_repost, delete_post_repost, user_can_repost_post
 from .models import (
     Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
     MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment, PostReport,
     ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListLoyaltyCard, ShoppingListItem, ShoppingListItemQuantity,
     ShoppingListInvitation,
     Collection, CollectionRecipe, CollectionMember, CollectionFollower,
-    RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch, PostCommentLike,
+    RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch, PostCommentLike, PostRepost,
 )
 from accounts.models import Follow, Notification, LoyaltyCard, PushDevice
 from django.contrib.auth import get_user_model
@@ -61,7 +62,8 @@ from .serializers import (
     RecipeFormalizeSerializer, RecipeGenerateFromIdeaSerializer,
     RecipeImportRequestSerializer, RecipeImportRequestLightSerializer,
     RecipeBatchLightSerializer,
-    UserLightSerializer
+    UserLightSerializer,
+    PostMiamUserSerializer,
 )
 from accounts.serializers import LoyaltyCardSerializer
 from accounts.services.expo_push import send_expo_push_notifications
@@ -1311,6 +1313,164 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
         serializer = RecipeSerializer(recipe, context={'request': request})
         return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='cover-photo-candidates')
+    def cover_photo_candidates(self, request, pk=None):
+        """Photos de cuisson et d'ambiance utilisables comme couverture."""
+        recipe = self.get_object()
+        if recipe.created_by_id != request.user.id:
+            return Response({'error': "Seul l'auteur peut voir ces photos."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            limit = int(request.query_params.get('limit', 20))
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(limit, 50))
+        try:
+            offset = int(request.query_params.get('offset', 0))
+        except (TypeError, ValueError):
+            offset = 0
+        offset = max(0, offset)
+
+        batch_ids = list(
+            RecipeBatch.objects.filter(recipe=recipe, created_by=request.user).values_list('id', flat=True)
+        )
+
+        recipe_photo_types = ['during_cooking', 'after_cooking', 'imported_after_cooking', 'at_meal_time']
+        recipe_photos_qs = (
+            PostPhoto.objects.filter(recipe_batch_id__in=batch_ids, photo_type__in=recipe_photo_types)
+            .exclude(image_path='')
+            .order_by('-created_at')
+        )
+        recipe_photos_total = recipe_photos_qs.count()
+        recipe_photos = recipe_photos_qs[offset:offset + limit]
+
+        meal_plan_ids = list(
+            MealPlanRecipeBatch.objects.filter(recipe_batch_id__in=batch_ids)
+            .values_list('meal_plan_id', flat=True)
+            .distinct()
+        )
+        ambiance_photos_qs = (
+            PostPhoto.objects.filter(
+                Q(recipe_batch_id__in=batch_ids, photo_type='at_meal_time')
+                | Q(meal_plan_id__in=meal_plan_ids, photo_type='at_meal_time')
+            )
+            .exclude(image_path='')
+            .order_by('-created_at')
+        )
+        ambiance_photos = ambiance_photos_qs[offset:offset + limit]
+
+        def serialize_photo(photo, extra=None):
+            data = {
+                'id': photo.id,
+                'image_url': photo.image_url,
+                'photo_type': photo.photo_type,
+                'created_at': photo.created_at.isoformat() if photo.created_at else None,
+            }
+            if extra:
+                data.update(extra)
+            return data
+
+        recipe_items = [
+            serialize_photo(p, {'batch_id': p.recipe_batch_id, 'cooked_at': p.created_at.isoformat() if p.created_at else None})
+            for p in recipe_photos
+        ]
+        ambiance_items = []
+        for p in ambiance_photos:
+            mp = p.meal_plan
+            ambiance_items.append(serialize_photo(p, {
+                'meal_plan_id': p.meal_plan_id,
+                'date': str(mp.date) if mp else None,
+                'meal_time': getattr(mp, 'meal_time', None) if mp else None,
+            }))
+
+        return Response({
+            'recipe_photos': recipe_items,
+            'meal_ambiance_photos': ambiance_items,
+            'recipe_photos_total': recipe_photos_total,
+            'meal_ambiance_photos_total': ambiance_photos_qs.count(),
+        })
+
+    @action(detail=True, methods=['post'], url_path='set-cover-from-photo')
+    def set_cover_from_photo(self, request, pk=None):
+        """Copie une photo existante (batch / repas) vers la couverture recette."""
+        recipe = self.get_object()
+        if recipe.created_by_id != request.user.id:
+            return Response({'error': "Seul l'auteur peut modifier la recette."}, status=status.HTTP_403_FORBIDDEN)
+
+        photo_id = request.data.get('photo_id')
+        if not photo_id:
+            return Response({'error': 'photo_id requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            photo_id = int(photo_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'photo_id invalide'}, status=status.HTTP_400_BAD_REQUEST)
+
+        batch_ids = list(
+            RecipeBatch.objects.filter(recipe=recipe, created_by=request.user).values_list('id', flat=True)
+        )
+        meal_plan_ids = list(
+            MealPlanRecipeBatch.objects.filter(recipe_batch_id__in=batch_ids)
+            .values_list('meal_plan_id', flat=True)
+            .distinct()
+        )
+
+        try:
+            photo = PostPhoto.objects.get(
+                Q(id=photo_id)
+                & (
+                    Q(recipe_batch_id__in=batch_ids)
+                    | Q(meal_plan_id__in=meal_plan_ids, photo_type='at_meal_time')
+                )
+            )
+        except PostPhoto.DoesNotExist:
+            return Response({'error': 'Photo introuvable ou non autorisée'}, status=status.HTTP_404_NOT_FOUND)
+
+        from .services.image_uploader import copy_s3_image_to_recipe_cover
+        new_path = copy_s3_image_to_recipe_cover(photo.image_path, request.user.id)
+        if not new_path:
+            return Response({'error': "Impossible de copier l'image"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        recipe.image_path = new_path
+        recipe.save(update_fields=['image_path', 'updated_at'])
+
+        return Response({
+            'image_path': new_path,
+            'image_url': recipe.image_url,
+        })
+
+    @action(detail=True, methods=['post'], url_path='revise')
+    def revise(self, request, pk=None):
+        """Révision IA d'une recette existante (sans persistance)."""
+        from asgiref.sync import async_to_sync
+        from .services.ai_service import revise_recipe, formalized_to_response_dict
+
+        recipe = self.get_object()
+        if recipe.created_by_id != request.user.id:
+            return Response({'error': "Seul l'auteur peut modifier la recette."}, status=status.HTTP_403_FORBIDDEN)
+
+        instruction = (request.data.get('instruction') or '').strip()
+        if not instruction:
+            return Response({'error': 'instruction requise'}, status=status.HTTP_400_BAD_REQUEST)
+
+        scope = request.data.get('scope') or 'full'
+        if scope not in ('full', 'ingredients', 'steps', 'meta'):
+            scope = 'full'
+
+        current_recipe = request.data.get('current_recipe')
+        if not isinstance(current_recipe, dict):
+            return Response({'error': 'current_recipe requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            revised = async_to_sync(revise_recipe)(current_recipe, instruction, scope)
+            return Response(formalized_to_response_dict(revised))
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("revise recipe failed")
+            return Response({'error': 'Révision IA impossible.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
     def my_recipes(self, request):
@@ -3853,6 +4013,39 @@ class TimerViewSet(viewsets.ModelViewSet):
 class PostViewSet(viewsets.ModelViewSet):
     """ViewSet pour les posts"""
     permission_classes = [IsAuthenticated]
+
+    def _annotate_repost_fields(self, queryset):
+        user = self.request.user
+        if user.is_authenticated:
+            repost_exists = PostRepost.objects.filter(
+                user_id=user.id,
+                original_post_id=OuterRef('pk'),
+            )
+            queryset = queryset.annotate(
+                _has_reposted_by_me=Exists(repost_exists),
+                _reposts_count=Count('reposts', distinct=True),
+            )
+        else:
+            queryset = queryset.annotate(_reposts_count=Count('reposts', distinct=True))
+        return queryset
+
+    def _prefetch_reposts(self, queryset):
+        return queryset.prefetch_related(
+            Prefetch(
+                'reposts',
+                queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+            )
+        )
+
+    def _get_network_friend_ids(self, user):
+        friend_ids = set()
+        friend_ids.update(
+            Follow.objects.filter(follower=user).values_list('following_id', flat=True)
+        )
+        friend_ids.update(
+            Follow.objects.filter(following=user).values_list('follower_id', flat=True)
+        )
+        return friend_ids
     
     def _user_can_manage_photo(self, photo, user):
         if photo.uploaded_by_id and photo.uploaded_by_id != user.id:
@@ -3872,7 +4065,7 @@ class PostViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Pour retrieve (GET /posts/{id}/), autoriser tout post publié (ex: depuis une notification)
         if self.action == 'retrieve':
-            return Post.objects.filter(is_published=True).select_related(
+            queryset = Post.objects.filter(is_published=True).select_related(
                 'user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan'
             ).prefetch_related(
                 Prefetch(
@@ -3885,7 +4078,12 @@ class PostViewSet(viewsets.ModelViewSet):
                 ),
                 'cookies',
                 'comments',
+                Prefetch(
+                    'reposts',
+                    queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+                ),
             ).order_by('-created_at')
+            return self._annotate_repost_fields(queryset)
 
         # Si on demande les posts publiés, montrer tous les posts publiés de tous les utilisateurs
         # Sinon, montrer uniquement les posts de l'utilisateur connecté
@@ -3898,16 +4096,13 @@ class PostViewSet(viewsets.ModelViewSet):
             # Filtrer uniquement les posts des amis
             if friends_only and friends_only.lower() == 'true':
                 user = self.request.user
-                friend_ids = set()
-                # Utilisateurs que je suis
-                friend_ids.update(
-                    Follow.objects.filter(follower=user).values_list('following_id', flat=True)
-                )
-                # Utilisateurs qui me suivent
-                friend_ids.update(
-                    Follow.objects.filter(following=user).values_list('follower_id', flat=True)
-                )
-                queryset = queryset.filter(user_id__in=list(friend_ids))
+                friend_ids = list(self._get_network_friend_ids(user))
+                reposted_by_friends = PostRepost.objects.filter(
+                    user_id__in=friend_ids
+                ).values('original_post_id')
+                queryset = queryset.filter(
+                    Q(user_id__in=friend_ids) | Q(id__in=reposted_by_friends)
+                ).distinct()
         else:
             queryset = Post.objects.filter(user=self.request.user)
         
@@ -3924,7 +4119,13 @@ class PostViewSet(viewsets.ModelViewSet):
         user_id = self.request.query_params.get('user')
         if user_id:
             try:
-                queryset = queryset.filter(user_id=int(user_id))
+                profile_user_id = int(user_id)
+                reposted_post_ids = PostRepost.objects.filter(
+                    user_id=profile_user_id
+                ).values('original_post_id')
+                queryset = queryset.filter(
+                    Q(user_id=profile_user_id) | Q(id__in=reposted_post_ids)
+                ).distinct()
             except (ValueError, TypeError):
                 pass
         
@@ -3938,6 +4139,10 @@ class PostViewSet(viewsets.ModelViewSet):
             ).prefetch_related(
                 'photos', 'cookies', 'comments',
                 Prefetch(
+                    'reposts',
+                    queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+                ),
+                Prefetch(
                     'recipe_batch__meal_plan_recipe_batches',
                     queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only('meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time')
                 )
@@ -3948,6 +4153,7 @@ class PostViewSet(viewsets.ModelViewSet):
                     following_id=OuterRef('user_id'),
                 )
                 queryset = queryset.annotate(_viewer_follows_post_author=Exists(follow_exists))
+            queryset = self._annotate_repost_fields(queryset)
             queryset = queryset.order_by('-created_at')
         else:
             queryset = queryset.select_related(
@@ -3955,7 +4161,14 @@ class PostViewSet(viewsets.ModelViewSet):
                 'recipe_batch',
                 'recipe_batch__recipe',
                 'meal_plan',
-            ).prefetch_related('photos', 'cookies', 'comments').order_by('-created_at')
+            ).prefetch_related(
+                'photos', 'cookies', 'comments',
+                Prefetch(
+                    'reposts',
+                    queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+                ),
+            ).order_by('-created_at')
+            return self._annotate_repost_fields(queryset)
         
         return queryset
     
@@ -4025,6 +4238,31 @@ class PostViewSet(viewsets.ModelViewSet):
             defaults={'reason': reason},
         )
         return Response({'ok': True}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='repost')
+    def repost(self, request, pk=None):
+        """Reposter un post meal plan (invité pending ou accepted)."""
+        post = get_object_or_404(Post, pk=pk, is_published=True)
+        if not user_can_repost_post(request.user, post):
+            return Response(
+                {'detail': 'Vous ne pouvez pas reposter ce post.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        create_post_repost(request.user, post)
+        serializer = PostSerializer(post, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='repost')
+    def unrepost(self, request, pk=None):
+        """Retirer son repost d'un post meal plan."""
+        post = get_object_or_404(Post, pk=pk, is_published=True)
+        if not delete_post_repost(request.user, post):
+            return Response(
+                {'detail': 'Aucun repost à retirer.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = PostSerializer(post, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'])
     def get_upload_presigned_url(self, request):
@@ -4311,6 +4549,20 @@ class PostViewSet(viewsets.ModelViewSet):
         
         # Nettoyer le chemin (enlever le préfixe s3:/ si présent)
         new_path = file_name.replace('s3:/', '').lstrip('/')
+
+        replace_on_post = request.data.get('replace_on_post', False)
+        if replace_on_post and original_photo.post_id:
+            old_path = (original_photo.image_path or '').replace('s3:/', '').lstrip('/')
+            original_photo.image_path = new_path
+            original_photo.save(update_fields=['image_path'])
+            if old_path and old_path != new_path:
+                try:
+                    s3_client = build_s3_client()
+                    s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=old_path)
+                except Exception as e:
+                    print(f"Error deleting old photo from S3: {str(e)}")
+            serializer = PostPhotoSerializer(original_photo, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
         
         # Créer une nouvelle photo avec l'image modifiée
         # On copie toutes les propriétés de la photo originale SAUF le post (mis à null)
@@ -4604,6 +4856,84 @@ class PostViewSet(viewsets.ModelViewSet):
             
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['patch'], url_path='update-content')
+    def update_content(self, request, pk=None):
+        """Mettre à jour la légende et/ou la sélection de photos d'un post publié."""
+        post = self.get_object()
+
+        if post.user_id != request.user.id:
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        if not post.is_published:
+            return Response({'error': 'Post is not published'}, status=status.HTTP_400_BAD_REQUEST)
+
+        update_fields = []
+        if 'comment' in request.data:
+            post.comment = str(request.data.get('comment') or '').strip()
+            update_fields.extend(['comment', 'updated_at'])
+
+        photo_ids = request.data.get('photo_ids')
+        if photo_ids is not None:
+            if not isinstance(photo_ids, list):
+                return Response({'error': 'photo_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                photo_ids = [int(pid) for pid in photo_ids]
+            except (TypeError, ValueError):
+                return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
+            if len(photo_ids) == 0:
+                return Response({'error': 'At least one photo is required'}, status=status.HTTP_400_BAD_REQUEST)
+            if len(photo_ids) > 10:
+                return Response({'error': 'You can select up to 10 photos per post'}, status=status.HTTP_400_BAD_REQUEST)
+
+            photos_dict = {
+                p.id: p for p in PostPhoto.objects.filter(id__in=photo_ids)
+            }
+            if len(photos_dict) != len(photo_ids):
+                return Response({'error': 'Some photos are invalid'}, status=status.HTTP_400_BAD_REQUEST)
+
+            for pid in photo_ids:
+                photo = photos_dict[pid]
+                if photo.post_id and photo.post_id != post.id:
+                    return Response(
+                        {'error': 'Some photos belong to another post'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if not photo.post_id and not self._user_can_manage_photo(photo, request.user):
+                    return Response(
+                        {'error': 'Permission denied for one or more photos'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+            new_ids = set(photo_ids)
+            for photo in PostPhoto.objects.filter(post=post):
+                if photo.id not in new_ids:
+                    photo.post = None
+                    photo.order = 0
+                    photo.save(update_fields=['post', 'order'])
+
+            for order_index, pid in enumerate(photo_ids, start=1):
+                photo = photos_dict[pid]
+                photo.post = post
+                photo.order = order_index
+                photo.save(update_fields=['post', 'order'])
+
+        if update_fields:
+            post.save(update_fields=update_fields)
+
+        refreshed = (
+            Post.objects.filter(pk=post.id)
+            .select_related('user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan')
+            .prefetch_related(
+                Prefetch(
+                    'photos',
+                    queryset=PostPhoto.objects.select_related('recipe_batch__recipe').order_by('order'),
+                ),
+            )
+            .first()
+        )
+        serializer = PostSerializer(refreshed, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'])
     def send_cookie(self, request, pk=None):
@@ -4712,13 +5042,37 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='cookie-users')
     def cookie_users(self, request, pk=None):
-        """Liste des utilisateurs qui ont donné un Miam (cookie) à ce post."""
+        """Liste paginée des utilisateurs qui ont donné un Miam (cookie) à ce post."""
+        from .pagination import CustomPageNumberPagination
+
         post_qs = Post.objects.filter(is_published=True)
         post = get_object_or_404(post_qs, pk=pk)
-        cookies = PostCookie.objects.filter(post=post).select_related('user').order_by('-created_at')
-        users = [c.user for c in cookies]
-        serializer = UserLightSerializer(users, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+
+        follow_exists = Follow.objects.filter(
+            follower=request.user,
+            following_id=OuterRef('user_id'),
+        )
+        followed_by_exists = Follow.objects.filter(
+            follower_id=OuterRef('user_id'),
+            following=request.user,
+        )
+
+        cookies_qs = (
+            PostCookie.objects
+            .filter(post=post)
+            .select_related('user')
+            .annotate(
+                is_following_rel=Exists(follow_exists),
+                is_followed_by_rel=Exists(followed_by_exists),
+            )
+            .order_by('-created_at')
+        )
+
+        paginator = CustomPageNumberPagination()
+        paginator.page_size = 20
+        page = paginator.paginate_queryset(cookies_qs, request)
+        serializer = PostMiamUserSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
 
     @action(detail=True, methods=['get', 'post'], url_path='comments')
     def comments(self, request, pk=None):

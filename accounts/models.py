@@ -95,6 +95,7 @@ class Notification(models.Model):
         ('post_miam', 'Miam sur votre post'),
         ('post_comment', 'Commentaire sur votre post'),
         ('post_comment_mention', 'Vous êtes mentionné dans un commentaire'),
+        ('post_repost', 'Repost de votre post'),
     ]
     
     user = models.ForeignKey(

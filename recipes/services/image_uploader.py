@@ -124,3 +124,26 @@ def download_and_upload_image(image_url: str, user_id: int, recipe_id: Optional[
         return None
 
 
+def copy_s3_image_to_recipe_cover(source_key: str, user_id: int) -> Optional[str]:
+    """Copie une image S3 existante vers le namespace couverture recette."""
+    if not source_key:
+        return None
+    try:
+        from savr_back.settings import build_s3_client
+        s3_client = build_s3_client()
+        bucket_name = settings.AWS_BUCKET
+        if not bucket_name:
+            return None
+        unique_id = str(uuid.uuid4()).replace('-', '')
+        dest_key = f"recipes/{user_id}/{unique_id}.jpg"
+        ext = source_key.rsplit('.', 1)[-1].lower() if '.' in source_key else 'jpg'
+        if ext in ('png', 'webp', 'gif'):
+            dest_key = f"recipes/{user_id}/{unique_id}.{ext}"
+        copy_source = {'Bucket': bucket_name, 'Key': source_key}
+        s3_client.copy_object(CopySource=copy_source, Bucket=bucket_name, Key=dest_key, ACL='public-read')
+        logger.info("[ImageUploader] Copied %s -> %s", source_key, dest_key)
+        return dest_key
+    except Exception as e:
+        logger.error("[ImageUploader] copy_s3_image_to_recipe_cover failed: %s", e, exc_info=True)
+        return None
+

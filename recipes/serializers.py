@@ -25,6 +25,7 @@ from .models import (
     RecipeImportRequest,
     RecipeBatch,
     PostCommentLike,
+    PostRepost,
 )
 from django.contrib.auth import get_user_model
 from django.db.models import Q
@@ -127,6 +128,18 @@ class UserLightSerializer(serializers.ModelSerializer):
             print(f"Error generating presigned URL for avatar in UserLightSerializer: {e}")
             print(traceback.format_exc())
             return obj.avatar_url
+
+
+class PostMiamUserSerializer(serializers.Serializer):
+    """Utilisateur ayant mis un Miam, avec statut de relation."""
+
+    def to_representation(self, cookie):
+        user_data = UserLightSerializer(cookie.user, context=self.context).data
+        return {
+            **user_data,
+            'is_following': bool(getattr(cookie, 'is_following_rel', False)),
+            'is_followed_by': bool(getattr(cookie, 'is_followed_by_rel', False)),
+        }
 
 
 class CategoryParentSerializer(serializers.ModelSerializer):
@@ -2024,7 +2037,59 @@ class PostPhotoSerializer(serializers.ModelSerializer):
         return False
 
 
-class PostSerializer(serializers.ModelSerializer):
+class RepostFieldsMixin(serializers.Serializer):
+    """Champs repost partagés entre PostListSerializer et PostSerializer."""
+
+    has_reposted_by_me = serializers.SerializerMethodField()
+    can_repost = serializers.SerializerMethodField()
+    reposts_count = serializers.SerializerMethodField()
+    co_cooked_users = serializers.SerializerMethodField()
+
+    def get_has_reposted_by_me(self, obj):
+        annotated = getattr(obj, '_has_reposted_by_me', None)
+        if annotated is not None:
+            return bool(annotated)
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return PostRepost.objects.filter(user=request.user, original_post=obj).exists()
+
+    def get_can_repost(self, obj):
+        if getattr(obj, '_has_reposted_by_me', False):
+            return False
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        from .services.repost_service import user_can_repost_post
+        return user_can_repost_post(request.user, obj)
+
+    def get_reposts_count(self, obj):
+        annotated = getattr(obj, '_reposts_count', None)
+        if annotated is not None:
+            return annotated
+        if hasattr(obj, '_prefetched_objects_cache') and 'reposts' in obj._prefetched_objects_cache:
+            return len(obj._prefetched_objects_cache['reposts'])
+        return PostRepost.objects.filter(original_post=obj).count()
+
+    def get_co_cooked_users(self, obj):
+        from .services.repost_service import get_co_cooked_users
+        from accounts.models import Follow
+        users = get_co_cooked_users(obj)
+        data = UserLightSerializer(users, many=True, context=self.context).data
+        request = self.context.get('request')
+        if request and request.user.is_authenticated and data:
+            following_ids = set(
+                Follow.objects.filter(
+                    follower=request.user,
+                    following_id__in=[item['id'] for item in data if item.get('id')],
+                ).values_list('following_id', flat=True)
+            )
+            for item in data:
+                item['is_following'] = item.get('id') in following_ids
+        return data
+
+
+class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     photos = PostPhotoSerializer(many=True, read_only=True)
     user = UserLightSerializer(read_only=True)
     recipe_batch = RecipeBatchLightSerializer(read_only=True)
@@ -2045,6 +2110,7 @@ class PostSerializer(serializers.ModelSerializer):
             'comment', 'cooking_time_minutes', 'is_published', 'recipe_meta', 'recipe', 'recipes',
             'photos', 'photos_count', 'has_all_photos',
             'cookies_count', 'has_cookie_from_user', 'comments_count',
+            'has_reposted_by_me', 'can_repost', 'reposts_count', 'co_cooked_users',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
@@ -2234,7 +2300,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class PostListSerializer(serializers.ModelSerializer):
+class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     """Serializer minimal pour la liste des posts (feed)."""
     user = UserLightSerializer(read_only=True)
     photos = PostPhotoListSerializer(many=True, read_only=True)
@@ -2255,6 +2321,7 @@ class PostListSerializer(serializers.ModelSerializer):
             'cookies_count', 'has_cookie_from_user', 'comments_count',
             'recipe', 'recipe_batch', 'meal_plan',
             'author_is_following',
+            'has_reposted_by_me', 'can_repost', 'reposts_count', 'co_cooked_users',
             'created_at',
         ]
         read_only_fields = ['user', 'created_at']

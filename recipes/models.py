@@ -1088,6 +1088,38 @@ class PostCommentLike(models.Model):
         return f"{self.user.username} like on comment {self.comment_id}"
 
 
+class PostRepost(models.Model):
+    """Repost d'un post meal plan par un invité."""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='post_reposts',
+    )
+    original_post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name='reposts',
+    )
+    host_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='hosted_post_reposts',
+        help_text="Auteur du post original (hôte du repas).",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+        unique_together = ['user', 'original_post']
+        indexes = [
+            models.Index(fields=['original_post', 'created_at'], name='postrepost_post_created_idx'),
+            models.Index(fields=['user', 'created_at'], name='postrepost_user_created_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} reposted post {self.original_post_id}"
+
+
 class ShoppingList(models.Model):
     """
     Liste de courses persistante (Maison, Appart, etc.).
