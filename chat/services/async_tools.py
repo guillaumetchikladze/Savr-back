@@ -27,6 +27,7 @@ from recipes.services.meal_plan_service import (
     get_meal_plans_for_user,
     propose_meal_deletion_data,
 )
+from recipes.services.recipe_revision_service import propose_recipe_revision_data
 from recipes.services.recipe_search_service import search_recipes_for_user
 from recipes.services.shopping_list_service import (
     add_item_to_shopping_list,
@@ -66,6 +67,18 @@ async def get_meal_plans(
         count=len(plans),
         meal_plans=plans,
     )
+
+
+@function_tool(strict_mode=False)
+async def propose_recipe_revision(
+    ctx: RunContextWrapper[AgentContext],
+    recipe_id: int,
+    instruction: str,
+    scope: str = 'full',
+) -> MutationProposal:
+    """Propose des modifications IA sur une recette (nécessite confirmation utilisateur)."""
+    user = ctx.context.user
+    return await _run_sync(propose_recipe_revision_data, user, recipe_id, instruction, scope)
 
 
 @function_tool(strict_mode=False)
@@ -310,4 +323,5 @@ def _start_generate_from_idea(
 MUTATION_TOOL_NAMES = frozenset({
     'propose_meal_deletion',
     'send_invitation_proposal',
+    'propose_recipe_revision',
 })

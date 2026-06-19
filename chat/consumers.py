@@ -474,6 +474,7 @@ def _save_mutation(conv, turn_id, proposal, tool_name, tool_trace=None):
     action_type_map = {
         'propose_meal_deletion': PendingAction.ACTION_MEAL_DELETION,
         'send_invitation_proposal': PendingAction.ACTION_MEAL_INVITATION,
+        'propose_recipe_revision': PendingAction.ACTION_RECIPE_REVISION,
     }
     action_type = action_type_map.get(tool_name, PendingAction.ACTION_MEAL_DELETION)
 

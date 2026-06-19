@@ -702,6 +702,96 @@ async def generate_recipe_from_idea(
     raise last_error or RuntimeError("Échec de la génération de recette")
 
 
+async def revise_recipe(
+    current_recipe: dict,
+    instruction: str,
+    scope: str = 'full',
+) -> RecipeFormalized:
+    """Révise une recette existante selon une instruction utilisateur."""
+    if not AI_API_KEY:
+        raise ValueError("AI_API_KEY doit être configuré dans .env pour utiliser l'IA")
+
+    agent = create_recipe_formalization_agent()
+
+    import json
+    recipe_json = json.dumps(current_recipe, ensure_ascii=False, indent=2)
+    scope_hint = {
+        'ingredients': 'Modifie uniquement les ingrédients et quantités.',
+        'steps': 'Modifie uniquement les étapes et astuces.',
+        'meta': 'Modifie uniquement titre, description, temps, portions, difficulté.',
+        'full': 'Tu peux modifier tous les aspects de la recette.',
+    }.get(scope, 'Tu peux modifier tous les aspects de la recette.')
+
+    prompt = (
+        "Voici une recette existante au format JSON :\n"
+        f"{recipe_json}\n\n"
+        f"Instruction de modification : {instruction}\n\n"
+        f"{scope_hint}\n"
+        "Retourne la recette complète révisée au format structuré. "
+        "Conserve ce qui n'a pas besoin d'être modifié."
+    )
+
+    logger.info("[AI] Révision recette scope=%s instruction_len=%d", scope, len(instruction))
+    start_time = time.perf_counter()
+    max_retries = 3
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await agent.run(prompt)
+            revised = result.output
+            duration = time.perf_counter() - start_time
+            logger.info(
+                "[AI] Révision terminée en %.2fs (%d ingrédients, %d étapes)",
+                duration,
+                len(revised.recipe_ingredients),
+                len(revised.steps),
+            )
+            return revised
+        except UnexpectedModelBehavior as e:
+            last_error = e
+            if attempt < max_retries:
+                await asyncio.sleep(0.5)
+            else:
+                raise
+        except PydanticAIUserError:
+            raise
+
+    raise last_error or RuntimeError("Échec de la révision de recette")
+
+
+def formalized_to_response_dict(formalized: RecipeFormalized) -> dict:
+    """Sérialise RecipeFormalized pour la réponse API."""
+    return {
+        'title': formalized.title,
+        'description': formalized.description,
+        'steps_summary': formalized.steps_summary,
+        'meal_type': formalized.meal_type,
+        'difficulty': formalized.difficulty,
+        'prep_time': formalized.prep_time,
+        'cook_time': formalized.cook_time,
+        'servings': formalized.servings,
+        'recipe_ingredients': [
+            {
+                'ingredient_name': ri.ingredient_name,
+                'quantity': float(ri.quantity),
+                'unit': ri.unit,
+            }
+            for ri in formalized.recipe_ingredients
+        ],
+        'steps': [
+            {
+                'title': s.title or '',
+                'instruction': s.instruction,
+                'tip': s.tip or '',
+                'has_timer': s.has_timer,
+                'timer_duration': s.timer_duration,
+            }
+            for s in formalized.steps
+        ],
+    }
+
+
 def verify_quantity_consistency(formalized_recipe: RecipeFormalized) -> dict:
     """
     Vérifie la cohérence des quantités entre les ingrédients globaux et les étapes
@@ -709,30 +799,24 @@ def verify_quantity_consistency(formalized_recipe: RecipeFormalized) -> dict:
     """
     inconsistencies = {}
     tolerance = 0.10  # 10% de tolérance
-    
-    # Pour chaque ingrédient global
+
     for recipe_ingredient in formalized_recipe.recipe_ingredients:
         ingredient_name = recipe_ingredient.ingredient_name
         total_quantity = recipe_ingredient.quantity
         total_unit = recipe_ingredient.unit
-        
-        # Sommer les quantités dans les étapes
+
         step_total = Decimal('0')
-        step_unit = None
-        
+
         for step in formalized_recipe.steps:
             for step_ingredient in step.step_ingredients:
                 if step_ingredient.ingredient_name == ingredient_name:
-                    # Convertir les unités si nécessaire (simplification: même unité)
                     if step_ingredient.unit == total_unit:
                         step_total += step_ingredient.quantity
-                        step_unit = step_ingredient.unit
-        
-        # Vérifier la cohérence
+
         if step_total > 0:
             difference = (total_quantity - step_total).copy_abs()
             percentage_diff = float(difference / total_quantity) if total_quantity != 0 else 0
-            
+
             if percentage_diff > tolerance:
                 inconsistencies[ingredient_name] = {
                     'recipe_total': float(total_quantity),
@@ -740,6 +824,6 @@ def verify_quantity_consistency(formalized_recipe: RecipeFormalized) -> dict:
                     'difference': float(difference),
                     'percentage_diff': percentage_diff * 100
                 }
-    
+
     return inconsistencies
 

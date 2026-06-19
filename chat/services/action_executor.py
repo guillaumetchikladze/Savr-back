@@ -5,6 +5,7 @@ from django.contrib.auth.models import AbstractBaseUser
 from chat.models import PendingAction
 from recipes.services.invitation_service import execute_meal_invitation
 from recipes.services.meal_plan_service import execute_meal_deletion
+from recipes.services.recipe_revision_service import execute_recipe_revision
 
 
 def execute_pending_action(user: AbstractBaseUser, action: PendingAction) -> dict:
@@ -18,6 +19,8 @@ def execute_pending_action(user: AbstractBaseUser, action: PendingAction) -> dic
         result = execute_meal_deletion(user, payload)
     elif action.action_type == PendingAction.ACTION_MEAL_INVITATION:
         result = execute_meal_invitation(user, payload)
+    elif action.action_type == PendingAction.ACTION_RECIPE_REVISION:
+        result = execute_recipe_revision(user, payload)
     else:
         raise ValueError(f'Type d\'action inconnu: {action.action_type}')
 

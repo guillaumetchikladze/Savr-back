@@ -26,6 +26,7 @@ from chat.services.async_tools import (
     get_shopping_list_items,
     import_recipe_from_url,
     propose_meal_deletion,
+    propose_recipe_revision,
     search_recipes,
     send_invitation_proposal,
 )
@@ -49,6 +50,7 @@ Tu peux :
 - Importer une recette depuis une URL (import_recipe_from_url)
 - Créer une recette à partir d'une idée (generate_recipe_from_idea) — quand aucune recette existante ne convient
 - Proposer de retirer une recette du planning (propose_meal_deletion) — l'utilisateur devra confirmer
+- Proposer des modifications IA sur une recette existante (propose_recipe_revision) — l'utilisateur devra confirmer via une carte
 - Proposer d'inviter des amis (send_invitation_proposal) — un ou plusieurs jours via meal_plan_ids — l'utilisateur devra confirmer
 - Consulter une liste de courses (get_shopping_list_items)
 - Ajouter un article à une liste de courses (add_shopping_list_item)
@@ -65,6 +67,7 @@ Règles :
 - Pour les tools : arguments JSON stricts (guillemets doubles), ex. {"query": "curry", "limit": 5}. N'invente pas de champs hors du schéma.
 - Pour « cette semaine », « demain », etc. : déduis les dates et appelle les tools sans redemander à l'utilisateur.
 - Pour planifier une recette : appelle get_meal_plans ; si le créneau n'existe pas, create_meal_plan_slot puis add_recipe_to_meal_plan.
+- Si l'utilisateur demande de modifier une recette déjà attachée en contexte (ou une recette dont tu as l'id) : appelle propose_recipe_revision avec recipe_id et une instruction claire. Ne réécris pas toute la recette dans le chat.
 - Si l'utilisateur demande une recette sur mesure ou qu'aucune recette du carnet ne convient : appelle generate_recipe_from_idea (ne rédige pas la recette en entier dans le chat). Une fois créée, propose de la planifier ou de la consulter.
 - Un message système [Événement Tchikook Agent] signale qu'un import ou une génération est terminé : enchaîne tout de suite avec la suite (planifier via add_recipe_to_meal_plan, ou proposer de consulter la fiche). Ne relance pas d'import ni de génération pour cette recette.
 - Pour les actions sensibles (suppression, invitation), utilise UNIQUEMENT les tools propose_*.
@@ -142,6 +145,7 @@ def create_planning_agent(user=None) -> Agent[AgentContext]:
             generate_recipe_from_idea,
             import_recipe_from_url,
             propose_meal_deletion,
+            propose_recipe_revision,
             send_invitation_proposal,
             get_shopping_list_items,
             add_shopping_list_item,
