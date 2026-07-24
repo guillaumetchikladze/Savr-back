@@ -1,9 +1,10 @@
 """
-Règles de visibilité entre utilisateurs (complices, profil).
+Règles de visibilité entre utilisateurs (amis, profil, feed).
 
+- **Profil / posts** : visibles seulement si le viewer suit le propriétaire (Follow approuvé).
 - **Réseau complice** : au moins une relation Follow dans un sens ou l'autre
-  (aligné sur les invitations repas / liste complices).
-- **Complices mutuels** : les deux se suivent (ami au sens « isComplice » côté app).
+  (invitations repas, listes de courses, etc.).
+- **Amis mutuels** : les deux se suivent (menu allergies, etc.).
 """
 from django.db.models import Q
 
@@ -30,6 +31,20 @@ def are_mutual_complices(viewer, target) -> bool:
     a = Follow.objects.filter(follower=viewer, following=target).exists()
     b = Follow.objects.filter(follower=target, following=viewer).exists()
     return a and b
+
+
+def can_view_profile_content(viewer, profile_user) -> bool:
+    """
+    Carnet / posts d'un profil : visibles seulement si le viewer suit le propriétaire
+    (relation Follow approuvée en base après acceptation de la demande).
+    """
+    if not viewer or not profile_user:
+        return False
+    if getattr(viewer, 'id', None) == getattr(profile_user, 'id', None):
+        return True
+    if not getattr(viewer, 'is_authenticated', False):
+        return False
+    return Follow.objects.filter(follower=viewer, following=profile_user).exists()
 
 
 def can_view_dietary_preferences(viewer, profile_user) -> bool:

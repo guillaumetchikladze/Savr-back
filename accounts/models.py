@@ -55,6 +55,50 @@ class User(AbstractUser):
         return self.following.count()
 
 
+class FollowRequest(models.Model):
+    """Demande de suivi en attente d'acceptation."""
+
+    STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('accepted', 'Acceptée'),
+        ('declined', 'Refusée'),
+    ]
+
+    requester = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='sent_follow_requests',
+        verbose_name='Demandeur',
+    )
+    target = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='received_follow_requests',
+        verbose_name='Cible',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        verbose_name='Statut',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['requester', 'target']
+        ordering = ['-created_at']
+        verbose_name = 'Demande de suivi'
+        verbose_name_plural = 'Demandes de suivi'
+        indexes = [
+            models.Index(fields=['target', 'status'], name='followreq_target_status_idx'),
+            models.Index(fields=['requester', 'status'], name='followreq_requester_status_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.requester.username} → {self.target.username} ({self.status})"
+
+
 class Follow(models.Model):
     """Relation de suivi entre utilisateurs (devenir complice)"""
     follower = models.ForeignKey(
@@ -85,6 +129,7 @@ class Notification(models.Model):
     """Notifications pour les utilisateurs"""
     NOTIFICATION_TYPES = [
         ('follow', 'Nouvel ami'),
+        ('follow_request', 'Demande d\'ami'),
         ('recipe_reminder', 'Rappel de recette'),
         ('recipe_shared', 'Recette partagée'),
         ('achievement', 'Nouveau succès'),

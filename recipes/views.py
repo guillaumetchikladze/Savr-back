@@ -1529,8 +1529,22 @@ class RecipeViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Paramètre user requis'}, status=status.HTTP_400_BAD_REQUEST)
         
         target_user = get_object_or_404(User, id=user_id)
-        recipes = Recipe.objects.filter(created_by=target_user)
         summary_only = request.query_params.get('summary')
+        from accounts.privacy import can_view_profile_content
+        if (
+            target_user.id != request.user.id
+            and not can_view_profile_content(request.user, target_user)
+        ):
+            if summary_only:
+                return Response({'count': 0, 'last_activity': None})
+            empty = Recipe.objects.none()
+            page = self.paginate_queryset(empty)
+            serializer = self.get_serializer(page if page is not None else empty, many=True)
+            if page is not None:
+                return self.get_paginated_response(serializer.data)
+            return Response(serializer.data)
+
+        recipes = Recipe.objects.filter(created_by=target_user)
         if summary_only:
             count = recipes.count()
             last_recipe = recipes.order_by('-updated_at').first()
@@ -4037,15 +4051,17 @@ class PostViewSet(viewsets.ModelViewSet):
             )
         )
 
-    def _get_network_friend_ids(self, user):
-        friend_ids = set()
-        friend_ids.update(
-            Follow.objects.filter(follower=user).values_list('following_id', flat=True)
+    def _get_feed_author_ids(self, user):
+        """Comptes suivis (Follow approuvé en base) + l'utilisateur connecté."""
+        following_ids = Follow.objects.filter(follower=user).values_list(
+            'following_id', flat=True
         )
-        friend_ids.update(
-            Follow.objects.filter(following=user).values_list('follower_id', flat=True)
-        )
-        return friend_ids
+        return set(following_ids) | {user.id}
+
+    def _apply_social_feed_filter(self, queryset, user):
+        """Restreint le feed aux posts des comptes suivis et aux siens (non contournable côté client)."""
+        author_ids = list(self._get_feed_author_ids(user))
+        return queryset.filter(user_id__in=author_ids).distinct()
     
     def _user_can_manage_photo(self, photo, user):
         if photo.uploaded_by_id and photo.uploaded_by_id != user.id:
@@ -4063,7 +4079,7 @@ class PostViewSet(viewsets.ModelViewSet):
         return False
     
     def get_queryset(self):
-        # Pour retrieve (GET /posts/{id}/), autoriser tout post publié (ex: depuis une notification)
+        # retrieve : post publié visible seulement si auteur = soi ou suivi approuvé
         if self.action == 'retrieve':
             queryset = Post.objects.filter(is_published=True).select_related(
                 'user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan'
@@ -4083,26 +4099,22 @@ class PostViewSet(viewsets.ModelViewSet):
                     queryset=PostRepost.objects.select_related('user').order_by('created_at'),
                 ),
             ).order_by('-created_at')
+            if self.request.user.is_authenticated:
+                author_ids = self._get_feed_author_ids(self.request.user)
+                queryset = queryset.filter(user_id__in=author_ids)
             return self._annotate_repost_fields(queryset)
 
-        # Si on demande les posts publiés, montrer tous les posts publiés de tous les utilisateurs
-        # Sinon, montrer uniquement les posts de l'utilisateur connecté
+        # Posts publiés : feed social (abonnements approuvés + soi) sauf profil explicite (?user=)
         is_published = self.request.query_params.get('is_published')
-        friends_only = self.request.query_params.get('friends_only')
-        
+        profile_user_id = self.request.query_params.get('user')
+
         if is_published is not None and is_published.lower() == 'true':
             queryset = Post.objects.filter(is_published=True)
-
-            # Filtrer uniquement les posts des amis
-            if friends_only and friends_only.lower() == 'true':
-                user = self.request.user
-                friend_ids = list(self._get_network_friend_ids(user))
-                reposted_by_friends = PostRepost.objects.filter(
-                    user_id__in=friend_ids
-                ).values('original_post_id')
-                queryset = queryset.filter(
-                    Q(user_id__in=friend_ids) | Q(id__in=reposted_by_friends)
-                ).distinct()
+            if (
+                not profile_user_id
+                and self.request.user.is_authenticated
+            ):
+                queryset = self._apply_social_feed_filter(queryset, self.request.user)
         else:
             queryset = Post.objects.filter(user=self.request.user)
         
@@ -4120,6 +4132,13 @@ class PostViewSet(viewsets.ModelViewSet):
         if user_id:
             try:
                 profile_user_id = int(user_id)
+                viewer = self.request.user
+                if viewer.is_authenticated and profile_user_id != viewer.id:
+                    from accounts.privacy import can_view_profile_content
+                    from django.contrib.auth import get_user_model
+                    profile_user = get_user_model().objects.filter(id=profile_user_id).first()
+                    if not profile_user or not can_view_profile_content(viewer, profile_user):
+                        return Post.objects.none()
                 reposted_post_ids = PostRepost.objects.filter(
                     user_id=profile_user_id
                 ).values('original_post_id')
@@ -4148,11 +4167,32 @@ class PostViewSet(viewsets.ModelViewSet):
                 )
             )
             if self.request.user.is_authenticated:
+                from accounts.models import FollowRequest
+                viewer_id = self.request.user.id
                 follow_exists = Follow.objects.filter(
-                    follower_id=self.request.user.id,
+                    follower_id=viewer_id,
                     following_id=OuterRef('user_id'),
                 )
-                queryset = queryset.annotate(_viewer_follows_post_author=Exists(follow_exists))
+                followed_by_exists = Follow.objects.filter(
+                    follower_id=OuterRef('user_id'),
+                    following_id=viewer_id,
+                )
+                outgoing_request = FollowRequest.objects.filter(
+                    requester_id=viewer_id,
+                    target_id=OuterRef('user_id'),
+                    status='pending',
+                )
+                incoming_request = FollowRequest.objects.filter(
+                    requester_id=OuterRef('user_id'),
+                    target_id=viewer_id,
+                    status='pending',
+                )
+                queryset = queryset.annotate(
+                    _viewer_follows_post_author=Exists(follow_exists),
+                    _viewer_followed_by_post_author=Exists(followed_by_exists),
+                    _follow_request_outgoing=Exists(outgoing_request),
+                    _follow_request_incoming=Exists(incoming_request),
+                )
             queryset = self._annotate_repost_fields(queryset)
             queryset = queryset.order_by('-created_at')
         else:
@@ -6389,6 +6429,12 @@ class CollectionViewSet(viewsets.ModelViewSet):
         if owner_id:
             try:
                 owner_id_int = int(owner_id)
+                if owner_id_int != user.id:
+                    from accounts.privacy import can_view_profile_content
+                    from django.contrib.auth import get_user_model
+                    owner_user = get_user_model().objects.filter(id=owner_id_int).first()
+                    if not owner_user or not can_view_profile_content(user, owner_user):
+                        return Collection.objects.none()
                 # Si on filtre par owner spécifique, montrer seulement ses collections publiques ou celles où l'utilisateur connecté est membre
                 if is_public_param and is_public_param.lower() == 'true':
                     queryset = Collection.objects.filter(

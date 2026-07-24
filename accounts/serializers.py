@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import User, Follow, Notification, LoyaltyCard
+from .models import User, Follow, FollowRequest, Notification, LoyaltyCard
 from .privacy import can_view_dietary_preferences
+from .services.follow_service import get_follow_relation
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -25,6 +26,8 @@ class UserSerializer(serializers.ModelSerializer):
     following_count = serializers.IntegerField(read_only=True)
     is_following = serializers.SerializerMethodField()
     is_followed_by = serializers.SerializerMethodField()
+    follow_request_outgoing = serializers.SerializerMethodField()
+    follow_request_incoming = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     
     class Meta:
@@ -33,6 +36,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'avatar_url', 'level',
             'experience_points', 'created_at', 'followers_count',
             'following_count', 'is_following', 'is_followed_by',
+            'follow_request_outgoing', 'follow_request_incoming',
             'food_dislikes', 'allergies', 'regimes', 'is_vegetarian', 'onboarding_completed',
         )
         read_only_fields = ('id', 'created_at', 'level', 'experience_points', 'followers_count', 'following_count')
@@ -110,6 +114,17 @@ class UserSerializer(serializers.ModelSerializer):
             return Follow.objects.filter(follower=obj, following=request.user).exists()
         return False
 
+    def _viewer_follow_relation(self, obj):
+        request = self.context.get('request')
+        viewer = getattr(request, 'user', None) if request else None
+        return get_follow_relation(viewer, obj)
+
+    def get_follow_request_outgoing(self, obj):
+        return self._viewer_follow_relation(obj)['follow_request_outgoing']
+
+    def get_follow_request_incoming(self, obj):
+        return self._viewer_follow_relation(obj)['follow_request_incoming']
+
     def get_avatar_url(self, obj):
         """Retourner l'URL de l'avatar avec presigned URL si disponible"""
         if not getattr(obj, 'avatar_url', None):
@@ -149,7 +164,8 @@ class UserSearchResultSerializer(UserSerializer):
     class Meta(UserSerializer.Meta):
         fields = (
             'id', 'username', 'avatar_url', 'level',
-            'followers_count', 'is_following',
+            'followers_count', 'is_following', 'is_followed_by',
+            'follow_request_outgoing', 'follow_request_incoming',
         )
 
     def get_avatar_url(self, obj):
@@ -201,20 +217,6 @@ class UserSearchResultSerializer(UserSerializer):
             print(traceback.format_exc())
             return obj.avatar_url
     
-    def get_is_following(self, obj):
-        """Vérifier si l'utilisateur connecté suit cet utilisateur"""
-        request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            return Follow.objects.filter(follower=request.user, following=obj).exists()
-        return False
-    
-    def get_is_followed_by(self, obj):
-        """Vérifier si cet utilisateur suit l'utilisateur connecté"""
-        request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            return Follow.objects.filter(follower=obj, following=request.user).exists()
-        return False
-
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get('request')
@@ -297,15 +299,22 @@ class NotificationSerializer(serializers.ModelSerializer):
         u = getattr(obj, 'related_user', None)
         if not u:
             return None
-        # Le view peut annoter `related_user_is_following` pour éviter un N+1.
+        request = self.context.get('request')
+        viewer = getattr(request, 'user', None) if request else None
+        rel = get_follow_relation(viewer, u) if viewer and viewer.is_authenticated else {
+            'is_following': False,
+            'is_followed_by': False,
+            'follow_request_outgoing': False,
+            'follow_request_incoming': False,
+        }
         is_following = getattr(obj, 'related_user_is_following', None)
-        if is_following is None:
-            is_following = False
+        if is_following is not None:
+            rel['is_following'] = bool(is_following)
         return {
             'id': u.id,
             'username': u.username,
             'avatar_url': u.avatar_url,
-            'is_following': bool(is_following),
+            **rel,
         }
 
 

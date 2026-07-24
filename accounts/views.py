@@ -19,7 +19,13 @@ from .serializers import (
 )
 from .feed_suggestions import build_feed_user_suggestions
 from .serializers_push import PushDeviceRegisterSerializer
-from .models import Follow, Notification, PushDevice, LoyaltyCard
+from .models import Follow, FollowRequest, Notification, PushDevice, LoyaltyCard
+from .services.follow_service import (
+    accept_follow_request,
+    decline_follow_request,
+    request_follow,
+    unfollow_or_cancel,
+)
 from .services.expo_push import send_expo_push_notifications
 import random
 from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
@@ -326,74 +332,68 @@ def search_view(request):
 @api_view(['POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def follow_user_view(request, user_id):
-    """Devenir ami (follow) ou ne plus être ami (unfollow) d'un utilisateur"""
+    """Demander à suivre, s'abonner en retour (auto) ou se désabonner / annuler une demande."""
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
         return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
-    
+
     if target_user.id == request.user.id:
         return Response({'error': 'Vous ne pouvez pas vous suivre vous-même'}, status=status.HTTP_400_BAD_REQUEST)
-    
-    if request.method == 'POST':
-        # Devenir complice
-        follow, created = Follow.objects.get_or_create(
-            follower=request.user,
-            following=target_user
-        )
-        if created:
-            # Créer une notification pour l'utilisateur suivi
-            follow_titles = [
-                "Un nouvel ami arrive",
-                "Tu as gagné un nouvel allié",
-            ]
-            follow_messages = [
-                f"{request.user.username} t'a ajouté comme ami.",
-                f"{request.user.username} a commencé à te suivre.",
-            ]
 
-            notification = Notification.objects.create(
-                user=target_user,
-                notification_type='follow',
-                title=random.choice(follow_titles),
-                message=random.choice(follow_messages),
-                related_user=request.user
-            )
-            # Envoyer une push Expo aux devices du nouvel ami
-            devices = PushDevice.objects.filter(
-                user=target_user,
-                is_active=True
-            ).exclude(expo_push_token='')
-            messages = []
-            for device in devices:
-                messages.append(
-                    {
-                        'to': device.expo_push_token,
-                        'title': notification.title,
-                        'body': notification.message,
-                        'data': {
-                            'source': 'social',
-                            'kind': 'follow',
-                            'notification_id': notification.id,
-                            'user_id': request.user.id,
-                        },
-                        'sound': 'default',
-                    }
-                )
-            if messages:
-                send_expo_push_notifications(messages)
-            return Response({'message': 'Vous êtes maintenant ami'}, status=status.HTTP_201_CREATED)
-        else:
-            return Response({'message': 'Vous êtes déjà ami'}, status=status.HTTP_200_OK)
-    
-    elif request.method == 'DELETE':
-        # Ne plus être ami
-        try:
-            follow = Follow.objects.get(follower=request.user, following=target_user)
-            follow.delete()
-            return Response({'message': 'Vous n\'êtes plus ami'}, status=status.HTTP_200_OK)
-        except Follow.DoesNotExist:
-            return Response({'message': 'Vous n\'êtes pas ami'}, status=status.HTTP_200_OK)
+    if request.method == 'POST':
+        result = request_follow(request.user, target_user)
+        action = result.pop('action')
+        message = result.pop('message')
+        status_code = status.HTTP_201_CREATED if action in {
+            'request_sent', 'followed_auto', 'mutual_established',
+        } else status.HTTP_200_OK
+        return Response({'action': action, 'message': message, **result}, status=status_code)
+
+    result = unfollow_or_cancel(request.user, target_user)
+    action = result.pop('action')
+    message = result.pop('message')
+    return Response({'action': action, 'message': message, **result}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def accept_follow_request_view(request, user_id):
+    """Accepter une demande de suivi reçue."""
+    try:
+        requester = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+
+    if requester.id == request.user.id:
+        return Response({'error': 'Action invalide'}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = accept_follow_request(request.user, requester)
+    action = result.pop('action')
+    message = result.pop('message')
+    if action == 'not_found':
+        return Response({'error': message, **result}, status=status.HTTP_404_NOT_FOUND)
+    return Response({'action': action, 'message': message, **result}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def decline_follow_request_view(request, user_id):
+    """Refuser une demande de suivi reçue."""
+    try:
+        requester = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+
+    if requester.id == request.user.id:
+        return Response({'error': 'Action invalide'}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = decline_follow_request(request.user, requester)
+    action = result.pop('action')
+    message = result.pop('message')
+    if action == 'not_found':
+        return Response({'error': message, **result}, status=status.HTTP_404_NOT_FOUND)
+    return Response({'action': action, 'message': message, **result}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -627,6 +627,19 @@ def test_push_device_view(request):
     return Response({'message': f'Push de test envoyée à {len(messages)} device(s).'}, status=status.HTTP_200_OK)
 
 
+def _password_reset_from_email():
+    return (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@savr.app"
+
+
+def _password_reset_response_payload(**extra):
+    from_email = _password_reset_from_email()
+    return {
+        'message': 'Si le compte existe, un email a été envoyé.',
+        'from_email': from_email,
+        **extra,
+    }
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def password_reset_request_view(request):
@@ -641,13 +654,13 @@ def password_reset_request_view(request):
     key_email = _rate_limit_key("pwreset:email", email or "empty")
     if not cache.add(key_ip, "1", timeout=ttl_seconds) or not cache.add(key_email, "1", timeout=ttl_seconds):
         return Response(
-            {'message': 'Si le compte existe, un email a été envoyé.', 'retry_after_seconds': ttl_seconds},
+            _password_reset_response_payload(retry_after_seconds=ttl_seconds),
             status=429,
         )
 
     # Réponse OK même si vide/invalide
     if not email:
-        return Response({'message': 'Si le compte existe, un email a été envoyé.'}, status=status.HTTP_200_OK)
+        return Response(_password_reset_response_payload(), status=status.HTTP_200_OK)
 
     user = User.objects.filter(email__iexact=email, is_active=True).first()
     if user:
@@ -660,7 +673,7 @@ def password_reset_request_view(request):
         try:
             from emails.services import enqueue_email
 
-            from_email = (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@savr.app"
+            from_email = _password_reset_from_email()
             enqueue_email(
                 from_email=from_email,
                 to_email=user.email,
@@ -678,7 +691,7 @@ def password_reset_request_view(request):
         except Exception:
             pass
 
-    return Response({'message': 'Si le compte existe, un email a été envoyé.'}, status=status.HTTP_200_OK)
+    return Response(_password_reset_response_payload(), status=status.HTTP_200_OK)
 
 
 @require_http_methods(["GET", "POST"])

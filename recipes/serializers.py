@@ -2073,19 +2073,18 @@ class RepostFieldsMixin(serializers.Serializer):
 
     def get_co_cooked_users(self, obj):
         from .services.repost_service import get_co_cooked_users
-        from accounts.models import Follow
+        from accounts.services.follow_service import get_follow_relation
         users = get_co_cooked_users(obj)
         data = UserLightSerializer(users, many=True, context=self.context).data
         request = self.context.get('request')
-        if request and request.user.is_authenticated and data:
-            following_ids = set(
-                Follow.objects.filter(
-                    follower=request.user,
-                    following_id__in=[item['id'] for item in data if item.get('id')],
-                ).values_list('following_id', flat=True)
-            )
+        viewer = getattr(request, 'user', None) if request else None
+        if viewer and getattr(viewer, 'is_authenticated', False) and data:
+            user_by_id = {u.id: u for u in users}
             for item in data:
-                item['is_following'] = item.get('id') in following_ids
+                target = user_by_id.get(item.get('id'))
+                if not target:
+                    continue
+                item.update(get_follow_relation(viewer, target))
         return data
 
 
@@ -2114,6 +2113,18 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        nested = data.get('user')
+        if isinstance(nested, dict):
+            request = self.context.get('request')
+            viewer = getattr(request, 'user', None) if request else None
+            author = getattr(instance, 'user', None)
+            if viewer and getattr(viewer, 'is_authenticated', False) and author:
+                from accounts.services.follow_service import get_follow_relation
+                nested.update(get_follow_relation(viewer, author))
+        return data
 
     def get_meal_plan(self, obj):
         mp = obj.meal_plan
@@ -2359,6 +2370,15 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
         nested = data.get('user')
         if isinstance(nested, dict):
             nested['is_following'] = bool(data.get('author_is_following'))
+            nested['is_followed_by'] = bool(
+                getattr(instance, '_viewer_followed_by_post_author', False)
+            )
+            nested['follow_request_outgoing'] = bool(
+                getattr(instance, '_follow_request_outgoing', False)
+            )
+            nested['follow_request_incoming'] = bool(
+                getattr(instance, '_follow_request_incoming', False)
+            )
         if settings.DEBUG:
             import logging
             logger = logging.getLogger(__name__)
