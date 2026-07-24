@@ -108,7 +108,7 @@ services:
       dockerfile: docker/Dockerfile.celery
     container_name: savr-celery-worker
     restart: unless-stopped
-    command: celery -A savr_back worker -l info -Q savr_default
+    command: celery -A savr_back worker -l info -Q savr_default,emails_urgent,emails_high,emails_normal,emails_low
     environment:
       - DB_NAME=${DB_NAME:-savr_db}
       - DB_USER=${DB_USER:-postgres}
@@ -131,6 +131,11 @@ services:
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-http://embedding:8001}
       - EMBEDDING_API_SECRET=${EMBEDDING_API_SECRET:-}
+      - MS_GRAPH_TENANT_ID=${MS_GRAPH_TENANT_ID:-}
+      - MS_GRAPH_CLIENT_ID=${MS_GRAPH_CLIENT_ID:-}
+      - MS_GRAPH_CLIENT_SECRET=${MS_GRAPH_CLIENT_SECRET:-}
+      - MS_GRAPH_SENDER=${MS_GRAPH_SENDER:-}
+      - EMAIL_FROM_ADDRESS=${EMAIL_FROM_ADDRESS:-noreply@savr.app}
     depends_on:
       redis:
         condition: service_healthy

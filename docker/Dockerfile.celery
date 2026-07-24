@@ -27,7 +27,7 @@ COPY . .
 # Exposer le port (si nécessaire pour monitoring)
 EXPOSE 5555
 
-# La commande sera définie dans docker-compose.yml
-CMD ["celery", "-A", "savr_back", "worker", "-l", "info"]
+# Fallback si docker-compose ne surcharge pas la commande
+CMD ["celery", "-A", "savr_back", "worker", "-l", "info", "-Q", "savr_default,emails_urgent,emails_high,emails_normal,emails_low"]
 
 
