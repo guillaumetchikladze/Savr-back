@@ -19,7 +19,8 @@ from .serializers import (
 )
 from .feed_suggestions import build_feed_user_suggestions
 from .serializers_push import PushDeviceRegisterSerializer
-from .models import Follow, FollowRequest, Notification, PushDevice, LoyaltyCard
+from .models import Follow, FollowRequest, Notification, PushDevice, LoyaltyCard, UserBlock
+from .blocks import are_blocked_either_way, blocked_user_ids_for, exclude_blocked_from_user_qs
 from .services.follow_service import (
     accept_follow_request,
     decline_follow_request,
@@ -224,7 +225,13 @@ def user_detail_view(request, user_id):
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
         return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
-    
+
+    if are_blocked_either_way(request.user, target_user):
+        return Response(
+            {'error': 'Ce profil n’est pas disponible.', 'blocked': True},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     serializer = UserSerializer(target_user, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -240,6 +247,11 @@ def search_view(request):
     if user_id:
         try:
             user = User.objects.get(id=int(user_id))
+            if are_blocked_either_way(request.user, user):
+                return Response({
+                    'users': [],
+                    'recipes': [],
+                }, status=status.HTTP_200_OK)
             serializer = UserSearchResultSerializer(user, context={'request': request})
             return Response({
                 'users': [serializer.data],
@@ -253,7 +265,10 @@ def search_view(request):
     
     if not query:
         # Retourner des suggestions (utilisateurs et recettes populaires)
-        users = User.objects.exclude(id=request.user.id).order_by('-created_at')[:10]
+        users = exclude_blocked_from_user_qs(
+            User.objects.exclude(id=request.user.id).order_by('-created_at'),
+            request.user,
+        )[:10]
         recipes = Recipe.objects.select_related('created_by').prefetch_related(
             'steps', 'recipe_ingredients__ingredient'
         ).order_by('-created_at')[:10]
@@ -277,6 +292,8 @@ def search_view(request):
         users = User.objects.filter(
             Q(username__icontains=query)
         ).exclude(id=request.user.id)
+
+    users = exclude_blocked_from_user_qs(users, request.user)
     
     # Recherche fuzzy pour les recettes avec PostgreSQL Full-Text Search
     try:
@@ -341,6 +358,12 @@ def follow_user_view(request, user_id):
     if target_user.id == request.user.id:
         return Response({'error': 'Vous ne pouvez pas vous suivre vous-même'}, status=status.HTTP_400_BAD_REQUEST)
 
+    if are_blocked_either_way(request.user, target_user):
+        return Response(
+            {'error': 'Action impossible : un blocage est en place entre ces comptes.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     if request.method == 'POST':
         result = request_follow(request.user, target_user)
         action = result.pop('action')
@@ -367,6 +390,12 @@ def accept_follow_request_view(request, user_id):
 
     if requester.id == request.user.id:
         return Response({'error': 'Action invalide'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if are_blocked_either_way(request.user, requester):
+        return Response(
+            {'error': 'Action impossible : un blocage est en place entre ces comptes.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     result = accept_follow_request(request.user, requester)
     action = result.pop('action')
@@ -525,9 +554,17 @@ def user_followers_view(request, user_id):
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
         return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
-    
+
+    if are_blocked_either_way(request.user, target_user):
+        return Response([], status=status.HTTP_200_OK)
+
+    blocked_ids = blocked_user_ids_for(request.user)
     followers_qs = Follow.objects.filter(following=target_user).select_related('follower')
-    followers = [follow.follower for follow in followers_qs]
+    followers = [
+        follow.follower
+        for follow in followers_qs
+        if follow.follower_id not in blocked_ids
+    ]
     serializer = UserSerializer(followers, many=True, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -540,9 +577,17 @@ def user_following_view(request, user_id):
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
         return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
-    
+
+    if are_blocked_either_way(request.user, target_user):
+        return Response([], status=status.HTTP_200_OK)
+
+    blocked_ids = blocked_user_ids_for(request.user)
     following_qs = Follow.objects.filter(follower=target_user).select_related('following')
-    following = [follow.following for follow in following_qs]
+    following = [
+        follow.following
+        for follow in following_qs
+        if follow.following_id not in blocked_ids
+    ]
     serializer = UserSerializer(following, many=True, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -556,7 +601,8 @@ def users_search_view(request):
         return Response([], status=status.HTTP_200_OK)
     users = User.objects.filter(
         Q(username__icontains=query) | Q(username__istartswith=query)
-    ).exclude(id=request.user.id).order_by('username')[:15]
+    ).exclude(id=request.user.id).order_by('username')
+    users = exclude_blocked_from_user_qs(users, request.user)[:15]
     serializer = UserLightSerializer(users, many=True, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -761,6 +807,107 @@ def change_password_view(request):
     user.set_password(new_password)
     user.save(update_fields=['password'])
     return Response({'message': 'Mot de passe mis à jour.'}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def delete_account_view(request):
+    """
+    Suppression définitive du compte (Guideline Apple 5.1.1).
+    Body: { "password": "..." }
+    """
+    password = (request.data.get('password') or '').strip()
+    if not password:
+        return Response({'error': 'Mot de passe requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = request.user
+    if not user.check_password(password):
+        return Response({'error': 'Mot de passe incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user_id = user.id
+    # Hard-delete : cascades Django + SET_NULL sur contenus liés (recettes, etc.)
+    user.delete()
+    return Response(
+        {'message': 'Compte supprimé.', 'id': user_id},
+        status=status.HTTP_200_OK,
+    )
+
+
+def _sever_follow_relations(user_a, user_b):
+    """Coupe follows et demandes dans les deux sens."""
+    Follow.objects.filter(
+        Q(follower=user_a, following=user_b) | Q(follower=user_b, following=user_a)
+    ).delete()
+    FollowRequest.objects.filter(
+        Q(requester=user_a, target=user_b) | Q(requester=user_b, target=user_a)
+    ).delete()
+
+
+@api_view(['POST', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def block_user_view(request, user_id):
+    """POST = bloquer ; DELETE = débloquer."""
+    try:
+        target = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+
+    if target.id == request.user.id:
+        return Response({'error': 'Vous ne pouvez pas vous bloquer vous-même.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.method == 'DELETE':
+        deleted, _ = UserBlock.objects.filter(blocker=request.user, blocked_id=user_id).delete()
+        if not deleted:
+            return Response(
+                {'error': 'Cet utilisateur n’est pas dans votre liste de blocage.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            {'message': 'Utilisateur débloqué.', 'unblocked_user_id': user_id},
+            status=status.HTTP_200_OK,
+        )
+
+    block, created = UserBlock.objects.get_or_create(blocker=request.user, blocked=target)
+    _sever_follow_relations(request.user, target)
+
+    return Response(
+        {
+            'message': f'@{target.username} a été bloqué.' if target.username else 'Utilisateur bloqué.',
+            'blocked_user_id': target.id,
+            'created': created,
+            'created_at': block.created_at,
+        },
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def blocked_users_list_view(request):
+    """Liste paginée des utilisateurs bloqués par l’utilisateur courant."""
+    from rest_framework.pagination import PageNumberPagination
+
+    paginator = PageNumberPagination()
+    paginator.page_size = 30
+    paginator.page_size_query_param = 'page_size'
+    paginator.max_page_size = 100
+
+    qs = (
+        UserBlock.objects.filter(blocker=request.user)
+        .select_related('blocked')
+        .order_by('-created_at')
+    )
+    page = paginator.paginate_queryset(qs, request)
+    data = [
+        {
+            'id': row.blocked_id,
+            'username': row.blocked.username,
+            'avatar_url': row.blocked.avatar_url,
+            'blocked_at': row.created_at,
+        }
+        for row in page
+    ]
+    return paginator.get_paginated_response(data)
 
 
 class LoyaltyCardListCreateView(generics.ListCreateAPIView):

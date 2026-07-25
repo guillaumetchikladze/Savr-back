@@ -11,6 +11,7 @@ import random
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+from .blocks import blocked_user_ids_for
 from .models import Follow
 
 User = get_user_model()
@@ -96,7 +97,8 @@ def build_feed_user_suggestions(viewer):
     followers = set(Follow.objects.filter(following=viewer).values_list('follower_id', flat=True))
     # Ne pas exclure les abonnés : quelqu’un qui vous suit sans que vous le suiviez doit pouvoir être
     # suggéré (et en priorité), comme sur les réseaux habituels.
-    excluded = following | {viewer.id}
+    # Exclure aussi les comptes bloqués (dans les deux sens).
+    excluded = following | {viewer.id} | blocked_user_ids_for(viewer)
 
     pool_ids = _candidate_pool_ids(excluded, rng)
     if not pool_ids:

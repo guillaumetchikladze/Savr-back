@@ -8,6 +8,7 @@ Règles de visibilité entre utilisateurs (amis, profil, feed).
 """
 from django.db.models import Q
 
+from .blocks import are_blocked_either_way
 from .models import Follow
 
 
@@ -43,6 +44,8 @@ def can_view_profile_content(viewer, profile_user) -> bool:
     if getattr(viewer, 'id', None) == getattr(profile_user, 'id', None):
         return True
     if not getattr(viewer, 'is_authenticated', False):
+        return False
+    if are_blocked_either_way(viewer, profile_user):
         return False
     return Follow.objects.filter(follower=viewer, following=profile_user).exists()
 

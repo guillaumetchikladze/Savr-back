@@ -21,6 +21,11 @@ def legal_privacy_view(request):
     return render(request, 'legal/privacy_policy.html')
 
 
+def legal_terms_view(request):
+    """Conditions générales d'utilisation / EULA."""
+    return render(request, 'legal/terms.html')
+
+
 def legal_delete_account_view(request):
     """Page de demande de suppression de compte."""
     return render(request, 'legal/delete_account.html')
@@ -29,6 +34,7 @@ def legal_delete_account_view(request):
 urlpatterns = [
     path('legal/', legal_index_view, name='legal_index'),
     path('legal/privacy-policy/', legal_privacy_view, name='legal_privacy'),
+    path('legal/terms/', legal_terms_view, name='legal_terms'),
     path('legal/delete-account/', legal_delete_account_view, name='legal_delete_account'),
     path('privacy-policy/', lambda r: redirect('legal_privacy', permanent=True), name='privacy_policy_redirect'),
     path('admin/', admin.site.urls),

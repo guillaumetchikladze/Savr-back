@@ -4052,11 +4052,13 @@ class PostViewSet(viewsets.ModelViewSet):
         )
 
     def _get_feed_author_ids(self, user):
-        """Comptes suivis (Follow approuvé en base) + l'utilisateur connecté."""
+        """Comptes suivis (Follow approuvé en base) + l'utilisateur connecté, hors blocages."""
+        from accounts.blocks import blocked_user_ids_for
         following_ids = Follow.objects.filter(follower=user).values_list(
             'following_id', flat=True
         )
-        return set(following_ids) | {user.id}
+        blocked_ids = blocked_user_ids_for(user)
+        return (set(following_ids) | {user.id}) - blocked_ids
 
     def _apply_social_feed_filter(self, queryset, user):
         """Restreint le feed aux posts des comptes suivis et aux siens (non contournable côté client)."""

@@ -210,6 +210,37 @@ class PushDevice(models.Model):
         return f"{self.user.email} - {self.platform} - {self.expo_push_token}"
 
 
+class UserBlock(models.Model):
+    """Blocage unilatéral : blocker ne voit plus blocked, et inversement côté contenu."""
+
+    blocker = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='blocks_initiated',
+        verbose_name='Bloqueur',
+    )
+    blocked = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='blocks_received',
+        verbose_name='Bloqué',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ['blocker', 'blocked']
+        ordering = ['-created_at']
+        verbose_name = 'Blocage utilisateur'
+        verbose_name_plural = 'Blocages utilisateurs'
+        indexes = [
+            models.Index(fields=['blocker', 'created_at'], name='userblock_blocker_created_idx'),
+            models.Index(fields=['blocked'], name='userblock_blocked_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.blocker.username} bloque {self.blocked.username}"
+
+
 class LoyaltyCard(models.Model):
     """Carte de fidélité associée à un utilisateur, numéro chiffré côté serveur."""
 
