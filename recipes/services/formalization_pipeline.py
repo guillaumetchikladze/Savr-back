@@ -3,14 +3,14 @@ from typing import Dict, Any
 from django.db import transaction
 
 from ..models import (
-    Ingredient,
     Recipe,
     RecipeIngredient,
     Step,
     StepIngredient,
 )
 from .ai_service import verify_quantity_consistency
-from .ingredient_matcher import find_ingredient_by_name
+from .ingredient_categorization import ensure_ingredient_category
+from .ingredient_matcher import get_or_create_ingredient
 from .recipe_search_index import schedule_recipe_search_reindex
 
 logger = logging.getLogger(__name__)
@@ -41,23 +41,20 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
         )
 
         ingredient_map = {}
-        ingredients_to_create = []
+        created_count = 0
 
         for ingredient_name in all_ingredient_names:
-            existing = find_ingredient_by_name(ingredient_name)
-            if existing:
-                ingredient_map[ingredient_name] = existing
-            else:
-                ingredients_to_create.append(ingredient_name)
+            ingredient, created = get_or_create_ingredient(ingredient_name)
+            if created:
+                created_count += 1
+            ensure_ingredient_category(ingredient)
+            ingredient_map[ingredient_name] = ingredient
 
         logger.info(
-            "[FormalizationPipeline] %d ingrédients trouvés textuellement, %d à créer",
+            "[FormalizationPipeline] %d ingrédients résolus (%d créés), catégories assurées",
             len(ingredient_map),
-            len(ingredients_to_create),
+            created_count,
         )
-
-        for ingredient_name in ingredients_to_create:
-            ingredient_map[ingredient_name] = Ingredient.objects.create(name=ingredient_name)
 
         recipe = Recipe.objects.create(
             title=formalized_recipe.title,

@@ -170,5 +170,14 @@ def get_or_create_ingredient(ingredient_name: str) -> Tuple[Ingredient, bool]:
         ingredient_name,
     )
     ingredient = Ingredient.objects.create(name=ingredient_name)
+    try:
+        from recipes.services.ingredient_categorization import ensure_ingredient_category
+
+        ensure_ingredient_category(ingredient)
+    except Exception:
+        logger.exception(
+            "[IngredientMatcher] Échec catégorisation pour '%s' (ingrédient créé sans catégorie)",
+            ingredient_name,
+        )
     return ingredient, True
 

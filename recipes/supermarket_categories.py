@@ -42,6 +42,7 @@ SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Se
                     "chou",
                     "salade iceberg",
                     "salade romaine",
+                    "laitue",
                     "mâche",
                     "mache",
                     "roquette",
@@ -65,6 +66,18 @@ SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Se
                     "brocoli",
                     "champignon",
                     "gingembre frais",
+                    "gingembre",
+                    "persil",
+                    "basilic",
+                    "coriandre",
+                    "ciboulette",
+                    "menthe",
+                    "aneth",
+                    "estragon",
+                    "romarin",
+                    "sauge",
+                    "cerfeuil",
+                    "bouquet garni",
                     "ail",
                     "échalote",
                     "echalote",
@@ -141,6 +154,12 @@ SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Se
                     "pizza crue",
                     "pâte à pizza",
                     "pate a pizza",
+                    "pâte brisée",
+                    "pate brisee",
+                    "pâte feuilletée",
+                    "pate feuilletee",
+                    "feuilles de brick",
+                    "feuille de brick",
                     "pizza",
                     "baguette",
                     "pain",
@@ -405,6 +424,13 @@ SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Se
                 31,
                 (
                     "lait de coco",
+                    "tofu",
+                    "tempeh",
+                    "miso",
+                    "houmous",
+                    "hummus",
+                    "pesto",
+                    "tapenade",
                     "lait en poudre",
                     "lait concentré",
                     "lait concentre",
@@ -572,6 +598,10 @@ SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Se
                     "miel",
                     "sirop d'érable",
                     "sirop d erable",
+                    "sirop d'agave",
+                    "sirop d agave",
+                    "extrait de vanille",
+                    "vanille",
                     "cassonade",
                     "vergeoise",
                     "sucre glace",
@@ -903,15 +933,40 @@ LEGACY_CATEGORY_NAME_TO_LEAF_SLUG = {
 }
 
 
+_MATCH_STOPWORDS = frozenset(
+    {"de", "des", "du", "d", "a", "à", "au", "aux", "et", "en", "la", "le", "les", "un", "une"}
+)
+
+
+def _normalize_match_text(name: str) -> str:
+    n = name.lower().strip()
+    n = n.replace("œ", "oe").replace("æ", "ae")
+    return re.sub(r"\s+", " ", n)
+
+
 def _keyword_matches(name_lower: str, kw: str) -> bool:
-    """Évite les faux positifs type « lait » dans « laitue »."""
-    if " " in kw:
-        return kw in name_lower
-    return re.search(
-        r"(?<!\w)" + re.escape(kw) + r"(?!\w)",
-        name_lower,
-        flags=re.UNICODE,
-    ) is not None
+    """
+    Match exact ou pluriel FR simple (s/x optionnel).
+    Évite les faux positifs type « lait » dans « laitue » via limites de mot.
+    """
+    if " " not in kw:
+        return (
+            re.search(
+                r"(?<!\w)" + re.escape(kw) + r"(?:s|x)?(?!\w)",
+                name_lower,
+                flags=re.UNICODE,
+            )
+            is not None
+        )
+
+    parts: List[str] = []
+    for w in kw.split():
+        if w in _MATCH_STOPWORDS or len(w) <= 2:
+            parts.append(re.escape(w))
+        else:
+            parts.append(re.escape(w) + r"(?:s|x)?")
+    pattern = r"(?<!\w)" + r"\s+".join(parts) + r"(?!\w)"
+    return re.search(pattern, name_lower, flags=re.UNICODE) is not None
 
 
 def match_leaf_slug_from_name(name: str) -> Optional[str]:
@@ -920,7 +975,7 @@ def match_leaf_slug_from_name(name: str) -> Optional[str]:
     """
     if not name or not name.strip():
         return None
-    n = name.lower().strip()
+    n = _normalize_match_text(name)
     for slug, kw in FLAT_KEYWORD_RULES:
         if _keyword_matches(n, kw):
             return slug

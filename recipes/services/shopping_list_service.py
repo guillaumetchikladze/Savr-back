@@ -151,13 +151,9 @@ def add_item_to_shopping_list(
     with transaction.atomic():
         ingredient, _ = get_or_create_ingredient(ingredient_name)
 
-        if not ingredient.category:
-            from recipes.services.ingredient_categorization import resolve_category_for_ingredient
+        from recipes.services.ingredient_categorization import ensure_ingredient_category
 
-            category = resolve_category_for_ingredient(ingredient_name, ingredient)
-            if category:
-                ingredient.category = category
-                ingredient.save(update_fields=['category'])
+        ensure_ingredient_category(ingredient)
 
         unit_group = _unit_group_for_unit(unit)
         item, item_created = ShoppingListItem.objects.get_or_create(

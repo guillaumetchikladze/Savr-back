@@ -1272,6 +1272,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
                         if ingredient_name:
                             ingredient_obj, _ = Ingredient.objects.get_or_create(name=ingredient_name)
 
+                    if ingredient_obj:
+                        from .services.ingredient_categorization import ensure_ingredient_category
+
+                        ensure_ingredient_category(ingredient_obj)
+
                     if not ingredient_obj:
                         # Impossible de déterminer l'ingrédient, on ignore cette entrée
                         continue
@@ -5585,7 +5590,12 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         # Prefetch recipe ingredients if possible
         ris = recipe.recipe_ingredients.all().select_related('ingredient__category')
 
+        from .services.ingredient_categorization import ensure_ingredient_category
+
         for ri in ris:
+            if ri.ingredient_id:
+                ensure_ingredient_category(ri.ingredient)
+
             unit_group = self._unit_group_for_unit(ri.unit)
             qty = float(ri.quantity) * ratio
             qty_canon, unit_canon = self._canonicalize_quantity(qty, ri.unit)
@@ -6354,11 +6364,10 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             ingredient, created = get_or_create_ingredient(ingredient_name)
             
             # Déterminer la catégorie si non fournie
-            if not category_id and not ingredient.category:
-                category = self._categorize_ingredient(ingredient_name, ingredient)
-                if category:
-                    ingredient.category = category
-                    ingredient.save(update_fields=['category'])
+            if not category_id:
+                from .services.ingredient_categorization import ensure_ingredient_category
+
+                ensure_ingredient_category(ingredient)
             
             # Déterminer le unit_group à partir de l'unité
             unit_group = self._unit_group_for_unit(unit)

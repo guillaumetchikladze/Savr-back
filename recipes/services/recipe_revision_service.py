@@ -118,6 +118,9 @@ def _apply_edit_payload(recipe: Recipe, data: dict) -> None:
             if not ingredient_name:
                 continue
             ingredient_obj, _ = Ingredient.objects.get_or_create(name=ingredient_name)
+            from recipes.services.ingredient_categorization import ensure_ingredient_category
+
+            ensure_ingredient_category(ingredient_obj)
             try:
                 quantity_decimal = Decimal(str(item.get('quantity', 0)))
             except Exception:
