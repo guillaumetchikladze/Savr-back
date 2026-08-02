@@ -30,6 +30,11 @@ python manage.py migrate --noinput
 
 echo "✅ Migrations appliquées avec succès !"
 
+# CSS/JS admin (et autres statics) servis par WhiteNoise — pas via MinIO.
+echo "📦 Collecte des fichiers static..."
+python manage.py collectstatic --noinput
+echo "✅ Static files prêts !"
+
 # Exécuter la commande passée en argument (daphne par défaut pour HTTP + WebSocket)
 echo "🎯 Démarrage du serveur ASGI (Daphne)..."
 exec "$@"

@@ -47,7 +47,8 @@ urlpatterns = [
     path('api/chat/', include('chat.urls')),
 ]
 
-# Daphne / ASGI ne sert pas les statics : en DEBUG, exposer ceux des apps (admin CSS…).
+# Daphne / ASGI : WhiteNoise sert /static/ (y compris en prod).
+# En DEBUG local, WHITENOISE_USE_FINDERS + ce fallback couvrent l'admin sans collectstatic.
 if settings.DEBUG:
     urlpatterns += staticfiles_urlpatterns()
 

@@ -56,16 +56,47 @@ if SENTRY_DSN:
 
 ALLOWED_HOSTS = ['*']
 
-# Requis dès Django 4+ pour le POST admin / formulaires derrière HTTPS.
-# Sans ça : "CSRF verification failed" à la connexion /admin (l'API JWT n'est pas impactée).
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in config(
-        'CSRF_TRUSTED_ORIGINS',
-        default='https://api.cookoo.tchikladze.fr,https://tchikook.fr,https://www.tchikook.fr',
-    ).split(',')
-    if origin.strip()
-]
+# Derrière Caddy (HTTPS terminé au proxy) : sans ça Django voit du HTTP et le CSRF admin échoue.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+
+def _build_csrf_trusted_origins():
+    """Origines autorisées pour POST admin / formulaires (scheme obligatoire)."""
+    raw = config('CSRF_TRUSTED_ORIGINS', default='').strip()
+    origins = [o.strip().rstrip('/') for o in raw.split(',') if o.strip()] if raw else []
+
+    domain = config('DOMAIN', default='').strip().rstrip('/')
+    if domain:
+        if '://' in domain:
+            origins.insert(0, domain)
+        else:
+            origins.insert(0, f'https://{domain}')
+            # Caddy local sans TLS
+            origins.append(f'http://{domain}')
+
+    # Déduplique en gardant l'ordre
+    seen = set()
+    deduped = []
+    for origin in origins:
+        if origin not in seen:
+            seen.add(origin)
+            deduped.append(origin)
+
+    if not deduped:
+        deduped = [
+            'https://api.cookoo.tchikladze.fr',
+            'https://tchikook.fr',
+            'https://www.tchikook.fr',
+        ]
+    return deduped
+
+
+# Requis dès Django 4+ pour le POST admin derrière HTTPS (l'API JWT n'est pas impactée).
+CSRF_TRUSTED_ORIGINS = _build_csrf_trusted_origins()
+
+if not DEBUG:
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SECURE = True
 
 # Filtrage recettes / préférences alimentaires (recipes.dietary_filters)
 # Distance cosinus pgvector : 0 = identique, 2 = opposé. Plus la valeur est basse, plus c’est strict.
@@ -107,6 +138,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -190,6 +222,8 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+# En DEBUG, WhiteNoise peut servir depuis les apps sans collectstatic.
+WHITENOISE_USE_FINDERS = DEBUG
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -294,14 +328,14 @@ AWS_S3_OBJECT_PARAMETERS = {
 AWS_DEFAULT_ACL = 'public-read'
 AWS_QUERYSTRING_AUTH = False
 
-# Use S3 for media files if configured, otherwise use local storage.
-# En DEBUG local : statics admin servis depuis les apps (pas S3) — sinon /admin sans CSS.
+# Media files → S3/MinIO. Static admin → WhiteNoise (le navigateur ne peut pas
+# charger le CSS depuis minio:9000 / une IP LAN privée).
 if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_BUCKET:
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     AWS_S3_FILE_OVERWRITE = False
     AWS_S3_VERIFY = True
-    if not DEBUG:
-        STATICFILES_STORAGE = 'storages.backends.s3boto3.S3StaticStorage'
+
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # Celery configuration
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')

@@ -82,6 +82,8 @@ services:
       - AWS_USE_PATH_STYLE_ENDPOINT=true
       - SECRET_KEY=${SECRET_KEY:-django-insecure-change-me}
       - DEBUG=${DEBUG:-False}
+      - DOMAIN=${DOMAIN:-}
+      - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
