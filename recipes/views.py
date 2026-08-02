@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from accounts.permissions import IsValidated as IsAuthenticated
-from django.db.models import Q, Count, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef, F
+from django.db.models import Q, Count, Min, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef, F
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, date, timedelta, time
 from time import perf_counter
@@ -2399,6 +2399,53 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                   f"db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}")
         
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='timeline-bounds')
+    def timeline_bounds(self, request):
+        """
+        Bornes ultra-légères pour l'agenda Planning (pas de serializer lourd).
+        Query params optionnels:
+          - after=YYYY-MM-DD → next_date (premier repas strictement après)
+          - before=YYYY-MM-DD → prev_date (dernier repas strictement avant)
+        """
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
+        qs = MealPlan.objects.filter(accessible_meal_plan_filter)
+
+        agg = qs.aggregate(min_date=Min('date'), max_date=Max('date'))
+        min_date = agg.get('min_date')
+        max_date = agg.get('max_date')
+
+        after = (request.query_params.get('after') or '').strip()
+        before = (request.query_params.get('before') or '').strip()
+
+        next_date = None
+        prev_date = None
+        if after:
+            next_date = (
+                qs.filter(date__gt=after)
+                .order_by('date')
+                .values_list('date', flat=True)
+                .first()
+            )
+        if before:
+            prev_date = (
+                qs.filter(date__lt=before)
+                .order_by('-date')
+                .values_list('date', flat=True)
+                .first()
+            )
+
+        def _iso(d):
+            if d is None:
+                return None
+            return d.isoformat() if hasattr(d, 'isoformat') else str(d)
+
+        return Response({
+            'min_date': _iso(min_date),
+            'max_date': _iso(max_date),
+            'next_date': _iso(next_date),
+            'prev_date': _iso(prev_date),
+        })
     
     @action(detail=False, methods=['get'])
     def cooked(self, request):
