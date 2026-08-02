@@ -51,6 +51,7 @@ def get_accessible_meal_plan_filter(user):
     Q object : meal plans accessibles (propriétaire OU invité accepted/pending).
 
     Utilise Exists (pas de JOIN invitations) pour éviter DISTINCT / row explosion.
+    Préférer get_accessible_meal_plans_queryset() pour les listes bornées par date.
     """
     from django.db.models import Exists, OuterRef, Q
     from .models import MealInvitation
@@ -61,6 +62,46 @@ def get_accessible_meal_plan_filter(user):
         status__in=['accepted', 'pending'],
     )
     return Q(user=user) | Exists(invited)
+
+
+def get_accessible_meal_plans_queryset(user, date_gte=None, date_lte=None):
+    """
+    QuerySet meal plans accessibles, optimisé pour une fenêtre de dates.
+
+    Stratégie index-friendly:
+    - owned: filtre user (+ date) via mealplan_user_date_idx
+    - invited: ids via mealinv_invitee_status_idx puis IN
+    Évite le Exists corrélé ligne-à-ligne (coûteux sur grandes fenêtres).
+    """
+    from .models import MealPlan, MealInvitation
+
+    invited_qs = MealInvitation.objects.filter(
+        invitee=user,
+        status__in=['accepted', 'pending'],
+    )
+    if date_gte:
+        invited_qs = invited_qs.filter(meal_plan__date__gte=date_gte)
+    if date_lte:
+        invited_qs = invited_qs.filter(meal_plan__date__lte=date_lte)
+
+    qs = MealPlan.objects.filter(
+        Q(user=user) | Q(id__in=invited_qs.values('meal_plan_id'))
+    )
+    if date_gte:
+        qs = qs.filter(date__gte=date_gte)
+    if date_lte:
+        qs = qs.filter(date__lte=date_lte)
+    return qs
+
+
+def merge_date_bounds(*aggregates):
+    """Fusionne plusieurs {min_date, max_date} (ignore None)."""
+    mins = [a.get('min_date') for a in aggregates if a and a.get('min_date') is not None]
+    maxs = [a.get('max_date') for a in aggregates if a and a.get('max_date') is not None]
+    return {
+        'min_date': min(mins) if mins else None,
+        'max_date': max(maxs) if maxs else None,
+    }
 
 
 def get_invited_recipe_filter(user):

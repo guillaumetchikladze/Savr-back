@@ -71,6 +71,19 @@ class UserLightSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'avatar_url', 'display_name']
 
+    def to_representation(self, instance):
+        """Cache request-scoped: un user sérialisé une seule fois (évite re-presign avatar)."""
+        uid = getattr(instance, 'pk', None)
+        if uid is not None:
+            cache = self.context.setdefault('user_light_cache', {})
+            cached = cache.get(uid)
+            if cached is not None:
+                return cached
+        data = super().to_representation(instance)
+        if uid is not None:
+            self.context.setdefault('user_light_cache', {})[uid] = data
+        return data
+
     def get_display_name(self, obj):
         u = (getattr(obj, 'username', None) or '').strip()
         if u:
@@ -1059,13 +1072,19 @@ class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
         ]
 
 
-def _meal_plan_recipe_previews(meal_plan, limit=3, skip_presign=False):
+def _meal_plan_recipe_previews(meal_plan, limit=3, skip_presign=False, context=None):
     """
     Retourne max `limit` previews {image_url, title} pour la timeline.
     Inclut les recettes sans photo (title seulement).
-    skip_presign=True → URL S3 directe (beaucoup plus rapide en list).
+
+    skip_presign=True uniquement si le bucket est réellement public.
+    Sinon toujours pré-signer (cache mémoire côté settings + cache request-scoped via context).
     """
     from savr_back.settings import build_presigned_get_url, build_s3_url
+
+    path_cache = None
+    if context is not None:
+        path_cache = context.setdefault('presign_path_cache', {})
 
     previews = []
     try:
@@ -1087,11 +1106,18 @@ def _meal_plan_recipe_previews(meal_plan, limit=3, skip_presign=False):
                     image_url = build_s3_url(path)
                 except Exception:
                     image_url = path
+            elif path_cache is not None and path in path_cache:
+                image_url = path_cache[path]
             else:
                 try:
                     image_url = build_presigned_get_url(path)
                 except Exception:
-                    image_url = path
+                    try:
+                        image_url = build_s3_url(path)
+                    except Exception:
+                        image_url = path
+                if path_cache is not None:
+                    path_cache[path] = image_url
         previews.append({
             'image_url': image_url,
             'title': title,
@@ -1170,7 +1196,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
         if cached is not None:
             return cached
         skip = bool(self.context.get('skip_presign'))
-        previews = _meal_plan_recipe_previews(obj, skip_presign=skip)
+        previews = _meal_plan_recipe_previews(obj, skip_presign=skip, context=self.context)
         setattr(obj, '_timeline_recipe_previews_cache', previews)
         return previews
 
@@ -1313,7 +1339,7 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
         if cached is not None:
             return cached
         skip = bool(self.context.get('skip_presign'))
-        previews = _meal_plan_recipe_previews(obj, skip_presign=skip)
+        previews = _meal_plan_recipe_previews(obj, skip_presign=skip, context=self.context)
         setattr(obj, '_timeline_recipe_previews_cache', previews)
         return previews
 

@@ -70,7 +70,14 @@ from accounts.services.expo_push import send_expo_push_notifications
 from .tasks import process_recipe_import
 from accounts.tasks import send_timer_almost_finished_push, send_meal_time_photo_reminder_push
 from savr_back.celery import app as celery_app
-from .utils import get_accessible_meal_plan_filter, get_invited_recipe_filter, shopping_list_item_quantity_is_stale, meal_plan_slot_api_fields
+from .utils import (
+    get_accessible_meal_plan_filter,
+    get_accessible_meal_plans_queryset,
+    get_invited_recipe_filter,
+    merge_date_bounds,
+    shopping_list_item_quantity_is_stale,
+    meal_plan_slot_api_fields,
+)
 from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
 
 
@@ -2044,17 +2051,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         from django.db.models import Case, When, IntegerField
         
-        # Utiliser le filtre accessible (Exists, sans JOIN+DISTINCT)
-        accessible_meal_plan_filter = get_accessible_meal_plan_filter(self.request.user)
-        qs = MealPlan.objects.filter(accessible_meal_plan_filter)
-        
-        # Filtres de date (format YYYY-MM-DD)
+        # Filtres de date (format YYYY-MM-DD) — appliqués tôt pour accès index-friendly
         date_gte = self.request.query_params.get('date__gte')
         date_lte = self.request.query_params.get('date__lte')
-        if date_gte:
-            qs = qs.filter(date__gte=date_gte)
-        if date_lte:
-            qs = qs.filter(date__lte=date_lte)
+        if date_gte or date_lte:
+            qs = get_accessible_meal_plans_queryset(self.request.user, date_gte, date_lte)
+        else:
+            qs = MealPlan.objects.filter(get_accessible_meal_plan_filter(self.request.user))
         
         # Exclure les meal plans déjà dans une shopping list non archivée
         exclude_in_shopping_list = self.request.query_params.get('exclude_in_shopping_list')
@@ -2093,6 +2096,16 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         is_minimal = self.request.query_params.get('minimal', '').lower() == 'true'
         include_shopping_list = self.request.query_params.get('include_shopping_list', '').lower() == 'true'
         view_mode = (self.request.query_params.get('view') or '').strip().lower()
+
+        RECIPE_TIMELINE_DEFER = (
+            'recipe_batch__recipe__embedding',
+            'recipe_batch__recipe__search_index_text',
+            'recipe_batch__recipe__search_context_tags',
+            'recipe_batch__recipe__search_index_hash',
+            'recipe_batch__recipe__description',
+            'recipe_batch__recipe__steps_summary',
+            'recipe_batch__notes',
+        )
         
         if self.action in ['list']:
             if is_minimal:
@@ -2135,12 +2148,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 ).order_by('order')
                 # Ne pas charger embeddings / search text (vecteur 512d) pour la timeline
                 if view_mode == 'timeline':
-                    mprb_qs = mprb_qs.defer(
-                        'recipe_batch__recipe__embedding',
-                        'recipe_batch__recipe__search_index_text',
-                        'recipe_batch__recipe__search_context_tags',
-                        'recipe_batch__recipe__search_index_hash',
-                    )
+                    mprb_qs = mprb_qs.defer(*RECIPE_TIMELINE_DEFER)
                 qs = qs.select_related('user').prefetch_related(
                     Prefetch(
                         'invitations',
@@ -2420,33 +2428,60 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Query params optionnels:
           - after=YYYY-MM-DD → next_date (premier repas strictement après)
           - before=YYYY-MM-DD → prev_date (dernier repas strictement avant)
-        """
-        accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-        qs = MealPlan.objects.filter(accessible_meal_plan_filter)
 
-        agg = qs.aggregate(min_date=Min('date'), max_date=Max('date'))
-        min_date = agg.get('min_date')
-        max_date = agg.get('max_date')
+        Accès index-friendly: 2 aggregates (owned + invited) au lieu d'un Exists corrélé.
+        """
+        user = request.user
+        owned_agg = MealPlan.objects.filter(user=user).aggregate(
+            min_date=Min('date'), max_date=Max('date'),
+        )
+        invited_ids = MealInvitation.objects.filter(
+            invitee=user,
+            status__in=['accepted', 'pending'],
+        ).values('meal_plan_id')
+        invited_agg = MealPlan.objects.filter(id__in=invited_ids).aggregate(
+            min_date=Min('date'), max_date=Max('date'),
+        )
+        bounds = merge_date_bounds(owned_agg, invited_agg)
+        min_date = bounds.get('min_date')
+        max_date = bounds.get('max_date')
 
         after = (request.query_params.get('after') or '').strip()
         before = (request.query_params.get('before') or '').strip()
 
         next_date = None
         prev_date = None
+        # Sous-requêtes séparées (owned / invited) — pas de Exists ligne-à-ligne
         if after:
-            next_date = (
-                qs.filter(date__gt=after)
+            next_owned = (
+                MealPlan.objects.filter(user=user, date__gt=after)
                 .order_by('date')
                 .values_list('date', flat=True)
                 .first()
             )
+            next_invited = (
+                MealPlan.objects.filter(id__in=invited_ids, date__gt=after)
+                .order_by('date')
+                .values_list('date', flat=True)
+                .first()
+            )
+            candidates = [d for d in (next_owned, next_invited) if d is not None]
+            next_date = min(candidates) if candidates else None
         if before:
-            prev_date = (
-                qs.filter(date__lt=before)
+            prev_owned = (
+                MealPlan.objects.filter(user=user, date__lt=before)
                 .order_by('-date')
                 .values_list('date', flat=True)
                 .first()
             )
+            prev_invited = (
+                MealPlan.objects.filter(id__in=invited_ids, date__lt=before)
+                .order_by('-date')
+                .values_list('date', flat=True)
+                .first()
+            )
+            candidates = [d for d in (prev_owned, prev_invited) if d is not None]
+            prev_date = max(candidates) if candidates else None
 
         def _iso(d):
             if d is None:
@@ -2458,6 +2493,93 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             'max_date': _iso(max_date),
             'next_date': _iso(next_date),
             'prev_date': _iso(prev_date),
+        })
+
+    @action(detail=False, methods=['get'], url_path='timeline-window')
+    def timeline_window(self, request):
+        """
+        Fenêtre Planning en une seule requête: meal_plans (view=timeline) + invitations pending.
+        Remplace le Promise.all meal-plans + meal-invitations côté jump / hydrate.
+        Params requis: date__gte, date__lte (YYYY-MM-DD).
+        """
+        from .serializers import MealPlanTimelineSerializer, MealInvitationTimelineListSerializer
+
+        date_gte = (request.query_params.get('date__gte') or '').strip()
+        date_lte = (request.query_params.get('date__lte') or '').strip()
+        if not date_gte or not date_lte:
+            return Response(
+                {'error': 'date__gte and date__lte are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        meal_time_order = Case(
+            When(meal_time='lunch', then=0),
+            When(meal_time='dinner', then=1),
+            default=2,
+            output_field=IntegerField(),
+        )
+        recipe_defer = (
+            'recipe_batch__recipe__embedding',
+            'recipe_batch__recipe__search_index_text',
+            'recipe_batch__recipe__search_context_tags',
+            'recipe_batch__recipe__search_index_hash',
+            'recipe_batch__recipe__description',
+            'recipe_batch__recipe__steps_summary',
+            'recipe_batch__notes',
+        )
+        mprb_qs = (
+            MealPlanRecipeBatch.objects
+            .select_related('recipe_batch__recipe')
+            .defer(*recipe_defer)
+            .order_by('order')
+        )
+
+        qs = get_accessible_meal_plans_queryset(request.user, date_gte, date_lte)
+        qs = qs.annotate(
+            is_guest_annot=Exists(
+                MealInvitation.objects.filter(
+                    meal_plan_id=OuterRef('pk'),
+                    invitee=request.user,
+                    status='accepted',
+                )
+            ),
+            has_published_post_annot=Exists(
+                Post.objects.filter(
+                    meal_plan_id=OuterRef('pk'),
+                    is_published=True,
+                )
+            ),
+        ).select_related('user').prefetch_related(
+            Prefetch(
+                'invitations',
+                queryset=MealInvitation.objects.filter(
+                    status__in=['accepted', 'pending'],
+                ).select_related('invitee'),
+            ),
+            Prefetch('meal_plan_recipe_batches', queryset=mprb_qs),
+        ).order_by('date', meal_time_order)
+
+        inv_qs = (
+            MealInvitation.objects.filter(
+                invitee=request.user,
+                status='pending',
+                meal_plan__date__gte=date_gte,
+                meal_plan__date__lte=date_lte,
+            )
+            .select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
+            .prefetch_related(
+                Prefetch('meal_plan__meal_plan_recipe_batches', queryset=mprb_qs),
+            )
+        )
+
+        ctx = self.get_serializer_context()
+        ctx['skip_presign'] = False
+        ctx.setdefault('user_light_cache', {})
+        ctx.setdefault('presign_path_cache', {})
+
+        return Response({
+            'meal_plans': MealPlanTimelineSerializer(qs, many=True, context=ctx).data,
+            'invitations': MealInvitationTimelineListSerializer(inv_qs, many=True, context=ctx).data,
         })
     
     @action(detail=False, methods=['get'])
@@ -2758,9 +2880,14 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         context['include_shopping_list'] = (
             self.request.query_params.get('include_shopping_list', '').lower() == 'true'
         )
-        # Pour la liste, éviter les presigned URLs coûteuses : on renvoie image_url
+        context.setdefault('user_light_cache', {})
+        context.setdefault('presign_path_cache', {})
+        # Pour la liste générique, on peut éviter les presign (URLs S3 publiques / non critiques).
+        # Timeline mobile a besoin d'URLs pré-signées (bucket privé → sinon 403 Forbidden).
         if self.action == 'list':
-            context['skip_presign'] = True
+            view_mode = (self.request.query_params.get('view') or '').strip().lower()
+            if view_mode != 'timeline':
+                context['skip_presign'] = True
             # Optim perf: éviter N+1 queries dans groupedDates
             if hasattr(self, '_grouped_dates_by_batch_id'):
                 context['grouped_dates_by_batch_id'] = self._grouped_dates_by_batch_id
@@ -3784,16 +3911,27 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
 
         qs = qs.select_related('inviter', 'invitee', 'meal_plan', 'meal_plan__user')
 
-        # Timeline: on veut 0-2 thumbs de recettes sans charger tout le meal plan
+        # Timeline: 0-2 thumbs sans embeddings / description / steps
         view_mode = (params.get('view') or '').strip().lower()
         if view_mode == 'timeline':
             from django.db.models import Prefetch
             from .models import MealPlanRecipeBatch
-            qs = qs.prefetch_related(
-                Prefetch(
-                    'meal_plan__meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+            mprb_qs = (
+                MealPlanRecipeBatch.objects
+                .select_related('recipe_batch__recipe')
+                .defer(
+                    'recipe_batch__recipe__embedding',
+                    'recipe_batch__recipe__search_index_text',
+                    'recipe_batch__recipe__search_context_tags',
+                    'recipe_batch__recipe__search_index_hash',
+                    'recipe_batch__recipe__description',
+                    'recipe_batch__recipe__steps_summary',
+                    'recipe_batch__notes',
                 )
+                .order_by('order')
+            )
+            qs = qs.prefetch_related(
+                Prefetch('meal_plan__meal_plan_recipe_batches', queryset=mprb_qs),
             )
         
         status_param = params.get('status')
@@ -3813,6 +3951,8 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['request'] = self.request
+        context.setdefault('user_light_cache', {})
+        context.setdefault('presign_path_cache', {})
         return context
     
     @action(detail=True, methods=['post'])
