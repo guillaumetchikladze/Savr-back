@@ -48,14 +48,19 @@ def get_batch_portions(meal_plan, mprb, people_count=None):
 
 def get_accessible_meal_plan_filter(user):
     """
-    Retourne un Q object pour filtrer les MealPlan auxquels un utilisateur a accès :
-    - Les MealPlan dont il est le propriétaire
-    - Les MealPlan auxquels il est invité avec une invitation acceptée ou en attente (lecture autorisée)
+    Q object : meal plans accessibles (propriétaire OU invité accepted/pending).
+
+    Utilise Exists (pas de JOIN invitations) pour éviter DISTINCT / row explosion.
     """
-    return Q(
-        Q(user=user) |  # Propriétaire
-        Q(invitations__invitee=user, invitations__status__in=['accepted', 'pending'])
+    from django.db.models import Exists, OuterRef, Q
+    from .models import MealInvitation
+
+    invited = MealInvitation.objects.filter(
+        meal_plan_id=OuterRef('pk'),
+        invitee=user,
+        status__in=['accepted', 'pending'],
     )
+    return Q(user=user) | Exists(invited)
 
 
 def get_invited_recipe_filter(user):

@@ -2044,9 +2044,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         from django.db.models import Case, When, IntegerField
         
-        # Utiliser le filtre accessible qui inclut les meal plans où l'utilisateur est invité accepté
+        # Utiliser le filtre accessible (Exists, sans JOIN+DISTINCT)
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(self.request.user)
-        qs = MealPlan.objects.filter(accessible_meal_plan_filter).distinct()
+        qs = MealPlan.objects.filter(accessible_meal_plan_filter)
         
         # Filtres de date (format YYYY-MM-DD)
         date_gte = self.request.query_params.get('date__gte')
@@ -2096,11 +2096,15 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         
         if self.action in ['list']:
             if is_minimal:
-        # Mode minimal : NE PAS charger recipe ni meal_plan_recipe_batches du tout
-        # WeekPlanModal n'a besoin que de meal_type, donc pas besoin de recipes/batches
-                # Utiliser only() pour limiter les champs chargés de la DB
-                qs = qs.only(
-                'id', 'date', 'meal_time', 'meal_type', 'confirmed'
+                # Paint rapide: une seule query + Exists annoté (pas de N+1 is_guest / user / avatar)
+                qs = qs.annotate(
+                    is_guest_annot=Exists(
+                        MealInvitation.objects.filter(
+                            meal_plan_id=OuterRef('pk'),
+                            invitee=self.request.user,
+                            status='accepted',
+                        )
+                    ),
                 ).order_by('date', meal_time_order)
             else:
                 # Mode complet : précharger les relations nécessaires (plus de recipe directe)
@@ -2126,6 +2130,17 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                             )
                         ),
                     )
+                mprb_qs = MealPlanRecipeBatch.objects.select_related(
+                    *mprb_select_related,
+                ).order_by('order')
+                # Ne pas charger embeddings / search text (vecteur 512d) pour la timeline
+                if view_mode == 'timeline':
+                    mprb_qs = mprb_qs.defer(
+                        'recipe_batch__recipe__embedding',
+                        'recipe_batch__recipe__search_index_text',
+                        'recipe_batch__recipe__search_context_tags',
+                        'recipe_batch__recipe__search_index_hash',
+                    )
                 qs = qs.select_related('user').prefetch_related(
                     Prefetch(
                         'invitations',
@@ -2133,9 +2148,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                     ),
                     Prefetch(
                         'meal_plan_recipe_batches',
-                        queryset=MealPlanRecipeBatch.objects.select_related(
-                            *mprb_select_related,
-                        ).order_by('order'),
+                        queryset=mprb_qs,
                     ),
                 ).order_by('date', meal_time_order)
         elif self.action in ['by_date']:

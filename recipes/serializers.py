@@ -1059,11 +1059,14 @@ class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
         ]
 
 
-def _meal_plan_recipe_previews(meal_plan, limit=3):
+def _meal_plan_recipe_previews(meal_plan, limit=3, skip_presign=False):
     """
     Retourne max `limit` previews {image_url, title} pour la timeline.
     Inclut les recettes sans photo (title seulement).
+    skip_presign=True → URL S3 directe (beaucoup plus rapide en list).
     """
+    from savr_back.settings import build_presigned_get_url, build_s3_url
+
     previews = []
     try:
         mprbs = meal_plan.meal_plan_recipe_batches.all()
@@ -1074,8 +1077,23 @@ def _meal_plan_recipe_previews(meal_plan, limit=3):
         if not recipe:
             continue
         title = (getattr(recipe, 'title', None) or '').strip() or 'Recette'
+        path = getattr(recipe, 'image_path', None) or None
+        image_url = None
+        if path:
+            if str(path).startswith('http'):
+                image_url = path
+            elif skip_presign:
+                try:
+                    image_url = build_s3_url(path)
+                except Exception:
+                    image_url = path
+            else:
+                try:
+                    image_url = build_presigned_get_url(path)
+                except Exception:
+                    image_url = path
         previews.append({
-            'image_url': getattr(recipe, 'image_url', None) or None,
+            'image_url': image_url,
             'title': title,
         })
         if len(previews) >= limit:
@@ -1148,26 +1166,19 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
         return {'key': 'in_progress', 'label': 'En cuisine'}
 
     def get_recipe_previews(self, obj: MealPlan):
-        return _meal_plan_recipe_previews(obj)
+        cached = getattr(obj, '_timeline_recipe_previews_cache', None)
+        if cached is not None:
+            return cached
+        skip = bool(self.context.get('skip_presign'))
+        previews = _meal_plan_recipe_previews(obj, skip_presign=skip)
+        setattr(obj, '_timeline_recipe_previews_cache', previews)
+        return previews
 
     def get_recipe_thumbs(self, obj: MealPlan):
         """
-        Retourne max 3 URLs d'images de recette liées au meal plan.
-        Pré-requis perf: prefetch meal_plan_recipe_batches + select_related(recipe_batch__recipe).
+        Max 3 URLs — dérivé des previews pour éviter un 2e passage + 2e vague de presign.
         """
-        thumbs = []
-        try:
-            mprbs = obj.meal_plan_recipe_batches.all()
-        except Exception:
-            mprbs = []
-        for mprb in mprbs:
-            recipe = getattr(getattr(mprb, 'recipe_batch', None), 'recipe', None)
-            u = getattr(recipe, 'image_url', None) if recipe else None
-            if u:
-                thumbs.append(u)
-            if len(thumbs) >= 3:
-                break
-        return thumbs
+        return [p.get('image_url') for p in self.get_recipe_previews(obj) if p.get('image_url')]
 
     def get_recipes_count(self, obj: MealPlan):
         """
@@ -1224,34 +1235,38 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
     def get_people_preview(self, obj: MealPlan):
         """
         Max 3 personnes (host inclus) sous forme {id, name, avatar}.
-        Le front gère les URLs relatives via sa fonction avatarFromUser si besoin.
+        Une seule sérialisation UserLight par user (évite double presign avatar).
         """
         host = getattr(obj, 'user', None)
         invited = self._invited_users_for_preview(obj)
 
-        def _light(u):
-            """
-            IMPORTANT: `u.avatar_url` est souvent un chemin S3 (avatars/...)
-            et DOIT être converti en URL presignée pour le mobile.
-            """
+        def _entry(u):
             try:
-                return UserLightSerializer(u, context=self.context).data
+                data = UserLightSerializer(u, context=self.context).data
             except Exception:
-                return None
-
-        def _name(u):
-            data = _light(u) or {}
-            return (data.get('display_name') or data.get('username') or getattr(u, 'email', None) or 'Utilisateur')
-
-        def _avatar(u):
-            data = _light(u) or {}
-            # `UserLightSerializer.avatar_url` est presigné si nécessaire.
-            return data.get('avatar_url') or getattr(u, 'avatar', None) or getattr(u, 'profile_picture', None) or getattr(u, 'picture', None)
+                data = {}
+            name = (
+                data.get('display_name')
+                or data.get('username')
+                or getattr(u, 'email', None)
+                or 'Utilisateur'
+            )
+            avatar = (
+                data.get('avatar_url')
+                or getattr(u, 'avatar', None)
+                or getattr(u, 'profile_picture', None)
+                or getattr(u, 'picture', None)
+            )
+            return {
+                'id': data.get('id') or getattr(u, 'id', None),
+                'name': name,
+                'avatar': avatar,
+            }
 
         out = []
         seen = set()
         if host and getattr(host, 'id', None) is not None:
-            out.append({'id': host.id, 'name': _name(host), 'avatar': _avatar(host)})
+            out.append(_entry(host))
             seen.add(str(host.id))
         for u in invited:
             if len(out) >= 3:
@@ -1263,7 +1278,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             if key in seen:
                 continue
             seen.add(key)
-            out.append({'id': uid, 'name': _name(u), 'avatar': _avatar(u)})
+            out.append(_entry(u))
         return out
 
 
@@ -1294,22 +1309,16 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
         return obj.get_meal_time_display()
 
     def get_recipe_previews(self, obj: MealPlan):
-        return _meal_plan_recipe_previews(obj)
+        cached = getattr(obj, '_timeline_recipe_previews_cache', None)
+        if cached is not None:
+            return cached
+        skip = bool(self.context.get('skip_presign'))
+        previews = _meal_plan_recipe_previews(obj, skip_presign=skip)
+        setattr(obj, '_timeline_recipe_previews_cache', previews)
+        return previews
 
     def get_recipe_thumbs(self, obj: MealPlan):
-        thumbs = []
-        try:
-            mprbs = obj.meal_plan_recipe_batches.all()
-        except Exception:
-            mprbs = []
-        for mprb in mprbs:
-            recipe = getattr(getattr(mprb, 'recipe_batch', None), 'recipe', None)
-            u = getattr(recipe, 'image_url', None) if recipe else None
-            if u:
-                thumbs.append(u)
-            if len(thumbs) >= 3:
-                break
-        return thumbs
+        return [p.get('image_url') for p in self.get_recipe_previews(obj) if p.get('image_url')]
 
     def get_recipes_count(self, obj: MealPlan):
         try:
@@ -1522,63 +1531,38 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
 
 class MealPlanMinimalListSerializer(serializers.ModelSerializer):
     """
-    Serializer ultra-léger pour le mode minimal :
-    - Seulement les champs essentiels (id, date, meal_time, meal_type)
-    - PAS de recipe ni recipes (payload léger pour le calendrier)
-    - Pas de groupedDates, total_servings, total_participants, total_guest_count
-    - Pas de calculs coûteux sur les groupes
+    Serializer ultra-léger pour le paint rapide Planning:
+    - champs agenda seulement (pas de user / avatar / inviter → zéro N+1 / presign)
+    - is_guest via annotation Exists (is_guest_annot) côté queryset
     """
     meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     is_guest = serializers.SerializerMethodField()
-    inviter_name = serializers.SerializerMethodField()
-    user = UserLightSerializer(read_only=True)
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
             return obj.custom_label
         return obj.get_meal_time_display()
-    
+
     class Meta:
         model = MealPlan
         fields = [
             'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'confirmed', 'is_guest', 'inviter_name', 'user',
+            'meal_type', 'meal_type_display', 'confirmed', 'is_guest',
         ]
-    
+
     def get_is_guest(self, obj: MealPlan):
-        """
-        Vérifie si l'utilisateur actuel a une invitation acceptée pour ce meal plan.
-        """
+        if hasattr(obj, 'is_guest_annot'):
+            return bool(getattr(obj, 'is_guest_annot'))
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
             return False
-        
         from .models import MealInvitation
         return MealInvitation.objects.filter(
             meal_plan=obj,
             invitee=request.user,
-            status='accepted'
+            status='accepted',
         ).exists()
-    
-    def get_inviter_name(self, obj: MealPlan):
-        """
-        Retourne le nom de l'inviteur si l'utilisateur actuel est invité.
-        """
-        request = self.context.get('request')
-        if not request or not request.user or not request.user.is_authenticated:
-            return None
-        
-        from .models import MealInvitation
-        invitation = MealInvitation.objects.filter(
-            meal_plan=obj,
-            invitee=request.user,
-            status='accepted'
-        ).select_related('inviter').first()
-        
-        if invitation and invitation.inviter:
-            return invitation.inviter.username or invitation.inviter.email
-        return None
 
 
 class MealPlanByDateSerializer(serializers.ModelSerializer):
