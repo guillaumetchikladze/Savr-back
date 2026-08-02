@@ -1,0 +1,30 @@
+{% extends "emails/_base.html" %}
+
+{% block title %}C’est enfin ton tour{% endblock %}
+{% block preheader %}Bienvenue sur Tchikook — tu peux entrer.{% endblock %}
+{% block subtitle %}Tchikook t’ouvre ses portes{% endblock %}
+
+{% block content %}
+  <div style="margin:10px 0 10px 0;font-size:22px;line-height:1.25;color:#111827;font-weight:800;">
+    C’est enfin ton tour, {{ username }} !
+  </div>
+  <div style="margin:0 0 12px 0;font-size:14px;line-height:1.7;color:#374151;">
+    On a hâte de t’accueillir. Ton accès à Tchikook est prêt : recettes, planning, listes de courses et assistant cuisine t’attendent.
+  </div>
+  <div style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#374151;">
+    Ouvre simplement l’application — si tu étais encore sur l’écran d’attente, elle se mettra à jour toute seule.
+  </div>
+
+  <div style="margin-top:8px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="display:inline-block;margin:0;">
+      <tr>
+        <td bgcolor="#FFFFFF" style="border-radius:12px;border:1px solid #E5E7EB;">
+          <a href="https://tchikook.fr"
+             style="display:inline-block;padding:12px 16px;font-size:14px;font-weight:800;line-height:1.2;color:#1F2937;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            Visiter tchikook.fr
+          </a>
+        </td>
+      </tr>
+    </table>
+  </div>
+{% endblock %}

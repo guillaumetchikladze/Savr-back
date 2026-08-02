@@ -1,0 +1,6 @@
+C’est enfin ton tour, {{ username }} !
+
+On a hâte de t’accueillir. Ton accès à Tchikook est prêt — ouvre l’application pour commencer.
+
+— L’équipe Tchikook
+https://tchikook.fr

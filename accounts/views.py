@@ -8,6 +8,7 @@ from django.db.models import Q, Exists, OuterRef
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
 from django.conf import settings
 import uuid
+from .permissions import IsValidated
 from .serializers import (
     UserRegistrationSerializer,
     UserSerializer,
@@ -71,7 +72,7 @@ def register_view(request):
         try:
             from emails.services import enqueue_email
 
-            from_email = (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@savr.app"
+            from_email = (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@tchikook.fr"
             login_url = (request.data.get("login_url") or "").strip()
 
             enqueue_email(
@@ -140,7 +141,7 @@ def profile_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def upload_avatar_view(request):
     """Générer une URL pré-signée pour uploader un avatar et mettre à jour le profil"""
     try:
@@ -184,7 +185,7 @@ def upload_avatar_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def confirm_avatar_upload_view(request):
     """Confirmer l'upload de l'avatar et mettre à jour le profil utilisateur"""
     image_path = request.data.get('image_path')
@@ -218,7 +219,7 @@ def confirm_avatar_upload_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def user_detail_view(request, user_id):
     """Récupérer les informations d'un utilisateur spécifique avec les statuts de suivi"""
     try:
@@ -237,7 +238,7 @@ def user_detail_view(request, user_id):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def search_view(request):
     """Recherche intelligente d'utilisateurs et de recettes"""
     query = request.query_params.get('q', '').strip()
@@ -347,7 +348,7 @@ def search_view(request):
 
 
 @api_view(['POST', 'DELETE'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def follow_user_view(request, user_id):
     """Demander à suivre, s'abonner en retour (auto) ou se désabonner / annuler une demande."""
     try:
@@ -380,7 +381,7 @@ def follow_user_view(request, user_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def accept_follow_request_view(request, user_id):
     """Accepter une demande de suivi reçue."""
     try:
@@ -406,7 +407,7 @@ def accept_follow_request_view(request, user_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def decline_follow_request_view(request, user_id):
     """Refuser une demande de suivi reçue."""
     try:
@@ -426,7 +427,7 @@ def decline_follow_request_view(request, user_id):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def notifications_view(request):
     """Récupérer toutes les notifications de l'utilisateur"""
     # Pagination + queryset optimisé:
@@ -471,7 +472,7 @@ def notifications_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def unread_notifications_count_view(request):
     """Récupérer le nombre de notifications non lues"""
     count = Notification.objects.filter(user=request.user, is_read=False).count()
@@ -479,7 +480,7 @@ def unread_notifications_count_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def mark_notification_read_view(request, notification_id):
     """Marquer une notification comme lue"""
     try:
@@ -492,7 +493,7 @@ def mark_notification_read_view(request, notification_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def mark_all_notifications_read_view(request):
     """Marquer toutes les notifications comme lues"""
     Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
@@ -500,7 +501,7 @@ def mark_all_notifications_read_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def complices_view(request):
     """Récupérer tous les complices de l'utilisateur (following + followers)"""
     # Récupérer les utilisateurs suivis (following)
@@ -527,7 +528,7 @@ def complices_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def followers_list_view(request):
     """Récupérer uniquement les abonnés de l'utilisateur (followers)"""
     followers_qs = Follow.objects.filter(following=request.user).select_related('follower')
@@ -537,7 +538,7 @@ def followers_list_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def following_list_view(request):
     """Récupérer uniquement les abonnements de l'utilisateur (following)"""
     following_qs = Follow.objects.filter(follower=request.user).select_related('following')
@@ -547,7 +548,7 @@ def following_list_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def user_followers_view(request, user_id):
     """Récupérer les abonnés d'un utilisateur spécifique"""
     try:
@@ -570,7 +571,7 @@ def user_followers_view(request, user_id):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def user_following_view(request, user_id):
     """Récupérer les abonnements d'un utilisateur spécifique"""
     try:
@@ -592,7 +593,7 @@ def user_following_view(request, user_id):
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def users_search_view(request):
     """Recherche d'utilisateurs pour autocomplete @mention (retourne id, username, avatar_url)"""
     from recipes.serializers import UserLightSerializer
@@ -608,7 +609,7 @@ def users_search_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def user_by_username_view(request):
     """Récupérer un utilisateur par son username exact (pour les liens @mention)"""
     username = (request.query_params.get('username') or '').strip()
@@ -622,7 +623,7 @@ def user_by_username_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def register_push_device_view(request):
     """
     Enregistrer ou mettre à jour un appareil capable de recevoir des notifications push Expo.
@@ -644,7 +645,7 @@ def register_push_device_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def test_push_device_view(request):
     """
     Endpoint de test pour envoyer une notification push immédiate
@@ -674,7 +675,7 @@ def test_push_device_view(request):
 
 
 def _password_reset_from_email():
-    return (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@savr.app"
+    return (getattr(settings, "EMAIL_FROM_ADDRESS", "") or "").strip() or "noreply@tchikook.fr"
 
 
 def _password_reset_response_payload(**extra):
@@ -844,7 +845,7 @@ def _sever_follow_relations(user_a, user_b):
 
 
 @api_view(['POST', 'DELETE'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def block_user_view(request, user_id):
     """POST = bloquer ; DELETE = débloquer."""
     try:
@@ -882,7 +883,7 @@ def block_user_view(request, user_id):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def blocked_users_list_view(request):
     """Liste paginée des utilisateurs bloqués par l’utilisateur courant."""
     from rest_framework.pagination import PageNumberPagination
@@ -916,7 +917,7 @@ class LoyaltyCardListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = LoyaltyCardSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsValidated]
 
     def get_queryset(self):
         return (
@@ -931,7 +932,7 @@ class LoyaltyCardDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
 
     serializer_class = LoyaltyCardSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsValidated]
 
     def get_queryset(self):
         return LoyaltyCard.objects.filter(owner=self.request.user, is_active=True)
@@ -942,7 +943,7 @@ class LoyaltyCardDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def loyalty_card_barcode_view(request, card_id):
     """
     Retourne les informations nécessaires pour afficher le code barre / QR d'une carte.
@@ -1002,7 +1003,7 @@ def loyalty_card_barcode_view(request, card_id):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsValidated])
 def feed_user_suggestions_view(request):
     """Suggestions de profils pour le feed (complices en commun + récence + aléatoire)."""
     rows = build_feed_user_suggestions(request.user)

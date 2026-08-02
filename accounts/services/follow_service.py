@@ -1,4 +1,4 @@
-"""Logique métier des demandes de suivi et relations complice."""
+"""Logique métier des demandes de suivi et relations d'ami."""
 from __future__ import annotations
 
 import random
@@ -104,7 +104,7 @@ def _notify_follow_request(requester: User, target: User):
         'Quelqu\'un veut te rejoindre',
     ]
     messages = [
-        f'{requester.username} souhaite devenir ton complice.',
+        f'{requester.username} souhaite devenir ton ami.',
         f'{requester.username} t\'a envoyé une demande d\'ami.',
     ]
     _create_notification(
@@ -120,7 +120,7 @@ def _notify_follow_request(requester: User, target: User):
 def _notify_new_follower(follower: User, following: User):
     titles = [
         'Un nouvel ami arrive',
-        'Tu as gagné un nouvel allié',
+        'Tu as gagné un nouvel ami',
     ]
     messages = [
         f'{follower.username} t\'a ajouté comme ami.',
@@ -248,7 +248,7 @@ def request_follow(requester: User, target: User) -> dict:
         _establish_mutual(requester, target, incoming)
         return {
             'action': 'mutual_established',
-            'message': 'Vous êtes maintenant complices',
+            'message': 'Vous êtes maintenant amis',
             **follow_relation_payload(requester, target),
         }
 

@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from . import views
+from . import views_billing
 
 urlpatterns = [
     path('register/', views.register_view, name='register'),
@@ -11,6 +12,10 @@ urlpatterns = [
     path('profile/', views.profile_view, name='profile'),
     path('profile/upload-avatar/', views.upload_avatar_view, name='upload_avatar'),
     path('profile/confirm-avatar-upload/', views.confirm_avatar_upload_view, name='confirm_avatar_upload'),
+    path('billing/plans/', views_billing.billing_plans_view, name='billing_plans'),
+    path('billing/handoff/', views_billing.billing_handoff_view, name='billing_handoff'),
+    path('billing/handoff/resolve/', views_billing.billing_handoff_resolve_view, name='billing_handoff_resolve'),
+    path('billing/status/', views_billing.billing_status_view, name='billing_status'),
     path('search/', views.search_view, name='search'),
     path('users/by-username/', views.user_by_username_view, name='user_by_username'),
     path('users/blocked/', views.blocked_users_list_view, name='blocked_users_list'),

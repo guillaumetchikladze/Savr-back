@@ -112,6 +112,7 @@ TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [BASE_DIR / 'templates'],
+        'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.debug',
@@ -176,7 +177,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -185,6 +187,35 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
+
+# Paywall / entitlements — when True, AI features require plan=premium
+AI_PAYWALL_ENABLED = config('AI_PAYWALL_ENABLED', default=False, cast=bool)
+
+# Billing architecture:
+# - contact_email : mailto support (défaut — safe App Store / en attendant IAP ou web)
+# - web_handoff   : token app → tchikook.fr (Stancer plus tard)
+# - iap           : App Store / Play Billing (rebuild + lib native)
+BILLING_CHECKOUT_MODE = config('BILLING_CHECKOUT_MODE', default='contact_email')
+BILLING_SUPPORT_EMAIL = config('BILLING_SUPPORT_EMAIL', default='contact@tchikook.fr')
+BILLING_WEB_CHECKOUT_BASE_URL = config(
+    'BILLING_WEB_CHECKOUT_BASE_URL',
+    default='https://tchikook.fr/licence',
+)
+BILLING_HANDOFF_TTL_SECONDS = config('BILLING_HANDOFF_TTL_SECONDS', default=600, cast=int)
+# Prix placeholders (à affiner) — mensuel / annuel
+BILLING_MONTHLY_PRICE_CENTS = config('BILLING_MONTHLY_PRICE_CENTS', default=499, cast=int)
+BILLING_MONTHLY_PRICE_LABEL = config('BILLING_MONTHLY_PRICE_LABEL', default='4,99 €')
+BILLING_YEARLY_PRICE_CENTS = config('BILLING_YEARLY_PRICE_CENTS', default=3999, cast=int)
+BILLING_YEARLY_PRICE_LABEL = config('BILLING_YEARLY_PRICE_LABEL', default='39,99 €')
+BILLING_YEARLY_MONTHLY_EQ_LABEL = config('BILLING_YEARLY_MONTHLY_EQ_LABEL', default='3,33 €')
+BILLING_YEARLY_SAVINGS_LABEL = config('BILLING_YEARLY_SAVINGS_LABEL', default='~4 mois offerts')
+BILLING_YEARLY_SAVINGS_AMOUNT_LABEL = config('BILLING_YEARLY_SAVINGS_AMOUNT_LABEL', default='~20 €')
+BILLING_YEARLY_WEEKLY_EQ_LABEL = config('BILLING_YEARLY_WEEKLY_EQ_LABEL', default='0,77 €')
+BILLING_YEARLY_LIST_PRICE_LABEL = config('BILLING_YEARLY_LIST_PRICE_LABEL', default='59,99 €')
+BILLING_LICENSE_CURRENCY = config('BILLING_LICENSE_CURRENCY', default='eur')
+# Compat anciens settings one-shot (fallback)
+BILLING_LICENSE_PRICE_CENTS = config('BILLING_LICENSE_PRICE_CENTS', default=3999, cast=int)
+BILLING_LICENSE_PRICE_LABEL = config('BILLING_LICENSE_PRICE_LABEL', default='39,99 €')
 
 # REST Framework settings
 REST_FRAMEWORK = {
@@ -252,12 +283,14 @@ AWS_S3_OBJECT_PARAMETERS = {
 AWS_DEFAULT_ACL = 'public-read'
 AWS_QUERYSTRING_AUTH = False
 
-# Use S3 for media files if configured, otherwise use local storage
+# Use S3 for media files if configured, otherwise use local storage.
+# En DEBUG local : statics admin servis depuis les apps (pas S3) — sinon /admin sans CSS.
 if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_BUCKET:
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-    STATICFILES_STORAGE = 'storages.backends.s3boto3.S3StaticStorage'
     AWS_S3_FILE_OVERWRITE = False
     AWS_S3_VERIFY = True
+    if not DEBUG:
+        STATICFILES_STORAGE = 'storages.backends.s3boto3.S3StaticStorage'
 
 # Celery configuration
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
@@ -299,7 +332,7 @@ MS_GRAPH_TENANT_ID = config('MS_GRAPH_TENANT_ID', default='')
 MS_GRAPH_CLIENT_ID = config('MS_GRAPH_CLIENT_ID', default='')
 MS_GRAPH_CLIENT_SECRET = config('MS_GRAPH_CLIENT_SECRET', default='')
 MS_GRAPH_SENDER = config('MS_GRAPH_SENDER', default='')
-EMAIL_FROM_ADDRESS = config('EMAIL_FROM_ADDRESS', default='noreply@savr.app')
+EMAIL_FROM_ADDRESS = config('EMAIL_FROM_ADDRESS', default='noreply@tchikook.fr')
 
 # Public URL (used to build password reset links).
 # In local dev you may have API_URL=http://host:8000/api -> public base is http://host:8000

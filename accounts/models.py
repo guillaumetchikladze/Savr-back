@@ -29,7 +29,27 @@ class User(AbstractUser):
         help_text="Régime végétarien (repérage viande/poisson côté recettes, en complément des listes).",
     )
     onboarding_completed = models.BooleanField(default=False)
-    
+
+    # Waitlist / access gate — null = en attente de validation admin
+    validated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Date de validation admin. Null = compte en liste d'attente.",
+    )
+
+    PLAN_FREE = 'free'
+    PLAN_PREMIUM = 'premium'
+    PLAN_CHOICES = [
+        (PLAN_FREE, 'Free'),
+        (PLAN_PREMIUM, 'Premium'),
+    ]
+    plan = models.CharField(
+        max_length=20,
+        choices=PLAN_CHOICES,
+        default=PLAN_FREE,
+        help_text="Plan d'abonnement (socle paywall).",
+    )
+
     # Favorite recipes
     favorite_recipes = models.ManyToManyField(
         'recipes.Recipe',
@@ -43,16 +63,51 @@ class User(AbstractUser):
     
     def __str__(self):
         return self.email
+
+    @property
+    def is_validated(self):
+        return self.validated_at is not None
+
+    def has_feature(self, feature_name: str) -> bool:
+        """Entitlement check — AI gated by plan when AI_PAYWALL_ENABLED."""
+        from django.conf import settings as django_settings
+
+        if feature_name == 'ai':
+            if not getattr(django_settings, 'AI_PAYWALL_ENABLED', False):
+                return True
+            return self.plan == self.PLAN_PREMIUM
+        return False
     
     @property
     def followers_count(self):
-        """Nombre de complices (followers)"""
+        """Nombre d'amis (followers)"""
         return self.followers.count()
     
     @property
     def following_count(self):
         """Nombre d'utilisateurs suivis"""
         return self.following.count()
+
+
+class AllowedEmail(models.Model):
+    """Emails pré-approuvés : auto-validés à l'inscription."""
+
+    email = models.EmailField(unique=True)
+    note = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Email autorisé'
+        verbose_name_plural = 'Emails autorisés'
+
+    def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.email
 
 
 class FollowRequest(models.Model):
@@ -100,12 +155,12 @@ class FollowRequest(models.Model):
 
 
 class Follow(models.Model):
-    """Relation de suivi entre utilisateurs (devenir complice)"""
+    """Relation de suivi entre utilisateurs (devenir ami)"""
     follower = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name='following',
-        verbose_name='Complice'
+        verbose_name='Ami'
     )
     following = models.ForeignKey(
         User,
@@ -118,8 +173,8 @@ class Follow(models.Model):
     class Meta:
         unique_together = ['follower', 'following']
         ordering = ['-created_at']
-        verbose_name = 'Relation de complice'
-        verbose_name_plural = 'Relations de complices'
+        verbose_name = 'Relation d\'ami'
+        verbose_name_plural = 'Relations d\'amis'
     
     def __str__(self):
         return f"{self.follower.username} suit {self.following.username}"

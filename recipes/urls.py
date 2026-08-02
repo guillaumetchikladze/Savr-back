@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter, APIRootView
-from rest_framework.permissions import IsAuthenticated
+from accounts.permissions import IsValidated as IsAuthenticated
 from .views import CategoryViewSet, RecipeViewSet, IngredientViewSet, MealPlanViewSet, MealInvitationViewSet, CookingProgressViewSet, TimerViewSet, PostViewSet, ShoppingListViewSet, ShoppingListItemViewSet, ShoppingListInvitationViewSet, CollectionViewSet, RecipeBatchViewSet
 from .dietary_views import dietary_conflicts_view
 from .preference_views import (

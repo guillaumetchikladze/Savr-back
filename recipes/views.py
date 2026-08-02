@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from accounts.permissions import IsValidated as IsAuthenticated
 from django.db.models import Q, Count, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef, F
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, date, timedelta, time
@@ -1449,7 +1449,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
     def revise(self, request, pk=None):
         """Révision IA d'une recette existante (sans persistance)."""
         from asgiref.sync import async_to_sync
+        from accounts.entitlements import user_has_feature, feature_locked_payload
         from .services.ai_service import revise_recipe, formalized_to_response_dict
+
+        if not user_has_feature(request.user, 'ai'):
+            return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
 
         recipe = self.get_object()
         if recipe.created_by_id != request.user.id:
@@ -1589,7 +1593,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Endpoint pour formaliser une recette brute avec l'IA et la créer en DB
         """
         import logging
+        from accounts.entitlements import user_has_feature, feature_locked_payload
         logger = logging.getLogger(__name__)
+
+        if not user_has_feature(request.user, 'ai'):
+            return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
         
         process_start = perf_counter()
         logger.info(
@@ -1681,7 +1689,10 @@ class RecipeViewSet(viewsets.ModelViewSet):
         """
         Génère une recette via IA à partir d'une idée libre (asynchrone via Celery).
         """
+        from accounts.entitlements import user_has_feature, feature_locked_payload
         logger = logging.getLogger(__name__)
+        if not user_has_feature(request.user, 'ai'):
+            return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
         serializer = RecipeGenerateFromIdeaSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -1734,7 +1745,10 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Avant de lancer un nouvel import, on vérifie si une recette importée depuis
         la même URL (normalisée) existe déjà et est accessible pour l'utilisateur.
         """
+        from accounts.entitlements import user_has_feature, feature_locked_payload
         logger = logging.getLogger(__name__)
+        if not user_has_feature(request.user, 'ai'):
+            return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
         url = request.data.get('url', '').strip()
         if not url:
             return Response(

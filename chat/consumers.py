@@ -48,6 +48,10 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4003)
             return
 
+        if getattr(user, 'validated_at', None) is None:
+            await self.close(code=4003)
+            return
+
         self.scope['user'] = user
         self.conversation_id = None
         self.conversation_group = None
@@ -134,6 +138,18 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             )
 
         if not conversation_id or not text:
+            return
+
+        from accounts.entitlements import user_has_feature
+
+        has_ai = await database_sync_to_async(user_has_feature)(user, 'ai')
+        if not has_ai:
+            await self.send_json({
+                'type': 'error',
+                'code': 'feature_locked',
+                'feature': 'ai',
+                'message': 'Fonctionnalité premium requise.',
+            })
             return
 
         if not check_message_rate_limit(user.id):

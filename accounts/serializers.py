@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import User, Follow, FollowRequest, Notification, LoyaltyCard
+from django.utils import timezone
+from .models import User, Follow, FollowRequest, Notification, LoyaltyCard, AllowedEmail
 from .privacy import can_view_dietary_preferences
 from .services.follow_service import get_follow_relation
 
@@ -18,6 +19,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         password = validated_data.pop('password')
         user = User.objects.create_user(password=password, **validated_data)
+        email = (user.email or '').strip().lower()
+        if email and AllowedEmail.objects.filter(email=email).exists():
+            user.validated_at = timezone.now()
+            user.save(update_fields=['validated_at'])
         return user
 
 
@@ -29,6 +34,7 @@ class UserSerializer(serializers.ModelSerializer):
     follow_request_outgoing = serializers.SerializerMethodField()
     follow_request_incoming = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
+    is_validated = serializers.BooleanField(read_only=True)
     
     class Meta:
         model = User
@@ -38,8 +44,13 @@ class UserSerializer(serializers.ModelSerializer):
             'following_count', 'is_following', 'is_followed_by',
             'follow_request_outgoing', 'follow_request_incoming',
             'food_dislikes', 'allergies', 'regimes', 'is_vegetarian', 'onboarding_completed',
+            'validated_at', 'is_validated', 'plan',
         )
-        read_only_fields = ('id', 'created_at', 'level', 'experience_points', 'followers_count', 'following_count')
+        read_only_fields = (
+            'id', 'created_at', 'level', 'experience_points',
+            'followers_count', 'following_count',
+            'validated_at', 'is_validated', 'plan',
+        )
 
     def validate_food_dislikes(self, value):
         return self._validate_string_list(value, max_items=40, max_len=80)

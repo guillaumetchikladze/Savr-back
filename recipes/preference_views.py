@@ -3,7 +3,8 @@
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAdminUser
+from accounts.permissions import IsValidated as IsAuthenticated
 from rest_framework.response import Response
 
 from .models import PreferenceMapping, UserPreferenceMapping

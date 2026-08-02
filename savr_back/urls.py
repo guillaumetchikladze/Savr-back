@@ -1,7 +1,9 @@
 """
 URL configuration for savr_back project.
 """
+from django.conf import settings
 from django.contrib import admin
+from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import path, include
@@ -44,4 +46,8 @@ urlpatterns = [
     path('api/', include('recipes.urls')),
     path('api/chat/', include('chat.urls')),
 ]
+
+# Daphne / ASGI ne sert pas les statics : en DEBUG, exposer ceux des apps (admin CSS…).
+if settings.DEBUG:
+    urlpatterns += staticfiles_urlpatterns()
 

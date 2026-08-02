@@ -2,7 +2,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from accounts.permissions import IsValidated as IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.privacy import are_complices_in_network
