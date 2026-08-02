@@ -56,6 +56,17 @@ if SENTRY_DSN:
 
 ALLOWED_HOSTS = ['*']
 
+# Requis dès Django 4+ pour le POST admin / formulaires derrière HTTPS.
+# Sans ça : "CSRF verification failed" à la connexion /admin (l'API JWT n'est pas impactée).
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        'CSRF_TRUSTED_ORIGINS',
+        default='https://api.cookoo.tchikladze.fr,https://tchikook.fr,https://www.tchikook.fr',
+    ).split(',')
+    if origin.strip()
+]
+
 # Filtrage recettes / préférences alimentaires (recipes.dietary_filters)
 # Distance cosinus pgvector : 0 = identique, 2 = opposé. Plus la valeur est basse, plus c’est strict.
 DIETARY_SEMANTIC_MATCHING = config('DIETARY_SEMANTIC_MATCHING', default=True, cast=bool)
