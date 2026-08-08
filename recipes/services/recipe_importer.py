@@ -287,8 +287,9 @@ def extract_instagram_recipe(url: str) -> Optional[Dict]:
             "resultsLimit": 1,
         }
         logger.info("[InstagramExtractor] Lancement actor apify/instagram-scraper pour url=%s", url)
+        # apify-client v3 returns a Pydantic Run model (not a dict).
         run = client.actor("apify/instagram-scraper").call(run_input=run_input)
-        dataset_id = run.get("defaultDatasetId")
+        dataset_id = getattr(run, "default_dataset_id", None) if run is not None else None
         if not dataset_id:
             logger.warning("[InstagramExtractor] Aucun datasetId retourné par Apify pour url=%s", url)
             raise InstagramImportError(

@@ -69,6 +69,47 @@ class RecipeImportFromUrlTests(APITestCase):
                 extract_instagram_recipe("https://www.instagram.com/p/DTQdIJoDJRI/")
         self.assertEqual(ctx.exception.code, "apify_not_configured")
 
+    @patch("recipes.services.recipe_importer.ApifyClient")
+    @patch("recipes.services.recipe_importer.config")
+    @patch("recipes.services.ai_service.parse_instagram_caption")
+    def test_extract_instagram_recipe_uses_apify_v3_run_model(
+        self, parse_caption_mock, config_mock, apify_client_cls
+    ):
+        """apify-client v3 returns a Pydantic Run with default_dataset_id, not a dict."""
+        from types import SimpleNamespace
+
+        config_mock.return_value = "fake-token"
+        parse_caption_mock.return_value = {
+            "is_recipe": True,
+            "title": "Tarte aux pommes",
+            "ingredients_text": "- 3 pommes\n- 1 pâte",
+            "instructions_text": "1. Préparer.\n2. Cuire.",
+            "reason": "",
+        }
+
+        run = SimpleNamespace(default_dataset_id="dataset-123")
+        dataset_client = SimpleNamespace(
+            iterate_items=lambda: iter(
+                [
+                    {
+                        "caption": "Recette tarte aux pommes\nIngrédients: pommes",
+                        "firstComment": "",
+                    }
+                ]
+            )
+        )
+        actor_client = SimpleNamespace(call=lambda **kwargs: run)
+        client = SimpleNamespace(
+            actor=lambda *_args, **_kwargs: actor_client,
+            dataset=lambda *_args, **_kwargs: dataset_client,
+        )
+        apify_client_cls.return_value = client
+
+        result = extract_instagram_recipe("https://www.instagram.com/reel/C3xKGnUI4zj/")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["title"], "Tarte aux pommes")
+        self.assertIn("pommes", result["ingredients_text"])
+
     @patch("recipes.services.recipe_importer.extract_with_recipe_scrapers")
     @patch("recipes.services.recipe_importer.extract_marmiton_recipe")
     def test_import_recipe_from_url_uses_recipe_scrapers_first(self, marmiton_legacy, recipe_scrapers):
