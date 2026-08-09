@@ -6772,6 +6772,113 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         _broadcast_shopping_list_item_update(item, request.user)
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='change_unit')
+    def change_unit(self, request, pk=None):
+        """
+        Change l'unité d'affichage d'une ligne de liste.
+        - Convertit les quantités si g↔kg ou ml↔l.
+        - Si le unit_group change : autorisé seulement sans quantités issues de recettes,
+          et s'il n'existe pas déjà une ligne conflictuelle.
+        """
+        item = self.get_object()
+        new_unit = (request.data.get('unit') or '').strip().lower()
+        valid_units = ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'piece', 'pinch', 'clove']
+        if new_unit not in valid_units:
+            return Response(
+                {'error': f"Unité invalide. Unités valides: {', '.join(valid_units)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_group = self._unit_group_for_unit(new_unit)
+        quantities = list(item.quantities.select_related('recipe_batch').all())
+        has_recipe_qty = any(q.recipe_batch_id is not None for q in quantities)
+
+        current_unit = ''
+        if quantities and quantities[0].unit:
+            current_unit = (quantities[0].unit or '').lower()
+        elif item.pantry_unit:
+            current_unit = (item.pantry_unit or '').lower()
+        if not current_unit:
+            current_unit = new_unit
+
+        if current_unit == new_unit and item.unit_group == new_group:
+            return Response(
+                ShoppingListItemSerializer(item, context={'request': request}).data,
+                status=status.HTTP_200_OK,
+            )
+
+        if has_recipe_qty and new_group != item.unit_group:
+            return Response(
+                {
+                    'error': (
+                        "Impossible de changer le type d'unité pour un article "
+                        "provenant de recettes. Changez uniquement g↔kg ou ml↔L."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        def _to_base(qty: float, unit: str):
+            u = (unit or '').lower()
+            if u == 'kg':
+                return qty * 1000.0, 'g'
+            if u == 'l':
+                return qty * 1000.0, 'ml'
+            return qty, u
+
+        def _from_base(qty: float, base_unit: str, target: str):
+            t = (target or '').lower()
+            if base_unit == 'g' and t == 'kg':
+                return qty / 1000.0
+            if base_unit == 'ml' and t == 'l':
+                return qty / 1000.0
+            return qty
+
+        def _convert(qty: float, from_unit: str, to_unit: str):
+            base_qty, base_unit = _to_base(float(qty or 0), from_unit)
+            to_base_qty, to_base_unit = _to_base(1.0, to_unit)
+            # Same physical family (weight/volume)
+            if base_unit in ('g', 'ml') and to_base_unit == base_unit:
+                return _from_base(base_qty, base_unit, to_unit)
+            # Otherwise keep the numeric value (label/type change)
+            return float(qty or 0)
+
+        with transaction.atomic():
+            if new_group != item.unit_group:
+                conflict = ShoppingListItem.objects.filter(
+                    shopping_list_id=item.shopping_list_id,
+                    ingredient_id=item.ingredient_id,
+                    unit_group=new_group,
+                ).exclude(pk=item.pk).first()
+                if conflict:
+                    return Response(
+                        {'error': 'Une ligne existe déjà pour cet ingrédient avec cette unité.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                item.unit_group = new_group
+
+            for q in quantities:
+                old_u = (q.unit or current_unit or new_unit).lower()
+                new_qty = _convert(float(q.quantity or 0), old_u, new_unit)
+                new_checked = _convert(float(q.checked_quantity or 0), old_u, new_unit)
+                q.quantity = Decimal(str(new_qty))
+                q.checked_quantity = Decimal(str(new_checked))
+                q.unit = new_unit
+                q.save(update_fields=['quantity', 'checked_quantity', 'unit', 'updated_at'])
+
+            pantry_old = current_unit
+            item.pantry_quantity = Decimal(
+                str(_convert(float(item.pantry_quantity or 0), pantry_old, new_unit))
+            )
+            item.pantry_unit = new_unit
+            item.save(update_fields=['unit_group', 'pantry_quantity', 'pantry_unit', 'updated_at'])
+
+        _broadcast_shopping_list_item_update(item, request.user)
+        return Response(
+            ShoppingListItemSerializer(item, context={'request': request}).data,
+            status=status.HTTP_200_OK,
+        )
+
     def _unit_group_for_unit(self, unit: str) -> str:
         """Détermine le unit_group à partir d'une unité"""
         unit = (unit or '').lower()
@@ -6831,10 +6938,19 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             from .services.ingredient_matcher import get_or_create_ingredient
             ingredient, created = get_or_create_ingredient(ingredient_name)
             
-            # Déterminer la catégorie si non fournie
-            if not category_id:
+            # Catégorie : utiliser celle fournie, sinon auto-catégoriser
+            if category_id:
+                from .models import Category
+                try:
+                    category = Category.objects.get(id=category_id)
+                    if ingredient.category_id != category.id:
+                        ingredient.category = category
+                        ingredient.save(update_fields=['category'])
+                except Category.DoesNotExist:
+                    from .services.ingredient_categorization import ensure_ingredient_category
+                    ensure_ingredient_category(ingredient)
+            else:
                 from .services.ingredient_categorization import ensure_ingredient_category
-
                 ensure_ingredient_category(ingredient)
             
             # Déterminer le unit_group à partir de l'unité
