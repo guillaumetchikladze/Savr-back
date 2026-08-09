@@ -575,6 +575,10 @@ class MealPlan(models.Model):
         default=0,
         help_text="Nombre d'invités anonymes (sans compte) pour ce repas"
     )
+    dining_alone = models.BooleanField(
+        default=False,
+        help_text="L'hôte a confirmé qu'il mange seul (offramp step Convives)",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
