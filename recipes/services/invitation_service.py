@@ -217,7 +217,12 @@ def execute_meal_invitation(user: AbstractBaseUser, payload: dict) -> dict:
                 meal_plan=meal_plan,
                 defaults={'status': 'pending'},
             )
-            if created:
+            revived = False
+            if not created and invitation.status == 'declined':
+                invitation.status = 'pending'
+                invitation.save(update_fields=['status', 'updated_at'])
+                revived = True
+            if created or revived:
                 invitations.append(invitation)
                 notification_data.append({
                     'user': invitee,
