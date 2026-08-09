@@ -558,7 +558,7 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
     """
     recipe = RecipeLightSerializer(read_only=True)  # Utiliser RecipeLightSerializer au lieu de RecipeSerializer
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
-    meal_time_display = serializers.CharField(source='get_meal_time_display', read_only=True)
+    meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     user = UserLightSerializer(read_only=True)
     participants = serializers.SerializerMethodField()
@@ -570,13 +570,20 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display',
+            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
             'meal_type', 'meal_type_display', 'recipe', 'recipes',
-            'user', 'participants', 'confirmed', 'guest_count', 
+            'user', 'participants', 'confirmed', 'guest_count', 'dining_alone',
             'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at']
+
+    def get_meal_time_display(self, obj: MealPlan):
+        if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
+            label = (obj.custom_label or '').strip()
+            if label:
+                return label
+        return obj.get_meal_time_display()
     
     def get_participants(self, obj):
         from .models import MealInvitation
@@ -696,7 +703,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
             'meal_type', 'meal_type_display', 'recipe', 'recipe_id',
             'recipes', 'batch_ids', 'recipe_ids',
             'entries', 'entry_portions', 'recipes_entries',
-            'user', 'participants', 'confirmed', 'guest_count', 
+            'user', 'participants', 'confirmed', 'guest_count', 'dining_alone',
             'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
             'is_guest', 'created_at', 'updated_at'
         ]
