@@ -464,6 +464,40 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         batch.save(update_fields=['shopping_done', 'updated_at'])
         serializer = RecipeBatchLightSerializer(batch, context={'request': request})
         return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='unmark_shopping_done')
+    def unmark_shopping_done(self, request, pk=None):
+        """Remet les courses à faire pour ce batch."""
+        batch = self.get_object()
+        batch.shopping_done = False
+        batch.save(update_fields=['shopping_done', 'updated_at'])
+        serializer = RecipeBatchLightSerializer(batch, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='unmark_cooking')
+    def unmark_cooking(self, request, pk=None):
+        """
+        Remet le batch en « à cuisiner ».
+        Ne supprime pas les photos ; annule une CookingProgress completed/in_progress liée.
+        """
+        batch = self.get_object()
+        user = request.user
+        accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
+        has_access = MealPlan.objects.filter(
+            meal_plan_recipe_batches__recipe_batch=batch
+        ).filter(accessible_meal_plan_filter).exists()
+        if not has_access:
+            return Response({'detail': "Accès refusé à ce batch."}, status=status.HTTP_403_FORBIDDEN)
+
+        batch.is_cooked = False
+        batch.save(update_fields=['is_cooked', 'updated_at'])
+        CookingProgress.objects.filter(
+            user=user,
+            recipe_batch=batch,
+            status__in=['in_progress', 'completed'],
+        ).update(status='abandoned')
+        serializer = RecipeBatchLightSerializer(batch, context={'request': request})
+        return Response(serializer.data)
     
     @action(detail=True, methods=['get'])
     def ingredients(self, request, pk=None):
@@ -3567,17 +3601,19 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get'], url_path='published-post')
     def published_post(self, request, pk=None):
-        """Récupérer le post publié associé à ce meal_plan"""
+        """Récupérer le post publié associé à ce meal_plan (post du repas, sinon legacy batch)."""
         meal_plan = self.get_object()
         try:
-            batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
-            post = Post.objects.filter(recipe_batch_id__in=batch_ids, is_published=True).first()
+            from .serializers import PostSerializer
+            # Prefer meal-plan scoped posts (workflow "Partager ce repas")
+            post = Post.objects.filter(meal_plan=meal_plan, is_published=True).first()
+            if not post:
+                batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
+                post = Post.objects.filter(recipe_batch_id__in=batch_ids, is_published=True).first()
             if post:
-                from .serializers import PostSerializer
                 serializer = PostSerializer(post, context={'request': request})
                 return Response(serializer.data)
-            else:
-                return Response({'exists': False}, status=status.HTTP_200_OK)
+            return Response({'exists': False}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -3795,6 +3831,160 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         
         # Sérialiser les meal plans créés
         serializer = self.get_serializer(created_meal_plans, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='replay')
+    def replay(self, request, pk=None):
+        """
+        Rejouer un meal plan sur une nouvelle date/créneau en clonant les RecipeBatch
+        (jamais réutiliser les batch ids source). Refuse le merge V1 si le slot cible existe.
+        """
+        source = self.get_object()
+        if source.user_id != request.user.id:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        target_date_str = request.data.get('target_date')
+        meal_time_param = request.data.get('meal_time')
+        duplicate_guests = bool(request.data.get('duplicate_guests'))
+
+        if not target_date_str:
+            return Response({'error': 'target_date is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'target_date must be YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        STANDARD = {'lunch', 'dinner', 'breakfast'}
+
+        def _parse_scheduled_time(val):
+            if not val:
+                return None
+            if isinstance(val, str):
+                for fmt in ('%H:%M:%S', '%H:%M'):
+                    try:
+                        return datetime.strptime(val.strip(), fmt).time()
+                    except ValueError:
+                        continue
+            return None
+
+        slot_key_param = (request.data.get('slot_key') or '').strip()
+        custom_label_param = (request.data.get('custom_label') or '').strip()
+        scheduled_time = _parse_scheduled_time(request.data.get('scheduled_time'))
+
+        # meal_time OR slot_key (slot_key alone treated like custom créneau)
+        if not meal_time_param and slot_key_param:
+            meal_time_param = slot_key_param if slot_key_param in STANDARD else 'other'
+
+        if not meal_time_param:
+            return Response(
+                {'error': 'meal_time or slot_key is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if meal_time_param in STANDARD:
+            db_meal_time = meal_time_param
+            resolved_slot_key = meal_time_param
+            custom_label_save = ''
+            scheduled_save = None
+        elif meal_time_param == 'other':
+            resolved_slot_key = slot_key_param
+            if not resolved_slot_key:
+                return Response(
+                    {'error': 'slot_key is required when meal_time is other'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            db_meal_time = 'other'
+            custom_label_save = custom_label_param or 'Repas'
+            scheduled_save = scheduled_time
+        else:
+            db_meal_time = 'other'
+            resolved_slot_key = slot_key_param or str(meal_time_param).strip()
+            if not resolved_slot_key:
+                return Response(
+                    {'error': 'Invalid meal_time / slot_key'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            custom_label_save = custom_label_param or 'Repas'
+            scheduled_save = scheduled_time
+
+        if MealPlan.objects.filter(
+            user=request.user,
+            date=target_date,
+            slot_key=resolved_slot_key,
+        ).exists():
+            return Response(
+                {
+                    'error': (
+                        'Un repas existe déjà pour cette date et ce créneau. '
+                        'La fusion n\'est pas supportée (V1).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invitee_ids = []
+        if duplicate_guests:
+            invitee_ids = list(
+                MealInvitation.objects.filter(
+                    meal_plan=source,
+                    status__in=['accepted', 'pending'],
+                ).values_list('invitee_id', flat=True)
+            )
+
+        with transaction.atomic():
+            new_meal_plan = MealPlan.objects.create(
+                user=request.user,
+                date=target_date,
+                meal_time=db_meal_time,
+                slot_key=resolved_slot_key,
+                custom_label=custom_label_save if db_meal_time == 'other' else '',
+                scheduled_time=scheduled_save if db_meal_time == 'other' else None,
+                meal_type=source.meal_type,
+                confirmed=False,
+                guest_count=(source.guest_count or 0) if duplicate_guests else 0,
+            )
+
+            source_mprbs = (
+                source.meal_plan_recipe_batches.all()
+                .select_related('recipe_batch__recipe')
+                .order_by('order')
+            )
+            for mprb in source_mprbs:
+                if not mprb.recipe_batch_id or not mprb.recipe_batch.recipe_id:
+                    continue
+                new_batch = RecipeBatch.objects.create(
+                    recipe=mprb.recipe_batch.recipe,
+                    created_by=request.user,
+                    is_cooked=False,
+                    shopping_done=False,
+                )
+                MealPlanRecipeBatch.objects.create(
+                    meal_plan=new_meal_plan,
+                    recipe_batch=new_batch,
+                    portions=mprb.portions,
+                    is_portions_overridden=mprb.is_portions_overridden,
+                    order=mprb.order,
+                )
+
+            if duplicate_guests and invitee_ids:
+                from recipes.services.invitation_service import execute_meal_invitation
+                try:
+                    execute_meal_invitation(
+                        request.user,
+                        {
+                            'meal_plan_id': new_meal_plan.id,
+                            'invitee_ids': invitee_ids,
+                        },
+                    )
+                except ValueError:
+                    # Aucun ami valide restant — guest_count déjà copié
+                    pass
+
+        prefetched = self._get_meal_plans_with_prefetch([new_meal_plan.id])
+        serializer = self.get_serializer(prefetched[0] if prefetched else new_meal_plan)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     
     @action(detail=True, methods=['post'], url_path='remove-from-group')
@@ -5882,6 +6072,70 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
             self._add_batch_ingredients_to_list(shopping_list, batch, request.user)
 
         return Response(ShoppingListSerializer(shopping_list, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='associate_meal_plan')
+    def associate_meal_plan(self, request, pk=None):
+        """Associer tous (ou une sélection de) batches d'un meal plan à cette liste."""
+        shopping_list = self.get_object()
+        meal_plan_id = request.data.get('meal_plan_id')
+        if not meal_plan_id:
+            return Response({'error': 'meal_plan_id required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            meal_plan = MealPlan.objects.get(id=int(meal_plan_id))
+        except (MealPlan.DoesNotExist, ValueError, TypeError):
+            return Response({'error': 'Meal plan not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if meal_plan.user_id != request.user.id:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        recipe_batch_ids = request.data.get('recipe_batch_ids')
+        mprb_qs = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).select_related('recipe_batch__recipe')
+        if recipe_batch_ids is not None:
+            if not isinstance(recipe_batch_ids, list):
+                return Response(
+                    {'error': 'recipe_batch_ids must be a list'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                batch_ids = [int(bid) for bid in recipe_batch_ids]
+            except (TypeError, ValueError):
+                return Response(
+                    {'error': 'Invalid recipe_batch_ids'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            mprb_qs = mprb_qs.filter(recipe_batch_id__in=batch_ids)
+
+        batches = [mprb.recipe_batch for mprb in mprb_qs if mprb.recipe_batch_id]
+
+        with transaction.atomic():
+            for batch in batches:
+                existing_link = (
+                    ShoppingListBatch.objects.filter(recipe_batch=batch)
+                    .select_related('shopping_list')
+                    .first()
+                )
+                if existing_link and existing_link.shopping_list_id != shopping_list.id:
+                    old_list = existing_link.shopping_list
+                    ShoppingListItemQuantity.objects.filter(
+                        recipe_batch=batch,
+                        shopping_list_item__shopping_list=old_list,
+                    ).delete()
+                    ShoppingListItem.objects.filter(shopping_list=old_list).annotate(
+                        qcount=Count('quantities')
+                    ).filter(qcount=0).delete()
+                    existing_link.delete()
+
+                ShoppingListBatch.objects.update_or_create(
+                    recipe_batch=batch,
+                    defaults={'shopping_list': shopping_list},
+                )
+                self._add_batch_ingredients_to_list(shopping_list, batch, request.user)
+
+        return Response(
+            ShoppingListSerializer(shopping_list, context={'request': request}).data,
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=['post'])
     def remove_batch(self, request, pk=None):
