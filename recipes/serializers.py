@@ -1877,48 +1877,15 @@ class PostPhotoLightSerializer(serializers.ModelSerializer):
         fields = ['id', 'photo_type', 'presigned_url', 'captured_label', 'time_display']
     
     def get_presigned_url(self, obj):
-        """Générer une URL pré-signée pour l'image"""
+        """Générer une URL pré-signée (client S3 partagé + cache)."""
         if not obj.image_path:
             return None
-        
-        from django.conf import settings
-        import boto3
-        
-        # Si pas de configuration S3, retourner None
-        if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.AWS_BUCKET:
-            return None
-        
+        if str(obj.image_path).startswith('http'):
+            return obj.image_path
         try:
-            # Nettoyer le chemin (enlever le préfixe s3:/ si présent)
-            clean_path = obj.image_path.replace('s3:/', '').lstrip('/')
-            
-            # Configurer le client S3
-            s3_config = {
-                'aws_access_key_id': settings.AWS_ACCESS_KEY_ID,
-                'aws_secret_access_key': settings.AWS_SECRET_ACCESS_KEY,
-                'region_name': settings.AWS_S3_REGION_NAME
-            }
-            
-            if settings.AWS_ENDPOINT:
-                s3_config['endpoint_url'] = settings.AWS_ENDPOINT
-                if settings.AWS_ENDPOINT.startswith('http://'):
-                    s3_config['use_ssl'] = False
-            
-            s3_client = boto3.client('s3', **s3_config)
-            
-            # Générer l'URL pré-signée (valide 1 heure)
-            presigned_url = s3_client.generate_presigned_url(
-                'get_object',
-                Params={
-                    'Bucket': settings.AWS_BUCKET,
-                    'Key': clean_path,
-                },
-                ExpiresIn=3600  # 1 heure
-            )
-            
-            return presigned_url
+            from savr_back.settings import build_presigned_get_url
+            return build_presigned_get_url(obj.image_path)
         except Exception as e:
-            # En cas d'erreur, retourner None
             print(f"⚠️ Error generating presigned URL: {e}")
             return None
     
@@ -1931,8 +1898,9 @@ class PostPhotoLightSerializer(serializers.ModelSerializer):
             'imported_after_cooking': 'Importée après la recette',
         }
         label = base_labels.get(obj.photo_type, obj.photo_type)
-        if obj.step and obj.step.order is not None:
-            label += f" • Étape {obj.step.order}"
+        step = getattr(obj, 'step', None)
+        if step is not None and getattr(step, 'order', None) is not None:
+            label += f" • Étape {step.order}"
         return label
     
     def get_time_display(self, obj):
@@ -2961,7 +2929,9 @@ class RecipeFormalizeSerializer(serializers.Serializer):
     """Serializer pour recevoir les données brutes du formulaire de création de recette"""
     title = serializers.CharField(
         max_length=200, 
-        required=True,
+        required=False,
+        allow_blank=True,
+        default='Ma recette',
         help_text="Titre de la recette (max 200 caractères)"
     )
     description = serializers.CharField(
@@ -2970,13 +2940,21 @@ class RecipeFormalizeSerializer(serializers.Serializer):
         max_length=2000,
         help_text="Description optionnelle (max 2000 caractères)"
     )
+    raw_text = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=15000,
+        help_text="Recette collée en vrac (titre + ingrédients + étapes mélangés)"
+    )
     ingredients_text = serializers.CharField(
-        required=True, 
+        required=False,
+        allow_blank=True,
         max_length=5000,
         help_text="Ingrédients séparés par sauts de ligne (max 5000 caractères)"
     )
     instructions_text = serializers.CharField(
-        required=True,
+        required=False,
+        allow_blank=True,
         max_length=10000,
         help_text="Instructions séparées par sauts de ligne (max 10000 caractères)"
     )
@@ -3018,35 +2996,65 @@ class RecipeFormalizeSerializer(serializers.Serializer):
     
     def validate_title(self, value):
         """Valider le titre"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("Le titre ne peut pas être vide.")
-        if len(value.strip()) < 3:
+        if value is None:
+            return 'Ma recette'
+        cleaned = value.strip()
+        if not cleaned:
+            return 'Ma recette'
+        if len(cleaned) < 3:
             raise serializers.ValidationError("Le titre doit contenir au moins 3 caractères.")
-        return value.strip()
+        return cleaned
     
     def validate_ingredients_text(self, value):
-        """Valider le texte des ingrédients"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("Les ingrédients sont requis.")
-        # Vérifier qu'il y a au moins un ingrédient (au moins une ligne non vide)
+        """Valider le texte des ingrédients (optionnel si raw_text)."""
+        if value is None or not str(value).strip():
+            return value or ''
         lines = [line.strip() for line in value.split('\n') if line.strip()]
-        if len(lines) < 1:
-            raise serializers.ValidationError("Veuillez saisir au moins un ingrédient.")
         if len(lines) > 100:
             raise serializers.ValidationError("Maximum 100 ingrédients autorisés.")
         return value
     
     def validate_instructions_text(self, value):
-        """Valider le texte des instructions"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("Les instructions sont requises.")
-        # Vérifier qu'il y a au moins une étape
+        """Valider le texte des instructions (optionnel si raw_text)."""
+        if value is None or not str(value).strip():
+            return value or ''
         lines = [line.strip() for line in value.split('\n') if line.strip()]
-        if len(lines) < 1:
-            raise serializers.ValidationError("Veuillez saisir au moins une étape.")
         if len(lines) > 50:
             raise serializers.ValidationError("Maximum 50 étapes autorisées.")
         return value
+
+    def validate(self, attrs):
+        raw = (attrs.get('raw_text') or '').strip()
+        ingredients = (attrs.get('ingredients_text') or '').strip()
+        instructions = (attrs.get('instructions_text') or '').strip()
+        title = (attrs.get('title') or '').strip() or 'Ma recette'
+
+        if raw:
+            if len(raw) < 10:
+                raise serializers.ValidationError({
+                    'raw_text': 'Colle une recette un peu plus longue (10 caractères minimum).',
+                })
+            attrs['raw_text'] = raw
+            attrs['title'] = title
+            # Compat stockage / preprocesseur : garder un fallback non vide
+            attrs['ingredients_text'] = ingredients or raw[:5000]
+            attrs['instructions_text'] = instructions or '(texte en vrac — à structurer)'
+            return attrs
+
+        if not ingredients:
+            raise serializers.ValidationError({'ingredients_text': 'Les ingrédients sont requis.'})
+        if not instructions:
+            raise serializers.ValidationError({'instructions_text': 'Les instructions sont requises.'})
+        if not [line.strip() for line in ingredients.split('\n') if line.strip()]:
+            raise serializers.ValidationError({'ingredients_text': 'Veuillez saisir au moins un ingrédient.'})
+        if not [line.strip() for line in instructions.split('\n') if line.strip()]:
+            raise serializers.ValidationError({'instructions_text': 'Veuillez saisir au moins une étape.'})
+
+        attrs['title'] = title
+        attrs['ingredients_text'] = ingredients
+        attrs['instructions_text'] = instructions
+        attrs['raw_text'] = ''
+        return attrs
 
 
 # Serializers for legacy meal plan groups removed (schema simplification)

@@ -981,6 +981,12 @@ class PostPhoto(models.Model):
     
     class Meta:
         ordering = ['order', 'created_at']
+        indexes = [
+            models.Index(
+                fields=['meal_plan', 'is_draft', '-created_at'],
+                name='postphoto_mealplan_temp_idx',
+            ),
+        ]
     
     def __str__(self):
         if self.post:

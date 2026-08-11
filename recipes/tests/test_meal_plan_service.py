@@ -8,7 +8,9 @@ from django.test import TestCase
 from recipes.models import MealPlan, PostPhoto, Recipe, RecipeBatch, MealPlanRecipeBatch
 from recipes.services.meal_plan_service import (
     add_recipes_to_meal_plan,
+    create_composer_slot,
     create_meal_plan_slot,
+    discard_composer_slot,
     get_meal_plans_for_user,
     propose_meal_deletion_data,
     relink_composer_photos_to_meal_plan,
@@ -101,3 +103,48 @@ class MealPlanServiceTests(TestCase):
         photo.refresh_from_db()
         self.assertEqual(photo.meal_plan_id, self.meal_plan.id)
         self.assertIsNone(photo.recipe_batch_id)
+
+    def test_create_composer_slot_idempotent(self):
+        first = create_composer_slot(self.user, '2026-06-12', 'dinner')
+        second = create_composer_slot(self.user, '2026-06-12', 'dinner')
+        self.assertTrue(first.created)
+        self.assertFalse(second.created)
+        self.assertEqual(first.meal_plan_id, second.meal_plan_id)
+        self.assertEqual(
+            MealPlan.objects.filter(
+                user=self.user, date=date(2026, 6, 12)
+            ).count(),
+            1,
+        )
+
+    def test_create_composer_slot_reuses_other_when_standard_taken(self):
+        lunch = MealPlan.objects.create(
+            user=self.user,
+            date=date(2026, 6, 13),
+            meal_time='lunch',
+            slot_key='lunch',
+            meal_type='recipe',
+            confirmed=False,
+        )
+        batch = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
+        MealPlanRecipeBatch.objects.create(
+            meal_plan=lunch, recipe_batch=batch, order=1
+        )
+
+        first = create_composer_slot(self.user, '2026-06-13', 'lunch')
+        second = create_composer_slot(self.user, '2026-06-13', 'lunch')
+        self.assertEqual(first.meal_time, 'other')
+        self.assertEqual(first.meal_plan_id, second.meal_plan_id)
+        self.assertEqual(
+            MealPlan.objects.filter(
+                user=self.user, date=date(2026, 6, 13), meal_time='other'
+            ).count(),
+            1,
+        )
+
+    def test_discard_composer_slot(self):
+        result = create_composer_slot(self.user, '2026-06-14', 'breakfast')
+        discard_composer_slot(self.user, result.meal_plan_id)
+        self.assertFalse(
+            MealPlan.objects.filter(id=result.meal_plan_id).exists()
+        )

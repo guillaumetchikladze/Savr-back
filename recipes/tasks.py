@@ -56,6 +56,7 @@ def process_recipe_import(self, request_id: str):
                 data.get('servings'),
                 data.get('prep_time'),
                 data.get('cook_time'),
+                data.get('raw_text') or None,
             )
         )
 

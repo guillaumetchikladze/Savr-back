@@ -369,13 +369,58 @@ def _resolve_composer_slot_key(user, target_date, meal_time, exclude_meal_plan_i
     return meal_time, slot_key, custom_label
 
 
+def _composer_slot_has_published_post(meal_plan_id: int) -> bool:
+    return Post.objects.filter(meal_plan_id=meal_plan_id, is_published=True).exists()
+
+
+def _is_reusable_composer_draft(meal_plan: MealPlan | None) -> bool:
+    """
+    Slot composeur réutilisable : brouillon non confirmé, sans post publié,
+    sans recettes (on ne vole pas un vrai repas planifié).
+    """
+    if not meal_plan or meal_plan.confirmed:
+        return False
+    if _composer_slot_has_published_post(meal_plan.id):
+        return False
+    if MealPlanRecipeBatch.objects.filter(meal_plan_id=meal_plan.id).exists():
+        return False
+    return True
+
+
+def _cleanup_empty_sibling_composer_drafts(
+    user: AbstractBaseUser,
+    target_date: date_type,
+    keep_id: int,
+) -> int:
+    """Supprime les brouillons composeur vides du même jour (sauf keep_id)."""
+    deleted = 0
+    siblings = MealPlan.objects.filter(
+        user=user,
+        date=target_date,
+        confirmed=False,
+    ).exclude(id=keep_id)
+    for sibling in siblings:
+        if not _is_reusable_composer_draft(sibling):
+            continue
+        if PostPhoto.objects.filter(meal_plan_id=sibling.id).exists():
+            continue
+        sibling.delete()
+        deleted += 1
+    return deleted
+
+
 def create_composer_slot(
     user: AbstractBaseUser,
     date: str | None = None,
     meal_time: str | None = None,
     scheduled_time: str | None = None,
 ) -> CreateMealPlanSlotResult:
-    """Crée un slot draft pour le composeur de post (toujours un nouveau slot si conflit)."""
+    """
+    Get-or-create d'un slot draft pour le composeur de post.
+
+    Réutilise un brouillon vide / non publié du même jour+créneau au lieu
+    d'empiler des meal plans « other » à chaque ouverture / remount.
+    """
     if date:
         try:
             target_date = date_type.fromisoformat(date)
@@ -384,32 +429,89 @@ def create_composer_slot(
     else:
         target_date = date_type.today()
 
-    resolved_meal_time = meal_time or infer_meal_time_from_hour()
-    resolved_meal_time, slot_key, custom_label = _resolve_composer_slot_key(
-        user, target_date, resolved_meal_time
-    )
+    desired_meal_time = (meal_time or infer_meal_time_from_hour() or 'lunch').strip().lower()
+    if desired_meal_time not in _STANDARD_MEAL_TIMES and desired_meal_time != 'other':
+        desired_meal_time = 'lunch'
 
-    scheduled_save = None
-    if scheduled_time:
-        scheduled_save = _parse_scheduled_time(scheduled_time)
+    scheduled_save = _parse_scheduled_time(scheduled_time) if scheduled_time else None
 
+    def _finish(meal_plan: MealPlan, created: bool) -> CreateMealPlanSlotResult:
+        if scheduled_save is not None and meal_plan.scheduled_time != scheduled_save:
+            meal_plan.scheduled_time = scheduled_save
+            meal_plan.save(update_fields=['scheduled_time', 'updated_at'])
+        _cleanup_empty_sibling_composer_drafts(user, target_date, meal_plan.id)
+        return CreateMealPlanSlotResult(
+            meal_plan_id=meal_plan.id,
+            date=meal_plan.date.isoformat(),
+            meal_time=meal_plan.meal_time,
+            created=created,
+            message='Slot composeur créé.' if created else 'Slot composeur réutilisé.',
+        )
+
+    # 1) Créneau standard libre ou brouillon réutilisable → get-or-create
+    if desired_meal_time in _STANDARD_MEAL_TIMES:
+        existing = MealPlan.objects.filter(
+            user=user,
+            date=target_date,
+            slot_key=desired_meal_time,
+        ).first()
+        if existing and _is_reusable_composer_draft(existing):
+            return _finish(existing, created=False)
+        if not existing:
+            meal_plan = MealPlan.objects.create(
+                user=user,
+                date=target_date,
+                meal_time=desired_meal_time,
+                slot_key=desired_meal_time,
+                custom_label='',
+                scheduled_time=scheduled_save,
+                meal_type='unknown',
+                confirmed=False,
+            )
+            return _finish(meal_plan, created=True)
+        # Sinon : créneau déjà pris par un vrai repas → bascule sur other
+
+    # 2) Réutiliser un brouillon « other » vide du jour (évite la prolifération)
+    other_drafts = MealPlan.objects.filter(
+        user=user,
+        date=target_date,
+        meal_time='other',
+        confirmed=False,
+    ).order_by('-updated_at')
+    for candidate in other_drafts:
+        if _is_reusable_composer_draft(candidate):
+            return _finish(candidate, created=False)
+
+    # 3) Nouveau slot other
     meal_plan = MealPlan.objects.create(
         user=user,
         date=target_date,
-        meal_time=resolved_meal_time,
-        slot_key=slot_key,
-        custom_label=custom_label,
+        meal_time='other',
+        slot_key=str(uuid.uuid4()),
+        custom_label='Repas',
         scheduled_time=scheduled_save,
         meal_type='unknown',
         confirmed=False,
     )
-    return CreateMealPlanSlotResult(
+    return _finish(meal_plan, created=True)
+
+
+def discard_composer_slot(user: AbstractBaseUser, meal_plan_id: int) -> dict:
+    """Supprime un brouillon composeur abandonné (sans recettes ni post publié)."""
+    meal_plan = MealPlan.objects.filter(user=user, id=meal_plan_id).first()
+    if not meal_plan:
+        raise ValueError('Meal plan introuvable.')
+    if meal_plan.confirmed or _composer_slot_has_published_post(meal_plan.id):
+        raise ValueError('Impossible de supprimer un repas confirmé ou publié.')
+    if MealPlanRecipeBatch.objects.filter(meal_plan_id=meal_plan.id).exists():
+        raise ValueError('Ce repas contient des recettes.')
+
+    PostPhoto.objects.filter(
         meal_plan_id=meal_plan.id,
-        date=meal_plan.date.isoformat(),
-        meal_time=meal_plan.meal_time,
-        created=True,
-        message='Slot composeur créé.',
-    )
+        post__isnull=True,
+    ).delete()
+    meal_plan.delete()
+    return {'deleted': True, 'meal_plan_id': meal_plan_id}
 
 
 def _last_step_index_for_batch(batch: RecipeBatch) -> int:

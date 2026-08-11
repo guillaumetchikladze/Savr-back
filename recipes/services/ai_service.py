@@ -459,6 +459,7 @@ async def formalize_recipe(
     servings: Optional[int] = None,
     prep_time: Optional[int] = None,
     cook_time: Optional[int] = None,
+    raw_text: Optional[str] = None,
 ) -> RecipeFormalized:
     """
     Formalise une recette brute en utilisant l'IA
@@ -471,6 +472,7 @@ async def formalize_recipe(
         servings: Nombre de portions (optionnel, peut être inféré)
         prep_time: Temps de préparation en minutes (optionnel, peut être inféré)
         cook_time: Temps de cuisson en minutes (optionnel, peut être inféré)
+        raw_text: Recette collée en vrac (prioritaire si fourni)
     
     Returns:
         RecipeFormalized: Recette formalisée
@@ -479,37 +481,53 @@ async def formalize_recipe(
         raise ValueError("AI_API_KEY doit être configuré dans .env pour utiliser l'IA")
     
     agent = create_recipe_formalization_agent()
-    
-    # Construire le prompt avec toutes les informations
-    prompt_parts = [
-        f"Titre: {title}",
-    ]
-    
-    if description:
-        prompt_parts.append(f"Description: {description}")
-    
-    prompt_parts.append("\nIngrédients (texte libre, séparés par sauts de ligne):")
-    prompt_parts.append(ingredients_text)
-    
-    prompt_parts.append("\nInstructions (texte libre, séparées par sauts de ligne):")
-    prompt_parts.append(instructions_text)
-    
-    if servings:
-        prompt_parts.append(f"\nNombre de portions: {servings}")
-    
-    if prep_time:
-        prompt_parts.append(f"Temps de préparation: {prep_time} minutes")
-    
-    if cook_time:
-        prompt_parts.append(f"Temps de cuisson: {cook_time} minutes")
-    
+
+    raw = (raw_text or '').strip()
+    if raw:
+        prompt_parts = [
+            "Voici une recette collée en vrac (texte libre, potentiellement désordonné).",
+            "Extrais et structure : titre, description, ingrédients quantifiés et étapes claires.",
+            "Si un titre est déjà présent dans le texte, privilégie-le.",
+        ]
+        suggested = (title or '').strip()
+        if suggested and suggested.lower() not in ('ma recette', 'recette'):
+            prompt_parts.append(f"Titre suggéré (optionnel): {suggested}")
+        if description:
+            prompt_parts.append(f"Description suggérée: {description}")
+        prompt_parts.append("\nTexte collé:")
+        prompt_parts.append(raw)
+    else:
+        # Construire le prompt avec toutes les informations
+        prompt_parts = [
+            f"Titre: {title}",
+        ]
+
+        if description:
+            prompt_parts.append(f"Description: {description}")
+
+        prompt_parts.append("\nIngrédients (texte libre, séparés par sauts de ligne):")
+        prompt_parts.append(ingredients_text)
+
+        prompt_parts.append("\nInstructions (texte libre, séparées par sauts de ligne):")
+        prompt_parts.append(instructions_text)
+
+        if servings:
+            prompt_parts.append(f"\nNombre de portions: {servings}")
+
+        if prep_time:
+            prompt_parts.append(f"Temps de préparation: {prep_time} minutes")
+
+        if cook_time:
+            prompt_parts.append(f"Temps de cuisson: {cook_time} minutes")
+
     prompt = "\n".join(prompt_parts)
     prompt_length = len(prompt)
     
     logger.info(
-        "[AI] Formalisation lancée pour '%s' (len_prompt=%d chars)",
+        "[AI] Formalisation lancée pour '%s' (len_prompt=%d chars, raw=%s)",
         title,
-        prompt_length
+        prompt_length,
+        bool(raw),
     )
     
     try:

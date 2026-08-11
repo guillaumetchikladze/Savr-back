@@ -26,6 +26,7 @@ from .services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryse
 from .services.recipe_search_index import schedule_recipe_search_reindex
 from .services.meal_plan_service import (
     create_composer_slot,
+    discard_composer_slot,
     relink_composer_photos_to_meal_plan,
     update_composer_slot,
     add_recipes_to_meal_plan,
@@ -3061,6 +3062,18 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(detail=True, methods=['post'], url_path='discard-composer-slot')
+    def discard_composer_slot_action(self, request, pk=None):
+        """Supprime un brouillon composeur abandonné (sans recettes / post publié)."""
+        meal_plan = self.get_object()
+        if meal_plan.user_id != request.user.id:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            result = discard_composer_slot(request.user, meal_plan.id)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['patch'], url_path='update-composer-slot')
     def update_composer_slot_action(self, request, pk=None):
         """Met à jour date/créneau d'un slot draft composeur."""
@@ -3468,15 +3481,29 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Lister les photos temporaires "à table" d'un meal plan (pas encore rattachées à un batch).
 
         Retourne la même forme que /recipe-batches/{id}/photos/ (serializer light).
+        Évite get_object() (prefetch recettes/invitations inutile et coûteux).
         """
-        meal_plan = self.get_object()
+        meal_plan_id = pk
+        try:
+            meal_plan_id = int(pk)
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid meal plan id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        accessible = MealPlan.objects.filter(
+            get_accessible_meal_plan_filter(request.user),
+            id=meal_plan_id,
+        ).only('id').first()
+        if not accessible:
+            return Response({'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+
         photos = (
             PostPhoto.objects.filter(
-                meal_plan=meal_plan,
+                meal_plan_id=meal_plan_id,
                 recipe_batch_id__isnull=True,
                 post__isnull=True,
                 is_draft=False,
             )
+            .only('id', 'photo_type', 'image_path', 'created_at', 'step_id')
             .select_related('step')
             .order_by('-created_at')
         )
