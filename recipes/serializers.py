@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from .models import (
     Category,
     Recipe,
@@ -299,51 +299,97 @@ class RecipeSerializer(serializers.ModelSerializer):
         return False
 
 
+def _resolve_ingredient_from_payload(item):
+    """Resolve an Ingredient from create/edit payload (id and/or name)."""
+    if not isinstance(item, dict):
+        return None
+
+    ingredient_id = item.get('ingredient_id') or (item.get('ingredient') or {}).get('id')
+    ingredient_name = (
+        item.get('ingredient_name')
+        or (item.get('ingredient') or {}).get('name')
+        or item.get('name')
+        or ''
+    )
+
+    ingredient_obj = None
+    if ingredient_id:
+        ingredient_obj = Ingredient.objects.filter(pk=ingredient_id).first()
+
+    if not ingredient_obj and isinstance(ingredient_name, str) and ingredient_name.strip():
+        from .services.ingredient_matcher import get_or_create_ingredient
+        ingredient_obj, _ = get_or_create_ingredient(ingredient_name.strip())
+
+    if ingredient_obj:
+        from .services.ingredient_categorization import ensure_ingredient_category
+        ensure_ingredient_category(ingredient_obj)
+
+    return ingredient_obj
+
+
 class RecipeCreateSerializer(serializers.ModelSerializer):
-    steps = StepSerializer(many=True)
+    steps = StepSerializer(many=True, required=False)
     ingredients = serializers.ListField(
         child=serializers.DictField(),
         write_only=True,
         required=False
     )
-    
+    prep_time = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    cook_time = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    servings = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
     class Meta:
         model = Recipe
         fields = [
-            'title', 'description', 'steps_summary', 'meal_type', 'difficulty',
+            'id', 'title', 'description', 'steps_summary', 'meal_type', 'difficulty',
             'prep_time', 'cook_time', 'servings', 'image_path',
             'is_public', 'source_type', 'import_source_url',
             'steps', 'ingredients'
         ]
-    
+        read_only_fields = ['id']
+
+    def validate(self, attrs):
+        if attrs.get('prep_time') is None:
+            attrs['prep_time'] = 0
+        if attrs.get('cook_time') is None:
+            attrs['cook_time'] = 0
+        if attrs.get('servings') is None:
+            attrs['servings'] = 4
+        return attrs
+
     def create(self, validated_data):
-        steps_data = validated_data.pop('steps')
+        steps_data = validated_data.pop('steps', [])
         ingredients_data = validated_data.pop('ingredients', [])
-        user = self.context['request'].user
-        
-        recipe = Recipe.objects.create(created_by=user, **validated_data)
-        
-        # Créer les étapes directement liées à la recette
-        for step_data in steps_data:
-            Step.objects.create(recipe=recipe, **step_data)
-        
-        # Créer un batch initial pour la recette
-        RecipeBatch.objects.create(recipe=recipe, created_by=user)
-        
-        # Créer les ingrédients
-        for ingredient_data in ingredients_data:
-            ingredient_id = ingredient_data.get('ingredient_id')
-            quantity = ingredient_data.get('quantity')
-            unit = ingredient_data.get('unit', 'g')
-            
-            if ingredient_id:
+        # perform_create() may already inject created_by via serializer.save(...)
+        user = validated_data.pop('created_by', None) or self.context['request'].user
+
+        with transaction.atomic():
+            recipe = Recipe.objects.create(created_by=user, **validated_data)
+
+            for idx, step_data in enumerate(steps_data):
+                payload = dict(step_data)
+                payload.setdefault('order', idx)
+                Step.objects.create(recipe=recipe, **payload)
+
+            RecipeBatch.objects.create(recipe=recipe, created_by=user)
+
+            seen_ingredient_ids = set()
+            for ingredient_data in ingredients_data:
+                ingredient_obj = _resolve_ingredient_from_payload(ingredient_data)
+                if not ingredient_obj or ingredient_obj.id in seen_ingredient_ids:
+                    continue
+                seen_ingredient_ids.add(ingredient_obj.id)
+                try:
+                    quantity = Decimal(str(ingredient_data.get('quantity', 0)))
+                except Exception:
+                    quantity = Decimal('0')
                 RecipeIngredient.objects.create(
                     recipe=recipe,
-                    ingredient_id=ingredient_id,
+                    ingredient=ingredient_obj,
                     quantity=quantity,
-                    unit=unit
+                    unit=ingredient_data.get('unit') or 'g',
                 )
-        
+
         return recipe
 
 
