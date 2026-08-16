@@ -97,11 +97,13 @@ def propose_recipe_revision_data(
 def _apply_edit_payload(recipe: Recipe, data: dict) -> None:
     meta_fields = [
         'title', 'description', 'steps_summary', 'meal_type', 'difficulty',
-        'prep_time', 'cook_time', 'servings', 'image_path', 'is_public',
+        'prep_time', 'cook_time', 'servings', 'image_path',
     ]
     for field in meta_fields:
         if field in data:
             setattr(recipe, field, data.get(field))
+    # Toutes les recettes sont publiques pour le moment
+    recipe.is_public = True
     recipe.save()
 
     if 'ingredients' in data:

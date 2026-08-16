@@ -321,7 +321,7 @@ def process_recipe_generate_from_idea(self, request_id: str):
         recipe_data = {
             **payload,
             'source_type': 'user_created',
-            'is_public': False,
+            'is_public': True,
         }
         recipe = create_recipe_from_formalized(formalized_recipe, recipe_data, import_request.user)
 

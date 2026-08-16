@@ -1292,13 +1292,15 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
         data = request.data or {}
 
-        meta_fields = ['title', 'description', 'steps_summary', 'meal_type', 'difficulty', 'prep_time', 'cook_time', 'servings', 'image_path', 'is_public']
+        meta_fields = ['title', 'description', 'steps_summary', 'meal_type', 'difficulty', 'prep_time', 'cook_time', 'servings', 'image_path']
 
         with transaction.atomic():
             # Mettre à jour les métadonnées si présentes
             for field in meta_fields:
                 if field in data:
                     setattr(recipe, field, data.get(field))
+            # Toutes les recettes sont publiques pour le moment
+            recipe.is_public = True
             recipe.save()
 
             # Mettre à jour les ingrédients

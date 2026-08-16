@@ -355,6 +355,8 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
             attrs['cook_time'] = 0
         if attrs.get('servings') is None:
             attrs['servings'] = 4
+        # Toutes les recettes sont publiques pour le moment
+        attrs['is_public'] = True
         return attrs
 
     def create(self, validated_data):
@@ -362,6 +364,7 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         ingredients_data = validated_data.pop('ingredients', [])
         # perform_create() may already inject created_by via serializer.save(...)
         user = validated_data.pop('created_by', None) or self.context['request'].user
+        validated_data['is_public'] = True
 
         with transaction.atomic():
             recipe = Recipe.objects.create(created_by=user, **validated_data)
