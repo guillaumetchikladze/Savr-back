@@ -27,6 +27,9 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
+    networks:
+      - default
+      - caddy
     volumes:
       - minio-data:/data
     healthcheck:
@@ -96,6 +99,11 @@ services:
         condition: service_healthy
       embedding:
         condition: service_healthy
+    ports:
+      - "8000:8000"
+    networks:
+      - default
+      - caddy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/').read()"]
       interval: 30s
@@ -148,31 +156,12 @@ services:
     volumes:
       - .:/app
 
-  # Caddy pour le reverse proxy et HTTPS
-  caddy:
-    image: caddy:2.8-alpine
-    container_name: savr-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./docker/caddy-entrypoint.sh:/usr/local/bin/caddy-entrypoint.sh:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    environment:
-      - DOMAIN=${DOMAIN:-localhost}
-      - MINIO_DOMAIN=${MINIO_DOMAIN:-}
-      - CADDY_EMAIL=${CADDY_EMAIL:-}
-    depends_on:
-      django:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "/usr/local/bin/caddy-entrypoint.sh"]
-
 volumes:
   redis-data:
   minio-data:
-  caddy-data:
-  caddy-config:
+
+networks:
+  caddy:
+    external: true
+    name: caddy
 
