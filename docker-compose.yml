@@ -74,9 +74,11 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-postgres}
       - DB_HOST=${DB_HOST}
       - DB_PORT=5432
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CHANNEL_REDIS_URL=redis://redis:6379/1
+      # Hostname explicite : savr-django est aussi sur le réseau caddy où "redis"
+      # résout vers boat-redis-staging, pas vers savr-redis.
+      - CELERY_BROKER_URL=redis://savr-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://savr-redis:6379/0
+      - CHANNEL_REDIS_URL=redis://savr-redis:6379/1
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
       - AWS_BUCKET=${AWS_BUCKET:-savr}
@@ -125,9 +127,9 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-postgres}
       - DB_HOST=${DB_HOST}
       - DB_PORT=5432
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CHANNEL_REDIS_URL=redis://redis:6379/1
+      - CELERY_BROKER_URL=redis://savr-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://savr-redis:6379/0
+      - CHANNEL_REDIS_URL=redis://savr-redis:6379/1
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
       - AWS_BUCKET=${AWS_BUCKET:-savr}
