@@ -5463,7 +5463,7 @@ class PostViewSet(viewsets.ModelViewSet):
                     f"{user.username} a craqué pour ton repas.",
                 ]
 
-                notification = Notification.objects.create(
+                Notification.objects.create(
                     user=post.user,
                     notification_type='post_miam',
                     title=random.choice(miam_titles),
@@ -5471,32 +5471,9 @@ class PostViewSet(viewsets.ModelViewSet):
                     related_user=user,
                     related_post_id=post.id,
                 )
-                devices = PushDevice.objects.filter(
-                    user=post.user,
-                    is_active=True
-                ).exclude(expo_push_token='')
-                logger.info("post_miam: found %d push devices for user=%s", devices.count(), post.user_id)
-                messages = []
-                for device in devices:
-                    messages.append(
-                        {
-                            'to': device.expo_push_token,
-                            'title': notification.title,
-                            'body': notification.message,
-                            'data': {
-                                'source': 'social',
-                                'kind': 'post_miam',
-                                'notification_id': notification.id,
-                                'post_id': post.id,
-                            },
-                            'sound': 'default',
-                        }
-                    )
-                if messages:
-                    logger.info("post_miam: sending %d push messages for notification=%s", len(messages), notification.id)
-                    send_expo_push_notifications(messages)
-                else:
-                    logger.info("post_miam: no active push devices for user=%s", post.user_id)
+                # Push debouncée + agrégée (plusieurs likes rapides → 1 seule push)
+                from accounts.services.miam_push import schedule_post_miam_push
+                schedule_post_miam_push(owner_id=post.user_id, post_id=post.id)
             return Response({
                 'message': 'Cookie sent successfully',
                 'post': serializer.data

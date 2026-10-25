@@ -1,12 +1,20 @@
 import logging
+from datetime import timedelta
 
 from celery import shared_task
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.utils import timezone
 
-from accounts.models import PushDevice
+from accounts.models import Notification, PushDevice
 from accounts.services.expo_push import send_expo_push_notifications
+from accounts.services.miam_push import (
+    build_miam_aggregation_texts,
+    clear_burst_state,
+    get_burst_since,
+    should_send_version,
+    unique_usernames_newest_first,
+)
 from recipes.models import MealPlan, MealPlanRecipeBatch, Post, PostPhoto, RecipeBatch, Timer
 
 logger = logging.getLogger(__name__)
@@ -180,4 +188,91 @@ def send_meal_time_photo_reminder_push(self, user_id: int, meal_plan_id: int) ->
     raise
   finally:
     MealPlan.objects.filter(pk=meal_plan_id).update(meal_time_photo_reminder_task_id='')
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=15)
+def send_aggregated_post_miam_push(self, owner_id: int, post_id: int, version=None) -> None:
+  """
+  Envoie une seule push Expo agrégée pour les miams d'un burst sur un post.
+
+  Debouncée via accounts.services.miam_push.schedule_post_miam_push :
+  si une version plus récente a été planifiée, cette exécution no-op.
+  """
+  if not should_send_version(owner_id=owner_id, post_id=post_id, version=version):
+    logger.info(
+      'miam_push: skip superseded version owner=%s post=%s version=%s',
+      owner_id,
+      post_id,
+      version,
+    )
+    return
+
+  since = get_burst_since(owner_id=owner_id, post_id=post_id)
+  if since is None:
+    # Fallback sans Redis / sans since : miams récents non lus uniquement
+    since = timezone.now() - timedelta(seconds=60)
+
+  qs = (
+    Notification.objects.filter(
+      user_id=owner_id,
+      notification_type='post_miam',
+      related_post_id=post_id,
+      created_at__gte=since,
+    )
+    .select_related('related_user')
+    .order_by('-created_at')
+  )
+  notifs = list(qs)
+  if not notifs:
+    logger.info('miam_push: no miams in burst owner=%s post=%s — skip', owner_id, post_id)
+    clear_burst_state(owner_id=owner_id, post_id=post_id)
+    return
+
+  usernames = unique_usernames_newest_first(
+    [n.related_user.username if n.related_user_id else None for n in notifs]
+  )
+  total_count = len(usernames) or len(notifs)
+  title, body = build_miam_aggregation_texts(usernames, total_count)
+
+  devices = list(
+    PushDevice.objects.filter(user_id=owner_id, is_active=True).exclude(expo_push_token='')
+  )
+  if not devices:
+    logger.info('miam_push: no devices owner=%s post=%s', owner_id, post_id)
+    clear_burst_state(owner_id=owner_id, post_id=post_id)
+    return
+
+  latest = notifs[0]
+  collapse_id = f'post_miam_{post_id}'
+  messages = []
+  for device in devices:
+    messages.append(
+      {
+        'to': device.expo_push_token,
+        'title': title,
+        'body': body,
+        'data': {
+          'source': 'social',
+          'kind': 'post_miam',
+          'notification_id': latest.id,
+          'post_id': post_id,
+          'aggregated': True,
+          'miam_count': total_count,
+        },
+        'sound': 'default',
+        # Android : remplace la push précédente pour ce post si une autre part.
+        'collapseId': collapse_id,
+      }
+    )
+
+  logger.info(
+    'miam_push: sending aggregated owner=%s post=%s count=%s version=%s devices=%s',
+    owner_id,
+    post_id,
+    total_count,
+    version,
+    len(messages),
+  )
+  send_expo_push_notifications(messages)
+  clear_burst_state(owner_id=owner_id, post_id=post_id)
 
