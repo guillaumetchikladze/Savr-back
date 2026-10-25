@@ -251,10 +251,10 @@ def process_recipe_import_from_url(self, request_id: str):
                 recipe.save(update_fields=['image_path'])
                 logger.info("[RecipeImportURLTask] Image successfully uploaded to S3: %s", s3_image_path)
             else:
-                logger.warning("[RecipeImportURLTask] Failed to upload image, keeping original URL")
-                # Si l'upload échoue, on garde l'URL originale
-                recipe.image_path = external_image_url
-                recipe.save(update_fields=['image_path'])
+                logger.warning(
+                    "[RecipeImportURLTask] Failed to upload image, leaving image_path empty "
+                    "(external CDN URLs exceed Recipe.image_path max_length=500)"
+                )
         else:
             logger.info("[RecipeImportURLTask] Step 6/6: No external image URL to download")
 

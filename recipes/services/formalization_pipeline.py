@@ -15,6 +15,32 @@ from .recipe_search_index import schedule_recipe_search_reindex
 
 logger = logging.getLogger(__name__)
 
+# Recipe.image_path is a relative S3 key (CharField max_length=500), not an external URL.
+RECIPE_IMAGE_PATH_MAX_LENGTH = 500
+
+
+def persistable_recipe_image_path(path: Any) -> str:
+    """Keep only values that fit Recipe.image_path (relative S3 keys)."""
+    if not isinstance(path, str):
+        return ''
+    value = path.strip()
+    if not value:
+        return ''
+    if value.startswith('http://') or value.startswith('https://'):
+        logger.info(
+            "[FormalizationPipeline] Ignoring external image URL at create time (len=%d)",
+            len(value),
+        )
+        return ''
+    if len(value) > RECIPE_IMAGE_PATH_MAX_LENGTH:
+        logger.warning(
+            "[FormalizationPipeline] Truncating image_path from %d to %d chars",
+            len(value),
+            RECIPE_IMAGE_PATH_MAX_LENGTH,
+        )
+        return value[:RECIPE_IMAGE_PATH_MAX_LENGTH]
+    return value
+
 
 def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user):
     """
@@ -65,7 +91,7 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
             prep_time=formalized_recipe.prep_time,
             cook_time=formalized_recipe.cook_time,
             servings=formalized_recipe.servings,
-            image_path=data.get('image_path') or '',
+            image_path=persistable_recipe_image_path(data.get('image_path')),
             created_by=user,
             is_public=True,
             source_type=data.get('source_type', 'user_created'),

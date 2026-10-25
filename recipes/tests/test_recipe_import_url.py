@@ -12,6 +12,7 @@ from recipes.services.recipe_importer import (
 )
 from recipes.utils import canonicalize_import_url
 from recipes.tasks import process_recipe_import_from_url
+from recipes.services.formalization_pipeline import persistable_recipe_image_path
 
 
 SAMPLE_RECIPE = {
@@ -325,4 +326,16 @@ class RecipeImportFromUrlTests(APITestCase):
         self.assertTrue(data.get("already_imported"))
         self.assertEqual(data.get("recipe_id"), recipe.id)
         self.assertEqual(RecipeImportRequest.objects.count(), 0)
+
+    def test_persistable_recipe_image_path_drops_long_instagram_cdn_url(self):
+        long_cdn = (
+            "https://scontent-cdg4-3.cdninstagram.com/v/t51.2885-15/"
+            + "x" * 600
+            + "/123.jpg?stp=dst-jpg_e35&_nc_ht=scontent-cdg4-3.cdninstagram.com"
+            "&oh=00_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789&oe=ABCDEF01"
+        )
+        self.assertGreater(len(long_cdn), 500)
+        self.assertEqual(persistable_recipe_image_path(long_cdn), "")
+        self.assertEqual(persistable_recipe_image_path("recipes/user/uuid.jpg"), "recipes/user/uuid.jpg")
+        self.assertEqual(persistable_recipe_image_path(None), "")
 
