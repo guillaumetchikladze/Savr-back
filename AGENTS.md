@@ -126,6 +126,25 @@ dans le feed, le détail et la réponse de `POST /posts/cooked/`. Aperçu sans �
   (invités, recettes du repas, fin du mode cuisine). Changer les règles → incrémenter `SNAPSHOT_VERSION`.
 - Backfill optionnel en prod : `python manage.py backfill_post_highlights`. Tests : `stats/tests/test_stats_highlights.py`.
 
+## Panier « Cette semaine » et « À mon tour » (`recipes/services/basket_service.py`)
+
+Envies **sans date** (recette ou plat libre) par semaine (lundi, fuseau utilisateur) : modèle `BasketItem`,
+séparé de `MealPlan` (dont `date`/`meal_time` restent obligatoires, app 1.0.9 intacte). Contrat front :
+`.claude-work/specs/basket.md`.
+
+- API `/api/basket/` : liste par `?week=`, ajout, PATCH, suppression, `reorder/`, `{id}/schedule/` (POST/DELETE),
+  `carry-over/`, `shopping-list/`. Statut dérivé (`todo`, `planned`, `cooked`, `carried_over`, `not_done`), jamais
+  stocké ; rien n'est supprimé ni reporté automatiquement.
+- Dater = rejoindre / créer un vrai `MealPlan` (créneau standard libre, sinon `other` + UUID : pas de conflit
+  d'unicité). Cuisiner = `POST /posts/cooked/` avec `basket_item_id` (« cuisiné » reste `MealPlan.confirmed`) ;
+  un plat logué sans id coche l'envie non datée correspondante de la semaine. `undo_cooked` restaure l'envie.
+- Courses : `shopping_list_service.link_batch_to_shopping_list` (même fusion que repas → liste), idempotent ;
+  l'envie garde son `RecipeBatch` (protégé des suppressions d'orphelins par `undo_cooked` / retrait de recette).
+- « À mon tour » : `POST|DELETE /api/posts/{id}/my-turn/` → envie avec `inspired_by_post` + notif `a_mon_tour`
+  (1 par ami et par post, agrégée). Posts : `my_turn_count`, `has_my_turn` (annotations du `PostViewSet`, 0 requête
+  par post), `inspired_by`. Envie cuisinée → `Post.inspired_by_post` + notif `a_mon_tour_cooked` à l'auteur.
+- Tests : `recipes/tests/test_mealplan_basket_api.py`, `recipes/tests/test_posts_my_turn_api.py`.
+
 ## Notifications (app `notifications`)
 
 Registre unique : `notifications/registry.py` (un type = catégorie, modèles de titre/corps en français,
