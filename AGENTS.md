@@ -332,6 +332,45 @@ historique) ou on la fait maison. La bibliothèque devient un graphe. Contrat fr
   `suggest_sub_recipes` sur chaque ligne et lien si titre identique).
 - Tests : `recipes/tests/test_recipe_sub_recipes_api.py`.
 
+## « Ta cuisine » : équipements (`recipes/services/equipment_*.py`)
+
+Onboarding « Ta cuisine », badge « Il te manque : un four », « Adapter pour chez moi ». Contrat front :
+`.claude-work/specs/equipment.md`. Tout est additif (app 1.0.9 intacte).
+
+- Catalogue pur `equipment_catalog.py` : 17 clés stables (`four`, `plaques` avec feux 1–6 + induction, `micro_ondes`,
+  `robot_cuiseur`, `airfryer`, `barbecue_plancha`…), libellés, icônes Ionicons, `hard` (four, plaques, barbecue, gaufrier),
+  alternatives ; « Tout le classique » = four, plaques 4 feux, micro-ondes, mixeur plongeant. `GET /api/equipment/catalog/`.
+- Cuisine **par utilisateur** (`User.kitchen_equipment` + `kitchen_equipment_set_at`, migration accounts 0028) ;
+  `GET|PUT /api/equipment/`, `has_set_equipment` (aussi dans le profil, soi seulement). Pas renseignée → cuisine du compte
+  du foyer (lien accepté) le plus récent (`source: household`, 1 requête), sinon **inconnue** : aucun filtre ni badge.
+  Évaluée une fois par requête : `equipment_service.request_kitchen(request)` / `viewer_kitchen(context)`.
+- Recette (migration recipes 0083) : `required_equipment` (null = non calculé) = `required_equipment_override` (manuel) sinon
+  inférence (`equipment_inference.infer_equipment`, mots-clés titre + étapes par phrase ; four / plaques / frigo partagés avec
+  le plan de bataille via `step_resource`) ∪ `equipment_ai_hints` (champ `required_equipment` de `RecipeFormalized`, même passe
+  LLM à l'import / génération). `equipment_alternatives` : four → airfryer seulement ≤ 4 portions. Recalcul par signaux
+  (`recipes/equipment_signals.py` : `Step` save/delete, `Recipe` save hors `update_fields` sans rapport) regroupés dans
+  `deferred_equipment_refresh()` (création, édition, révision IA, pipeline). Backfill : `python manage.py
+  infer_recipe_equipment --only-missing` (idempotent, par lots, sans réseau).
+- Lecture : `missing_equipment` (+ `missing_equipment_label`, `can_adapt_equipment`) sur `RecipeDetailSerializer`,
+  `RecipeLightSerializer` (listes, recherches, repas) ; posts (feed, détail) : union des recettes du post + `adapt_recipe_id`,
+  0 requête par post (feed 14, 15 si cuisine du foyer ; test `test_feed_missing_equipment_is_constant…`). Détail recette :
+  `required_equipment`, `adapted_from`, `adapted_for_equipment`, `my_adaptation` (1 requête si quelque chose manque).
+- Recherche (`search_fuzzy`, `search_semantic`, tool `search_recipes`) : `exclude_unfeasible` retire les recettes des autres
+  qui demandent un équipement « dur » absent sans alternative (ses recettes restent ; `?equipment=any`) ; manques « mous »
+  déclassés (`rank_penalty`, après les conflits de préférences). `EQUIPMENT_SEARCH_MODE` = exclude | rank | off.
+- Plan de bataille : `battle_plan_service.kitchen_resources` → `bp.KitchenResources` (feux = capacité des étapes `hob`,
+  2 fours = 2 températures en parallèle, pas de four + airfryer → `alternative_resource: airfryer`, une fournée à la fois) ;
+  payload `kitchen`, `equipment_warnings`. Cuisine inconnue = comportement historique (un four, feux sans limite).
+- « Adapter pour chez moi » (`equipment_adaptation.py`) : `POST /api/recipes/<id>/adapt-equipment/` **synchrone** (un appel
+  OpenAI-compatible `CHAT_AI_MODEL`, `EQUIPMENT_ADAPT_LLM_TIMEOUT_SECONDS` 8 s, sans nouvel essai → jamais > ~10 s), copie
+  privée liée (`adapted_from`, `adapted_for_equipment`), ingrédients copiés, étapes / temps réécrits, index de recherche repris
+  de l'original ; idempotente par (recette, user, empreinte des équipements) = contrainte unique
+  `recipe_unique_equipment_adaptation`. Réponse invalide / erreur / délai → 502 `adaptation_failed`, rien de créé.
+  `EQUIPMENT_ADAPT_ENABLED` (défaut True). Agent v2 : contexte « Cuisine… / Tu n'as pas : un four », règle du prompt, tool
+  `adapt_recipe_equipment` (carte `recipe_adaptation`).
+- Tests : `recipes/tests/test_recipe_equipment_api.py` (mock LLM : `equipment_adaptation._call_llm`),
+  `recipes/tests/test_posts_feed_queries_api.py`, `chat/tests/test_chat_equipment.py`.
+
 ## Liens qui ouvrent l'app : aperçus publics et `share_url` (`recipes/views_public.py`)
 
 Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, fonctions Vercel) rend `/i/<code>`,
