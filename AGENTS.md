@@ -151,6 +151,34 @@ séparé de `MealPlan` (dont `date`/`meal_time` restent obligatoires, app 1.0.9 
   par post), `inspired_by`. Envie cuisinée → `Post.inspired_by_post` + notif `a_mon_tour_cooked` à l'auteur.
 - Tests : `recipes/tests/test_mealplan_basket_api.py`, `recipes/tests/test_posts_my_turn_api.py`.
 
+## « Le carnet du plat » et « Classiques de tes amis » (`recipes/services/dish_service.py`)
+
+Page d'un plat (historique, versions, amis) et rangée « Classiques » d'Accueil. Contrat front :
+`.claude-work/specs/dish-page.md`. Aucun modèle ni migration : tout est calculé.
+
+- **Identité d'un plat — source unique `dish_key()`** : recette → `r-<recipe_id>` (pas de relation de copie
+  sur `Recipe` ; l'import d'une URL déjà importée et « À mon tour » réutilisent la même recette) ; sinon plat
+  libre → `l-<slug>` (`normalize_label` : `fold`, articles de tête retirés, « aux » → « au », -s/-x final des
+  mots > 3 lettres : « Les pâtes au pesto » = « pâte au pesto » → `l-pate-au-pesto`). Une recette l'emporte
+  toujours sur le libellé. Un repas à plusieurs recettes appartient à chacune ; le plat principal d'un post
+  (`dish`) = recette de couverture, sinon 1re recette du repas, sinon `Post.label`, sinon `custom_label`.
+  Les stats (`Meal.dish_key`, 1re fois de l'ardoise) utilisent la même normalisation des libellés.
+- `GET /api/dishes/<dish_key>/` (+ `dishes/recipe/<id>/`, `dishes/label/<texte|slug>/`) : `dish`, `image_url`,
+  `mine` (fois = jours distincts, 1re/dernière date, durée moyenne **mesurée par le mode cuisine**, version
+  préférée = plus de miams), `versions` (mes repas cuisinés, paginés `?page=&page_size=` ≤ 30, `nth_label`
+  « 3e fois », post : photo, commentaire, ardoise), `friends` (amis = suivis hors blocages, posts **visibles**
+  via `post_visibility.visible_posts` ; compte, ≤ 12 amis, ≤ 10 derniers posts), `classic`, `basket`
+  (corps prêt pour `POST /api/basket/` + `in_basket`). Inconnu, ou recette privée d'un autre jamais croisée → 404.
+  Requêtes constantes (14 à chaud, test).
+- `GET /api/dishes/classics/?week=` : plats cuisinés par ≥ `DISH_CLASSICS_MIN_FRIENDS` (3) amis distincts,
+  posts visibles, sur `DISH_CLASSICS_WINDOW_DAYS` (30) jours finissant le dimanche de la semaine (au plus
+  aujourd'hui) ; tri amis distincts puis récence, ≤ `DISH_CLASSICS_MAX` (5), avatars ≤ 5 ; cache par
+  utilisateur `DISH_CLASSICS_CACHE_SECONDS` (300 s). Feed principal inchangé (app 1.0.9).
+- Liens : `dish` ({key, title, recipe_id} ou null) sur `PostSerializer` / `PostListSerializer` (feed, détail,
+  réponse de `POST /posts/cooked/`) et l'aperçu `cooked/preview/` ; 0 requête en plus sur le feed (test qui
+  compare avec `get_dish` neutralisé). `top_dishes` de `/api/stats/me/` porte `dish_key` (cache stats `v3`).
+- Tests : `recipes/tests/test_posts_dish_api.py`.
+
 ## Foyer + invités (`accounts/services/household_service.py`, `recipes/services/diners_service.py`)
 
 Le foyer est réglé une fois et inclus par défaut dans chaque repas / envie, sans invitation. Contrat front :

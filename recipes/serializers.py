@@ -2413,7 +2413,23 @@ class MyTurnFieldsMixin(serializers.Serializer):
         }
 
 
-class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
+class DishFieldMixin(serializers.Serializer):
+    """
+    « Le carnet du plat » : `dish` = {key, title, recipe_id} du plat principal (lien vers `/api/dishes/<key>/`),
+    ou null. Calculé sur les préchargements du feed (recette du batch, recettes du repas) : 0 requête.
+    """
+
+    dish = serializers.SerializerMethodField()
+
+    def get_dish(self, obj):
+        from .services.dish_service import post_dish
+
+        return post_dish(obj)
+
+
+class PostSerializer(
+    DishFieldMixin, MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer
+):
     photos = PostPhotoSerializer(many=True, read_only=True)
     user = UserLightSerializer(read_only=True)
     recipe_batch = RecipeBatchLightSerializer(read_only=True)
@@ -2438,6 +2454,7 @@ class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, s
             'meal_plan',
             'label',
             'display_title',
+            'dish',
             'share_url',
             'cuisine',
             'highlights',
@@ -2677,7 +2694,9 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
+class PostListSerializer(
+    DishFieldMixin, MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer
+):
     """Serializer minimal pour la liste des posts (feed)."""
 
     user = UserLightSerializer(read_only=True)
@@ -2699,6 +2718,7 @@ class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixi
             'user',
             'label',
             'display_title',
+            'dish',
             'share_url',
             'cuisine',
             'highlights',

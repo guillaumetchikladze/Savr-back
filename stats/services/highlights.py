@@ -392,9 +392,23 @@ def invalidate_post_highlights(*, meal_plan_ids=(), recipe_batch_id: int | None 
 # ---------------------------------------------------------------------------
 # Aperçu « Ça donnera ça » (feuille « J'ai cuisiné », rien n'est créé)
 # ---------------------------------------------------------------------------
+def _preview_dish(recipe, meal: Meal, label: str) -> dict | None:
+    """Plat principal du futur post (même règle que `dish_service.post_dish`)."""
+    from recipes.services.dish_service import dish_key
+
+    if recipe is not None:
+        return {'key': dish_key(recipe.id), 'title': recipe.title, 'recipe_id': recipe.id}
+    if meal.recipes:
+        first = meal.recipes[0]
+        return {'key': dish_key(first['id']), 'title': first['title'], 'recipe_id': first['id']}
+    title = label or (meal.custom_label or '').strip()
+    key = dish_key(label=title)
+    return {'key': key, 'title': title, 'recipe_id': None} if key else None
+
+
 def preview_cooked(user, data) -> dict:
     """
-    Même corps que POST /posts/cooked/ ; renvoie {display_title, cuisine, highlights} sans rien écrire.
+    Même corps que POST /posts/cooked/ ; renvoie {display_title, dish, cuisine, highlights} sans rien écrire.
     Lève `CookedError` comme `log_cooked` (recette/repas introuvable, repas d'un autre, plat manquant).
     """
     from recipes.services.cooked_service import (
@@ -454,6 +468,7 @@ def preview_cooked(user, data) -> dict:
     display_title = label or join_titles_fr(titles) or (meal.custom_label or '').strip() or None
     return {
         'display_title': display_title,
+        'dish': _preview_dish(recipe, meal, label),
         'cuisine': snapshot['cuisine'],
         'highlights': snapshot['items'][:MAX_HIGHLIGHTS],
     }

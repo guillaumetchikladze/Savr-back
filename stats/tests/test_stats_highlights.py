@@ -264,6 +264,7 @@ def test_preview_validation(api, user, make_user, make_meal_plan):
     assert free.status_code == 200
     assert free.data == {
         'display_title': 'Crêpes',
+        'dish': {'key': 'l-crepe', 'title': 'Crêpes', 'recipe_id': None},
         'cuisine': None,
         'highlights': [{'kind': 'first_time', 'value': 1, 'label': '1re fois', 'icon': 'sparkles'}],
     }

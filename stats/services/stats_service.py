@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from recipes.models import CookingProgress, MealInvitation, MealPlan, MealPlanRecipeBatch, Post, RecipeIngredient
 from recipes.services.cooked_service import cooked_meal_plans, join_titles_fr
+from recipes.services.dish_service import dish_key, normalize_label
 
 from ..cuisines import CUISINES_BY_CODE, NON_COLLECTIBLE, cuisine_payload
 from ..food_groups import FOOD_GROUPS, seed_classify
@@ -133,7 +134,7 @@ class Meal:
     def dish_key(self) -> tuple:
         if self.recipes:
             return ('r', self.recipe_ids)
-        label = fold(self.label)
+        label = normalize_label(self.label)  # même normalisation que la page du plat
         return ('l', label) if label else ('m', self.id)
 
 
@@ -577,6 +578,7 @@ def _top_dishes(dish_days: list[Meal], dish_count: Counter, dish_last: dict[tupl
             image = _recipe_image_url(meal.recipes[0]['image_path'])
         dishes.append(
             {
+                'dish_key': dish_key(meal.recipes[0]['id'] if meal.recipes else None, meal.label),
                 'label': meal.label or 'Plat maison',
                 'recipe_id': recipe_ids[0] if len(recipe_ids) == 1 else None,
                 'recipe_ids': recipe_ids,
@@ -684,7 +686,7 @@ def stats_cache_token(user_id: int) -> str:
 def get_stats_payload(user, period: Period, *, public: bool = False, today: date | None = None) -> dict:
     """Payload stats (mis en cache par utilisateur, période et empreinte des données)."""
     today = today or timezone.localdate()
-    key = 'stats:v2:%s:%s:%s:%s:%s:%s' % (
+    key = 'stats:v3:%s:%s:%s:%s:%s:%s' % (
         user.id,
         period.kind,
         period.start,

@@ -11,6 +11,7 @@ from .dietary_views import (
     dietary_exception_delete_view,
     dietary_exceptions_list_view,
 )
+from .dish_views import dish_classics_view, dish_detail_view, dish_label_view, dish_recipe_view
 from .preference_views import (
     preference_mapping_fork,
     preference_mapping_propose,
@@ -69,6 +70,10 @@ router.register(r'basket', BasketViewSet, basename='basket')
 urlpatterns = [
     path('onboarding/social/', onboarding_social_view, name='onboarding_social'),
     path('feed/suggestions/', feed_suggestions_view, name='feed_suggestions'),
+    path('dishes/classics/', dish_classics_view, name='dish_classics'),
+    path('dishes/recipe/<int:recipe_id>/', dish_recipe_view, name='dish_recipe'),
+    path('dishes/label/<str:slug>/', dish_label_view, name='dish_label'),
+    path('dishes/<str:dish_key>/', dish_detail_view, name='dish_detail'),
     path('dietary-conflicts/', dietary_conflicts_view, name='dietary_conflicts'),
     path('dietary-conflicts/dismiss/', dietary_conflict_dismiss_view, name='dietary_conflict_dismiss'),
     path('dietary-conflicts/exceptions/', dietary_exceptions_list_view, name='dietary_exceptions_list'),

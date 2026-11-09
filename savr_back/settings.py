@@ -121,6 +121,12 @@ RECAP_AVAILABLE_FROM = config('RECAP_AVAILABLE_FROM', default='12-01')
 RECAP_FORCE_AVAILABLE = config('RECAP_FORCE_AVAILABLE', default=False, cast=bool)
 # Push « Nouveau badge : Aubergine 🍆 » (catégorie `rewards`, plafond quotidien). Interrupteur global.
 BADGE_PUSH_ENABLED = config('BADGE_PUSH_ENABLED', default=True, cast=bool)
+# « Classiques de tes amis » (recipes/services/dish_service.py) : plat cuisiné par ≥ N amis distincts
+# (posts visibles) sur une fenêtre glissante ; au plus MAX plats ; cache par utilisateur (secondes).
+DISH_CLASSICS_WINDOW_DAYS = config('DISH_CLASSICS_WINDOW_DAYS', default=30, cast=int)
+DISH_CLASSICS_MIN_FRIENDS = config('DISH_CLASSICS_MIN_FRIENDS', default=3, cast=int)
+DISH_CLASSICS_MAX = config('DISH_CLASSICS_MAX', default=5, cast=int)
+DISH_CLASSICS_CACHE_SECONDS = config('DISH_CLASSICS_CACHE_SECONDS', default=300, cast=int)
 
 # Notifications (app `notifications`, registre unique : notifications/registry.py)
 # Plafond de push non transactionnelles par utilisateur et par jour (local) ; heures calmes par défaut 22:00–08:00.
