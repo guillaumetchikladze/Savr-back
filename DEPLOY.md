@@ -138,6 +138,18 @@ docker compose logs -f django
 docker compose exec django python manage.py migrate
 ```
 
+## 📱 Version de l'app mobile (mise à jour suggérée / obligatoire)
+
+`GET /api/app/version-check/?platform=ios|android&version=X.Y.Z` (public) est piloté depuis l'admin
+Django → **Politiques de version de l'app** (une ligne par plateforme, sans redéploiement, effet ≤ 1 min) :
+
+- nouvelle version publiée sur le store → passer **Dernière version** à `X.Y.Z` (bandeau « Mettre à jour », ignorable) ;
+- bloquer les versions trop anciennes → passer **Version minimale supportée** à la plus vieille version
+  acceptée (écran bloquant dans l'app ; ne fonctionne que pour les builds ≥ 1.0.9, qui embarquent le contrôle).
+  Ne jamais dépasser une version pas encore disponible sur le store.
+- `APP_VERSION_ENFORCEMENT=True` ajoute un HTTP 426 sur toute l'API pour les clients envoyant
+  `X-App-Version`/`X-App-Platform` sous la minimale (désactivé par défaut).
+
 ## 🛠️ Commandes Utiles
 
 ### Voir les logs en temps réel

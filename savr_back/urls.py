@@ -47,6 +47,7 @@ urlpatterns = [
         name='password_reset_confirm',
     ),
     path('api/health/', health_view),
+    path('api/app/', include('appversion.urls')),
     path('api/auth/', include('accounts.urls')),
     path('api/', include('recipes.urls')),
     path('api/chat/', include('chat.urls')),

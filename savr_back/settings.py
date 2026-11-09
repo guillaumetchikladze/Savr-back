@@ -128,6 +128,7 @@ INSTALLED_APPS = [
     'recipes',
     'emails',
     'chat',
+    'appversion',
 ]
 
 MIDDLEWARE = [
@@ -137,6 +138,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'savr_back.middleware.TimingMiddleware',
+    'appversion.middleware.AppVersionEnforcementMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -376,6 +378,18 @@ if API_URL and API_URL.rstrip('/').endswith('/api'):
     PUBLIC_BASE_URL = API_URL.rstrip('/')[:-4]
 else:
     PUBLIC_BASE_URL = config('PUBLIC_BASE_URL', default='')
+
+# Contrôle de version de l'app (GET /api/app/version-check/).
+# La source principale est le modèle AppVersionPolicy (admin) ; ces variables ne servent que de
+# repli quand aucune ligne n'existe pour la plateforme (vide → statut « ok »).
+APP_LATEST_VERSION_IOS = config('APP_LATEST_VERSION_IOS', default='')
+APP_MIN_SUPPORTED_VERSION_IOS = config('APP_MIN_SUPPORTED_VERSION_IOS', default='')
+APP_STORE_URL_IOS = config('APP_STORE_URL_IOS', default='')
+APP_LATEST_VERSION_ANDROID = config('APP_LATEST_VERSION_ANDROID', default='')
+APP_MIN_SUPPORTED_VERSION_ANDROID = config('APP_MIN_SUPPORTED_VERSION_ANDROID', default='')
+APP_STORE_URL_ANDROID = config('APP_STORE_URL_ANDROID', default='')
+# Blocage global (HTTP 426) des requêtes /api/ dont X-App-Version < min_supported_version.
+APP_VERSION_ENFORCEMENT = config('APP_VERSION_ENFORCEMENT', default=False, cast=bool)
 
 # Channels configuration (WebSocket)
 CHANNEL_REDIS_URL = config('CHANNEL_REDIS_URL', default='redis://localhost:6379/1')

@@ -34,3 +34,14 @@ AWS_USE_PATH_STYLE_ENDPOINT=true
 # SENTRY_DSN=https://your-sentry-dsn@sentry.io/project-id
 
 
+
+# Contrôle de version de l'app (optionnel) — la config principale est dans l'admin
+# (« Politiques de version de l'app ») ; ces variables ne servent que si aucune ligne n'existe.
+# APP_LATEST_VERSION_IOS=1.0.9
+# APP_MIN_SUPPORTED_VERSION_IOS=1.0.8
+# APP_STORE_URL_IOS=https://apps.apple.com/app/id6794335935
+# APP_LATEST_VERSION_ANDROID=1.0.9
+# APP_MIN_SUPPORTED_VERSION_ANDROID=1.0.8
+# APP_STORE_URL_ANDROID=https://play.google.com/store/apps/details?id=com.tchikook.app
+# Blocage HTTP 426 sur toute l'API si X-App-Version < version minimale (défaut : False)
+# APP_VERSION_ENFORCEMENT=False

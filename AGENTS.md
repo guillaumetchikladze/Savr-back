@@ -64,7 +64,7 @@ Tests (pytest + pytest-django + xdist, settings `savr_back.settings_test`) — n
 make test-db                  # Postgres+pgvector éphémère (docker-compose.test.yml, port 55432, tmpfs)
 make test                     # suite rapide (exclut @slow), --reuse-db ; N=auto → parallèle (xdist)
 make test-all                 # tout, y compris @slow
-make test-domain d=shopping   # auth | mealplan | posts | shopping | dietary | chat | imports | recipes
+make test-domain d=shopping   # auth | mealplan | posts | shopping | dietary | chat | imports | recipes | appversion
 make test-changed             # tests liés aux fichiers modifiés (vs BASE=origin/main)
 make test-fresh               # recrée les bases de test (si une migration existante a été modifiée)
 ```

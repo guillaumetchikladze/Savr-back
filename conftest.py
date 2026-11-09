@@ -40,6 +40,7 @@ _DOMAIN_BY_FILE = {
     'test_imports': 'imports',
     'test_recipe': 'recipes',
     'test_collections': 'recipes',
+    'test_appversion': 'appversion',
 }
 
 
