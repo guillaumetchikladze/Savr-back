@@ -267,6 +267,38 @@ Contrat front : `.claude-work/specs/tables.md`. Jamais de classement ni de compt
 - Tests : `tables/tests/test_tables_api.py`, `recipes/tests/test_posts_pending_confirmations_api.py`,
   `notifications/tests/test_notifications_tables_pending.py`.
 
+## « Plan de bataille » : ordre des étapes multi-plats (`recipes/services/battle_plan*.py`)
+
+Repas à ≥ 2 recettes ou batch cooking du panier : dans quel ordre faire les étapes. Contrat front :
+`.claude-work/specs/battle-plan.md`. Lecture seule, aucun modèle ni migration.
+
+- `POST /api/battle-plan/` : **une** source parmi `meal_plan_id` (repas accessible : propriétaire ou invité),
+  `basket_item_ids` (envies de **son** panier ; plats libres → `skipped`), `recipe_ids` (publiques, à soi ou d'un
+  repas où l'on est invité) ; + `servings`, `start_time` **ou** `target_ready_time` (« 20:00 », « 20h30 » ou ISO ;
+  défaut : `MealPlan.scheduled_time`), `polish` (défaut true). Inaccessible → 404 ; 2 sources / aucune → 400
+  `invalid_source` ; ≤ `MAX_RECIPES` (8).
+- **Déterministe** (`battle_plan.build_plan`, pur, testable sans base). Données : `Step.order/title/instruction`,
+  `has_timer`/`timer_duration`, `step_ingredients`, `Recipe.prep_time/cook_time`. Pas de champ actif / passif,
+  équipement ni température : **déduits du texte** (durées « 1 h 30 », « 20 à 25 min », « une nuit » ; « 180 °C »,
+  « th. 6 » ; mots-clés four / repos / refroidir / mariner / mijoter / lever / frigo ; « en remuant », « louche par
+  louche » = actif). Durée absente → estimée depuis `prep_time` / `cook_time` (`estimated: true`).
+- Contraintes : étapes d'une recette dans l'ordre (« Pendant ce temps… » et préchauffage : début → début), un seul
+  cuisinier (actifs sans chevauchement), un four (températures différentes à ±10 °C → jamais ensemble + `conflicts`).
+  Liste par priorité « plus long chemin restant » (le gâteau qui doit refroidir part en premier), puis chaque recette
+  est décalée au plus tard (tout prêt ensemble), préchauffage juste avant sa cuisson. Repos / marinade ≥ 4 h,
+  « une nuit », marinade ≥ 2 h → `day_before` (hors `total_duration_min`). `sequential_duration_min` = recettes
+  enchaînées. Prépa commune (`shared_prep`) : ingrédient non basique taillé (émincer, hacher, râper…) dans ≥ 2
+  recettes, quantités additionnées à l'échelle des portions.
+- Reformulation LLM optionnelle (`battle_plan_polish`, `BATTLE_PLAN_LLM_ENABLED`, défaut False, forcé False en test) :
+  endpoint OpenAI-compatible + `CHAT_AI_MODEL`, délai `BATTLE_PLAN_LLM_TIMEOUT_SECONDS` (6 s), sans nouvel essai ;
+  ne reçoit que les textes numérotés (jamais l'ordre ni l'horaire), même nombre exigé, aucun chiffre inventé, sinon
+  repli déterministe. Cache par (recettes + `updated_at` + portions, textes) `BATTLE_PLAN_POLISH_CACHE_SECONDS`.
+- `has_battle_plan` (≥ 2 recettes, cache de prefetch, 0 requête) sur les repas : détail, liste complète, `timeline`,
+  `by_date`, `by_week` / `by_dates` / `bulk` (pas en `minimal`). Tool agent v2 `battle_plan` (`card_type:
+  battle_plan`, sans reformulation : le chat reformule déjà).
+- Tests : `recipes/tests/test_mealplan_battle_plan_api.py` (mock LLM : `battle_plan_polish._call_llm`),
+  `chat/tests/test_chat_agent_v2.py`.
+
 ## Liens qui ouvrent l'app : aperçus publics et `share_url` (`recipes/views_public.py`)
 
 Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, fonctions Vercel) rend `/i/<code>`,
@@ -327,7 +359,8 @@ OpenAI-compatible `GEMINI_OPENAI_BASE_URL`), indépendant de `AI_MODEL` (pipelin
   `plan_week` (→ `basket_service.add_item` / `schedule_item`, conflits allergie / régime / goûts + allergies du
   foyer ignorés sauf `allow_conflicts`), `log_cooked` (→ `cooked_service.log_cooked`, `publish` par défaut =
   `auto_publish_cooked`, renvoie ardoise + `new_badges`), `add_to_shopping_list_from_basket`
-  (→ `basket_service.items_for_shopping` + `add_to_shopping_list`), `remove_from_basket`, `undo_log_cooked`.
+  (→ `basket_service.items_for_shopping` + `add_to_shopping_list`), `remove_from_basket`, `undo_log_cooked`,
+  `battle_plan` (→ `battle_plan_service`, « je fais X et Y ce soir, dans quel ordre ? »).
   Les 11 tools v1 restent exposés (app 1.0.9). Résultats : `card_type` + `message` + `undo` (`tool_schemas.py`).
 - Tracing SDK Agents : désactivé par défaut (`chat/services/tracing.py`, appelé au démarrage et à l'import de
   `agent_factory`) ; opt-in via `AGENT_TRACING_ENABLED=true` (les traces contiennent des données utilisateur).
