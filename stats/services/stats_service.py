@@ -346,7 +346,7 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
         )
     new_ids = sorted(diverse - previously, key=lambda i: (ing_first[i], ing_info[i]['name']))
     plants = {i for i in diverse if ing_info[i]['plant']}
-    groups = Counter(ing_info[i]['group'] for i in diverse if ing_info[i]['group'])
+    groups = Counter(ing_info[i]['group'] for i in sorted(diverse) if ing_info[i]['group'])  # ex æquo : ordre stable
     fav_id = max(diverse, key=lambda i: (ing_uses[i], -ing_first[i].toordinal()), default=None)
 
     # --- Cuisines (plats-jours) ---
