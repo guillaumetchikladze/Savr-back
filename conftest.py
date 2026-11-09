@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import itertools
 import socket
-from datetime import date
+from datetime import date, datetime
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.conf import settings
@@ -138,6 +139,47 @@ def celery_delay():
         holder = mock.MagicMock()
         holder.calls = calls
         yield holder
+
+
+# ---------------------------------------------------------------------------
+# Horloge des notifications : heures calmes (22:00-08:00), plafond par jour local,
+# digest 18:00, récap dimanche 19:00, rappel 21:00... lisent `timezone.now()` quand aucun
+# `now=` explicite n'est passé. Sans épinglage, la suite échoue selon l'heure réelle
+# (« quiet_hours » au lieu de « sent » après 22:00). On épingle donc cette horloge à
+# AUJOURD'HUI (date réelle, pour rester cohérent avec `created_at`) à 15:00 Europe/Paris.
+#
+# - Surcharger : redéfinir la fixture `notification_now` (module / classe), ou marqueur
+#   `@pytest.mark.real_clock` pour garder l'horloge réelle.
+# ---------------------------------------------------------------------------
+_NOTIF_ZONE = ZoneInfo('Europe/Paris')
+
+
+@pytest.fixture
+def notification_now() -> datetime:
+    today = datetime.now(_NOTIF_ZONE).date()
+    return datetime(today.year, today.month, today.day, 15, 0, tzinfo=_NOTIF_ZONE)
+
+
+class _PinnedTimezone:
+    """Proxy de `django.utils.timezone` dont seul `now()` est figé."""
+
+    def __init__(self, now: datetime):
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+    def __getattr__(self, name):
+        return getattr(timezone, name)
+
+
+@pytest.fixture(autouse=True)
+def _pin_notification_clock(request, monkeypatch):
+    if request.node.get_closest_marker('real_clock'):
+        return
+    pinned = _PinnedTimezone(request.getfixturevalue('notification_now'))
+    for module in ('notifications.services', 'notifications.retention'):
+        monkeypatch.setattr(f'{module}.timezone', pinned)
 
 
 # ---------------------------------------------------------------------------

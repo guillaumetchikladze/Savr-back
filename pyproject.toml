@@ -59,6 +59,7 @@ addopts = [
     "-m", "not slow",
 ]
 markers = [
+    "real_clock: garde l'horloge réelle (désactive l'épinglage de l'horloge des notifications)",
     "slow: tests lents (exclus par défaut, inclus par `make test-all`)",
     "integration: traverse plusieurs couches (API + services + tâches)",
     "auth: inscription / login / JWT / access gate / entitlements",
