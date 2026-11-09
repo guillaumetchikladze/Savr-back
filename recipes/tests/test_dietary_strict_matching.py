@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from recipes.dietary_filters import strict_excluded_recipe_ids_for_user
 from recipes.models import Ingredient, Recipe, RecipeIngredient
@@ -8,6 +9,7 @@ from recipes.models import Ingredient, Recipe, RecipeIngredient
 class DietaryStrictMatchingTestCase(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(
+            validated_at=timezone.now(),
             username='dietary_tester',
             email='dietary_tester@example.com',
             password='password123',

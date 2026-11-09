@@ -4,6 +4,7 @@ from datetime import date
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from recipes.models import MealPlan, MealPlanRecipeBatch, PostPhoto, Recipe, RecipeBatch
 from recipes.services.meal_plan_service import (
@@ -22,7 +23,7 @@ User = get_user_model()
 
 class MealPlanServiceTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='owner', password='pass')
+        self.user = User.objects.create_user(validated_at=timezone.now(), username='owner', password='pass')
         self.recipe = Recipe.objects.create(
             title='Pâtes',
             prep_time=10,

@@ -24,6 +24,7 @@ class MealPlanBatchPortionsTestCase(APITestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(
+            validated_at=timezone.now(),
             username='batch_tester',
             email='batch_tester@example.com',
             password='password123',
@@ -248,6 +249,7 @@ class MealPlanBatchPortionsTestCase(APITestCase):
         from recipes.models import MealInvitation
 
         other_user = User.objects.create_user(
+            validated_at=timezone.now(),
             username='participant',
             email='participant@example.com',
             password='password123',

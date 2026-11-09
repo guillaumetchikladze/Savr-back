@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -27,6 +28,7 @@ class WithQuantitiesStaleIntegrationTests(APITestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(
+            validated_at=timezone.now(),
             username='shopper_int',
             email='shopper_int@example.com',
             password='password123',

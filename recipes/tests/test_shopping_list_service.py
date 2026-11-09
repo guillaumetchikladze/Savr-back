@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from recipes.models import (
     Ingredient,
@@ -23,11 +24,13 @@ User = get_user_model()
 class ShoppingListServiceTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
+            validated_at=timezone.now(),
             username='shopper',
             email='shopper@test.com',
             password='pass',
         )
         self.other = User.objects.create_user(
+            validated_at=timezone.now(),
             username='other',
             email='other@test.com',
             password='pass',

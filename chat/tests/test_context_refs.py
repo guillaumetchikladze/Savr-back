@@ -26,7 +26,9 @@ User = get_user_model()
 
 class ContextRefsPromptTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='chef', email='chef@test.com', password='pass')
+        self.user = User.objects.create_user(
+            validated_at=timezone.now(), username='chef', email='chef@test.com', password='pass'
+        )
         self.recipe = Recipe.objects.create(
             title='Salade composée',
             description='Une salade fraîche et colorée.',

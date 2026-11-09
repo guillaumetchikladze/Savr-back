@@ -2,6 +2,7 @@
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from chat.models import Conversation, Message, PendingAction
@@ -12,8 +13,12 @@ User = get_user_model()
 
 class ChatAPITests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='chatuser', email='chatuser@test.com', password='pass')
-        self.other = User.objects.create_user(username='other', email='other@test.com', password='pass')
+        self.user = User.objects.create_user(
+            validated_at=timezone.now(), username='chatuser', email='chatuser@test.com', password='pass'
+        )
+        self.other = User.objects.create_user(
+            validated_at=timezone.now(), username='other', email='other@test.com', password='pass'
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 

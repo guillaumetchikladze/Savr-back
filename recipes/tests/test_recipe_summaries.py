@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -9,6 +10,7 @@ from recipes.models import Recipe
 class RecipeSummaryAPITestCase(APITestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(
+            validated_at=timezone.now(),
             username='recipe_tester',
             email='recipe_tester@example.com',
             password='password123',

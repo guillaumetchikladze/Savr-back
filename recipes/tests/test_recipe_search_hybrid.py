@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from recipes.models import Recipe
@@ -24,8 +25,12 @@ QUERY_VECTOR = [0.1] * 512
 )
 class RecipeSearchHybridTests(TestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(username='owner', password='pass')
-        self.other = User.objects.create_user(username='other', password='pass')
+        self.owner = User.objects.create_user(
+            validated_at=timezone.now(), username='owner', email='owner@example.test', password='pass'
+        )
+        self.other = User.objects.create_user(
+            validated_at=timezone.now(), username='other', email='other@example.test', password='pass'
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.owner)
 

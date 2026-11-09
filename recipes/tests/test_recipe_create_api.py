@@ -12,6 +12,7 @@ class RecipeCreateAPITestCase(APITestCase):
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(
+            validated_at=timezone.now(),
             username='recipe_creator',
             email='recipe_creator@example.com',
             password='password123',
