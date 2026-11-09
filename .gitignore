@@ -31,3 +31,5 @@ db.sqlite3-journal
 media/
 staticfiles/
 
+.pytest_cache/
+.ruff_cache/

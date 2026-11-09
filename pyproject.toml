@@ -1,0 +1,43 @@
+[project]
+name = "savr-back"
+version = "0.0.0"
+requires-python = ">=3.12"
+
+# ---------------------------------------------------------------------------
+# Ruff — lint + format (`make lint`, `make fmt`)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["*/migrations/*", ".venv", "venv", "staticfiles", "media"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "DJ",  # flake8-django
+]
+ignore = [
+    "E501",   # longueur de ligne : gérée par le formatter (chaînes longues tolérées)
+    "E402",   # imports tardifs volontaires (settings, nest_asyncio, django.setup)
+    "B904",   # raise ... from err : trop de churn pour l'instant
+    "B905",   # zip(strict=) : pas de changement de comportement implicite
+    "DJ001",  # null=True sur CharField : schéma existant
+    "DJ008",  # __str__ manquant : non bloquant
+    "DJ012",  # ordre des membres de modèle : cosmétique
+    "UP031",  # %-format : style historique
+]
+
+[tool.ruff.lint.per-file-ignores]
+"*/tests/*" = ["B011"]
+"conftest.py" = ["B011"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["accounts", "chat", "core", "emails", "recipes", "savr_back"]
