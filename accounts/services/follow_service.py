@@ -103,6 +103,19 @@ def _establish_mutual(requester: User, target: User, incoming_request: FollowReq
     _resolve_pending_request(target, requester, new_status='accepted')
 
 
+def make_mutual_friends(user_a: User, user_b: User) -> bool:
+    """
+    Amitié mutuelle consentie hors flux de demande (lien d'invitation : le parrain a partagé le lien,
+    l'invité l'a utilisé). Crée les deux suivis sans notification « te suit » et solde les demandes.
+    Retourne True si au moins un suivi a été créé.
+    """
+    _, created_ab = _create_follow(user_a, user_b, notify=False)
+    _, created_ba = _create_follow(user_b, user_a, notify=False)
+    _resolve_pending_request(user_a, user_b, new_status='accepted')
+    _resolve_pending_request(user_b, user_a, new_status='accepted')
+    return created_ab or created_ba
+
+
 def _ensure_follow_request(requester: User, target: User) -> tuple[FollowRequest, bool]:
     """
     Crée ou réactive une demande en attente.

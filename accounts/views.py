@@ -63,6 +63,21 @@ def _get_public_base_url() -> str:
     return base.rstrip('/')
 
 
+def _redeem_invite_at_signup(request, user) -> dict | None:
+    from .services.invite_service import InviteError, rate_limited, redeem, redemption_payload
+    from .views_invites import HOUR, REDEEM_LIMIT_PER_IP
+
+    code = request.data.get('invite_code')
+    if not code:
+        return None
+    if rate_limited('redeem:ip', _get_client_ip(request), limit=REDEEM_LIMIT_PER_IP, window_seconds=HOUR):
+        return {'status': 'error', 'code': 'rate_limited', 'message': 'Trop de tentatives, réessaie plus tard.'}
+    try:
+        return redemption_payload(redeem(user, code, at_signup=True))
+    except InviteError as exc:
+        return redemption_payload(None, exc)
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_view(request):
@@ -70,6 +85,9 @@ def register_view(request):
     serializer = UserRegistrationSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.save()
+        # Lien d'invitation (optionnel) : amitié mutuelle + sortie de la liste d'attente.
+        # Un code invalide ne bloque jamais l'inscription (bloc `invite` dans la réponse).
+        invite_block = _redeem_invite_at_signup(request, user)
         # Enqueue welcome email (non bloquant)
         try:
             from emails.services import enqueue_email
@@ -96,17 +114,17 @@ def register_view(request):
             # Ne pas bloquer la création de compte si l'email échoue.
             pass
         refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                'message': 'Utilisateur créé avec succès',
-                'user': UserSerializer(user).data,
-                'tokens': {
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
-                },
+        payload = {
+            'message': 'Utilisateur créé avec succès',
+            'user': UserSerializer(user).data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
             },
-            status=status.HTTP_201_CREATED,
-        )
+        }
+        if invite_block is not None:
+            payload['invite'] = invite_block
+        return Response(payload, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

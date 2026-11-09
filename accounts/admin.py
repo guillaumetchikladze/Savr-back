@@ -4,7 +4,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils import timezone
 
 from .billing import activate_premium_license
-from .models import AllowedEmail, HouseholdMember, User, UserBlock
+from .models import AllowedEmail, HouseholdMember, InviteCode, InviteRedemption, User, UserBlock
 
 
 def _enqueue_access_granted_email(user):
@@ -100,4 +100,22 @@ class HouseholdMemberAdmin(admin.ModelAdmin):
     list_filter = ['status', 'is_child']
     search_fields = ['owner__username', 'owner__email', 'user__username', 'user__email', 'name']
     raw_id_fields = ['owner', 'user']
+    ordering = ['-created_at']
+
+
+@admin.register(InviteCode)
+class InviteCodeAdmin(admin.ModelAdmin):
+    list_display = ['code', 'user', 'is_active', 'created_at', 'revoked_at']
+    list_filter = ['is_active']
+    search_fields = ['code', 'user__username', 'user__email']
+    raw_id_fields = ['user']
+    ordering = ['-created_at']
+
+
+@admin.register(InviteRedemption)
+class InviteRedemptionAdmin(admin.ModelAdmin):
+    list_display = ['inviter', 'invitee', 'at_signup', 'is_acquisition', 'bypassed_waitlist', 'created_at']
+    list_filter = ['at_signup', 'is_acquisition', 'bypassed_waitlist']
+    search_fields = ['inviter__username', 'invitee__username', 'invitee__email']
+    raw_id_fields = ['code', 'inviter', 'invitee']
     ordering = ['-created_at']

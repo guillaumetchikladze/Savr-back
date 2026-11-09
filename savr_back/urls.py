@@ -50,6 +50,7 @@ urlpatterns = [
     path('api/app/', include('appversion.urls')),
     path('api/auth/', include('accounts.urls')),
     path('api/household/', include('accounts.urls_household')),
+    path('api/invites/', include('accounts.urls_invites')),
     path('api/notifications/', include('notifications.urls')),
     path('api/', include('stats.urls')),
     path('api/', include('recipes.urls')),

@@ -58,3 +58,11 @@ AWS_USE_PATH_STYLE_ENDPOINT=true
 # BADGE_PUSH_ENABLED=False
 # Classification LLM différée des nouveaux ingrédients (Celery)
 # STATS_AUTO_CLASSIFY_INGREDIENTS=True
+
+# --- Invitations / densité (« Ta bande avant ton premier plat ») ---
+# Domaine public des liens d'invitation : <INVITE_BASE_URL>/i/<code>
+# INVITE_BASE_URL=https://tchikook.fr
+# Un invité saute la liste d'attente (défaut : True)
+# INVITE_BYPASSES_WAITLIST=True
+# Utilisations max par code (0 = illimité)
+# INVITE_CODE_MAX_USES=50

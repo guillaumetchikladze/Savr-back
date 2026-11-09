@@ -412,3 +412,65 @@ class HouseholdMember(models.Model):
     def __str__(self):
         target = self.user.username if self.user_id else self.name
         return f'{self.owner.username} ⌂ {target} ({self.status})'
+
+
+class InviteCode(models.Model):
+    """
+    Lien d'invitation personnel (« Ta bande avant ton premier plat », .claude-work/specs/density.md).
+
+    Un seul code actif par utilisateur (`is_active`), régénérable (l'ancien est désactivé, ses
+    utilisations restent comptées dans `InviteRedemption`). Code non devinable (~50 bits, alphabet
+    sans caractères ambigus), cf. `accounts.services.invite_service`.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='invite_codes', verbose_name='Parrain')
+    code = models.CharField(max_length=16, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Code d'invitation"
+        verbose_name_plural = "Codes d'invitation"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=models.Q(is_active=True),
+                name='invitecode_one_active_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.code} ({self.user.username})'
+
+
+class InviteRedemption(models.Model):
+    """
+    Utilisation d'un lien d'invitation : trace (parrain, invité, date) pour la mesure de densité
+    (« % de nouveaux avec ≥ 3 amis à J7 », `manage.py density_report`). Une ligne par paire.
+    `is_acquisition` : l'invité vient d'arriver grâce à ce lien (1re utilisation, compte récent).
+    """
+
+    code = models.ForeignKey(InviteCode, on_delete=models.SET_NULL, null=True, blank=True, related_name='redemptions')
+    inviter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='invites_sent', verbose_name='Parrain')
+    invitee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='invites_received', verbose_name='Invité')
+    at_signup = models.BooleanField(default=False, help_text="Code fourni à l'inscription.")
+    is_acquisition = models.BooleanField(default=False, help_text='Inscription due à ce lien (compte récent).')
+    bypassed_waitlist = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Invitation utilisée'
+        verbose_name_plural = 'Invitations utilisées'
+        constraints = [
+            models.UniqueConstraint(fields=['inviter', 'invitee'], name='inviteredemption_pair_uniq'),
+        ]
+        indexes = [
+            models.Index(fields=['inviter', 'created_at'], name='inviteredemp_inviter_idx'),
+            models.Index(fields=['invitee', 'created_at'], name='inviteredemp_invitee_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.inviter.username} → {self.invitee.username}'

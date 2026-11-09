@@ -422,6 +422,15 @@ if API_URL and API_URL.rstrip('/').endswith('/api'):
 else:
     PUBLIC_BASE_URL = config('PUBLIC_BASE_URL', default='')
 
+# Liens d'invitation (« Ta bande avant ton premier plat », .claude-work/specs/density.md).
+# Domaine public du site (landing), pas l'hôte de l'API (PUBLIC_BASE_URL) : https://tchikook.fr/i/<code>.
+INVITE_BASE_URL = config('INVITE_BASE_URL', default='https://tchikook.fr').strip().rstrip('/')
+# Un invité (code valide à l'inscription ou plus tard) saute la liste d'attente (et son email est
+# ajouté aux emails autorisés). False : l'amitié est créée mais la validation admin reste requise.
+INVITE_BYPASSES_WAITLIST = config('INVITE_BYPASSES_WAITLIST', default=True, cast=bool)
+# Utilisations max par code (un code régénéré repart de zéro) ; 0 = illimité.
+INVITE_CODE_MAX_USES = config('INVITE_CODE_MAX_USES', default=50, cast=int)
+
 # Contrôle de version de l'app (GET /api/app/version-check/).
 # La source principale est le modèle AppVersionPolicy (admin) ; ces variables ne servent que de
 # repli quand aucune ligne n'existe pour la plateforme (vide → statut « ok »).

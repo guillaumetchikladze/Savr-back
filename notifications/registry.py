@@ -160,6 +160,13 @@ def _render_my_turn_cooked(ctx: dict) -> tuple[str, str]:
     return 'Ton plat a été refait', f'{people(names, n)} {verb} {ctx["dish"]}.'
 
 
+def _render_invite_joined(ctx: dict) -> tuple[str, str]:
+    """Lien d'invitation utilisé : nouvel inscrit (« grâce à toi ») ou compte existant (amis)."""
+    if ctx.get('new_member'):
+        return 'Ta bande s’agrandit', f'{ctx["actor"]} a rejoint Tchikook grâce à toi.'
+    return 'Nouvel ami', f'{ctx["actor"]} a utilisé ton lien. Tu peux voir ses plats.'
+
+
 def _render_comment(ctx: dict) -> tuple[str, str]:
     names, n = _actors(ctx)
     count = max(int(ctx.get('count') or 1), n)
@@ -327,6 +334,20 @@ _TYPES = (
         title='Demande acceptée',
         body='{actor} a accepté ta demande. Tu peux voir ses plats.',
         transactional=True,
+        inbox_type='follow',
+        data_fields=('user_id',),
+        url='user/{user_id}',
+        legacy_source='social',
+        legacy_kind='follow',
+    ),
+    # Lien d'invitation utilisé (« Ta bande avant ton premier plat ») : amitié mutuelle déjà créée.
+    # In-app `follow` (lue par l'app 1.0.9 comme un nouvel ami) ; pas de push la nuit.
+    NotificationType(
+        'invite_joined',
+        'social',
+        renderer=_render_invite_joined,
+        transactional=True,
+        quiet_hours=QUIET_SKIP,
         inbox_type='follow',
         data_fields=('user_id',),
         url='user/{user_id}',
