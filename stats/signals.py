@@ -1,6 +1,7 @@
 """
 Signaux stats (jamais bloquants : tout passe par transaction.on_commit + try/except) :
 - nouvel ingrédient → classification différée (lot débouncé) ;
+- repas confirmé / post créé → évaluation différée des badges ;
 - miam / invitation → invalidation du cache stats (le « cuisiné » est couvert par l'empreinte DB).
 """
 
@@ -10,16 +11,30 @@ from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from recipes.models import Ingredient, MealInvitation, Post, PostCookie
+from recipes.models import Ingredient, MealInvitation, MealPlan, Post, PostCookie
 
 from .services.stats_service import invalidate_user_stats
-from .tasks import schedule_ingredient_classification
+from .tasks import schedule_badge_evaluation, schedule_ingredient_classification
 
 
 @receiver(post_save, sender=Ingredient, dispatch_uid='stats_ingredient_created')
 def _ingredient_created(sender, instance, created, **kwargs):
     if created and not kwargs.get('raw'):
         transaction.on_commit(schedule_ingredient_classification)
+
+
+@receiver(post_save, sender=MealPlan, dispatch_uid='stats_mealplan_saved')
+def _meal_plan_saved(sender, instance, **kwargs):
+    if instance.confirmed and not kwargs.get('raw'):
+        user_id = instance.user_id
+        transaction.on_commit(lambda: schedule_badge_evaluation(user_id))
+
+
+@receiver(post_save, sender=Post, dispatch_uid='stats_post_saved')
+def _post_saved(sender, instance, created, **kwargs):
+    if created and not kwargs.get('raw'):
+        user_id = instance.user_id
+        transaction.on_commit(lambda: schedule_badge_evaluation(user_id))
 
 
 @receiver(post_save, sender=PostCookie, dispatch_uid='stats_cookie_saved')

@@ -4895,7 +4895,8 @@ class PostViewSet(viewsets.ModelViewSet):
         Body : recipe_id?, label?, meal_plan_id?, cooked_at? (ISO, défaut maintenant), meal_time?,
         comment?, photo_ids?, cooking_time_minutes?, publish (défaut true). Au moins recipe_id,
         label ou meal_plan_id. Header optionnel `Idempotency-Key`.
-        Réponse : post au format feed + `created` (201 créé / 200 existant).
+        Réponse : post au format feed + `created` (201 créé / 200 existant) + `new_badges`
+        (badges débloqués par ce log, cf. GET /badges/me/ ; liste vide sinon).
         """
         from django.core.cache import cache
 
@@ -4906,7 +4907,7 @@ class PostViewSet(viewsets.ModelViewSet):
             cached_id = cache.get(cache_key)
             if cached_id and Post.objects.filter(pk=cached_id, user=request.user).exists():
                 return Response(
-                    {**self._cooked_post_payload(request, cached_id), 'created': False},
+                    {**self._cooked_post_payload(request, cached_id), 'created': False, 'new_badges': []},
                     status=status.HTTP_200_OK,
                 )
 
@@ -4931,8 +4932,16 @@ class PostViewSet(viewsets.ModelViewSet):
 
         if cache_key:
             cache.set(cache_key, result.post.id, 60 * 60 * 24)
+        # Badges débloqués par ce log (célébration immédiate côté app) ; ne fait jamais échouer le log.
+        from stats.services.badges import award_badges_safely
+
+        new_badges = award_badges_safely(request.user)
         return Response(
-            {**self._cooked_post_payload(request, result.post.id), 'created': result.created},
+            {
+                **self._cooked_post_payload(request, result.post.id),
+                'created': result.created,
+                'new_badges': new_badges,
+            },
             status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK,
         )
 

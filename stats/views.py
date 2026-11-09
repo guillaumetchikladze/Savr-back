@@ -3,6 +3,7 @@ Endpoints stats / badges / Récap.
 
 GET /api/stats/me/?period=week|month|year|all&year=2026
 GET /api/stats/users/{id}/?period=…  (sous-ensemble public, mêmes règles que le profil : suivre la personne)
+GET /api/badges/me/
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from accounts.permissions import IsValidated
 from accounts.privacy import can_view_profile_content
 
 from .models import UserBadge
+from .services.badges import badges_overview
 from .services.stats_service import PeriodError, get_stats_payload, resolve_period
 
 
@@ -51,3 +53,9 @@ def stats_user_view(request, user_id: int):
     if not is_self:
         data['badges_count'] = UserBadge.objects.filter(user=target).count()
     return Response({'user_id': target.id, 'username': target.username, **data})
+
+
+@api_view(['GET'])
+@permission_classes([IsValidated])
+def badges_me_view(request):
+    return Response(badges_overview(request.user))
