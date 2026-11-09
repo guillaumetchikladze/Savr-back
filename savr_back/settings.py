@@ -149,6 +149,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'channels',
+    'core',
     'accounts',
     'recipes',
     'emails',
@@ -397,6 +398,10 @@ CELERY_BEAT_SCHEDULE = {
     'notifications-weekly-recap': {
         'task': 'notifications.tasks.send_weekly_recaps_task',
         'schedule': crontab(minute=5),
+    },
+    'core-purge-idempotency-records': {
+        'task': 'core.tasks.purge_expired_idempotency_records_task',
+        'schedule': crontab(minute=20),
     },
 }
 
