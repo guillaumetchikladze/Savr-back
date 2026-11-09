@@ -1,10 +1,12 @@
 from rest_framework import serializers
 
 from chat.models import Conversation, Message, MessageFeedback, PendingAction
-from chat.services.text_sanitize import strip_tool_json_segments
+from chat.services.history import message_preview
 
 
 class ConversationSerializer(serializers.ModelSerializer):
+    """Contrat historique (`/api/chat/conversations/`, app 1.0.9) : champs inchangés."""
+
     last_message_preview = serializers.SerializerMethodField()
 
     class Meta:
@@ -13,18 +15,35 @@ class ConversationSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_message_preview']
 
     def get_last_message_preview(self, obj):
-        msg = Message.objects.filter(conversation=obj).order_by('-created_at').first()
+        if hasattr(obj, 'last_message_role'):  # annoté par history.sessions_queryset (0 requête)
+            return message_preview(obj.last_message_role, obj.last_message_content, obj.last_message_ui_payload)
+        msg = Message.objects.filter(conversation=obj).order_by('-created_at', '-id').first()
         if not msg:
             return ''
-        if msg.role == Message.ROLE_USER:
-            return (msg.content or '')[:120]
-        clean = strip_tool_json_segments(msg.content or '')
-        if clean:
-            return clean[:120]
-        traces = (msg.ui_payload or {}).get('tool_traces') or []
-        if traces:
-            return 'Tchikook Agent a consulté vos données'
-        return ''
+        return message_preview(msg.role, msg.content, msg.ui_payload)
+
+
+class ChatSessionSerializer(ConversationSerializer):
+    """Historique « Tes conversations » (`/api/chat/sessions/`) : annotations de `sessions_queryset`."""
+
+    title_source = serializers.CharField(read_only=True)
+    last_message_role = serializers.CharField(read_only=True, allow_null=True, default=None)
+    last_message_at = serializers.DateTimeField(read_only=True, allow_null=True, default=None)
+    message_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta(ConversationSerializer.Meta):
+        fields = [
+            'id',
+            'title',
+            'title_source',
+            'created_at',
+            'updated_at',
+            'last_message_at',
+            'last_message_role',
+            'last_message_preview',
+            'message_count',
+        ]
+        read_only_fields = fields
 
 
 class MessageFeedbackSerializer(serializers.ModelSerializer):

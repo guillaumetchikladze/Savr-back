@@ -4,6 +4,7 @@ import logging
 import uuid
 from urllib.parse import parse_qs
 
+from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.db import close_old_connections
@@ -13,6 +14,7 @@ from chat.models import Conversation, Message, PendingAction
 from chat.services.action_executor import execute_pending_action
 from chat.services.agent_context import AgentContext
 from chat.services.agent_factory import create_planning_agent
+from chat.services.conversation_title import apply_initial_title
 from chat.services.rate_limit import (
     acquire_stream_lock,
     check_message_rate_limit,
@@ -23,6 +25,7 @@ from chat.services.recipe_job_notify import build_recipe_job_ready_system_conten
 from chat.services.session_context import build_session_context_prompt
 from chat.services.stream_adapter import BlockStreamAdapter, build_agent_history
 from chat.tasks import generate_conversation_title
+from core.celery_dispatch import publish
 from core.ws_auth import get_user_from_token
 
 logger = logging.getLogger(__name__)
@@ -90,7 +93,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             )
             return
 
-        conv = await database_sync_to_async(Conversation.objects.filter(id=conversation_id, user=user).first)()
+        conv = await database_sync_to_async(Conversation.objects.alive().filter(id=conversation_id, user=user).first)()
         close_old_connections()
         if not conv:
             await self.send_json(
@@ -164,7 +167,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             )
             return
 
-        conv = await database_sync_to_async(Conversation.objects.filter(id=conversation_id, user=user).first)()
+        conv = await database_sync_to_async(Conversation.objects.alive().filter(id=conversation_id, user=user).first)()
         close_old_connections()
         if not conv:
             await self.send_json(
@@ -203,6 +206,13 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def _process_user_message(self, conv, user, text, context_refs=None):
         await database_sync_to_async(_save_user_message)(conv, text, context_refs)
         close_old_connections()
+        if conv.title_source == Conversation.TITLE_DEFAULT:
+            # Titre immédiat tiré du 1er message (UPDATE conditionnel, sans réseau) ; le LLM l'affine en Celery.
+            title = await database_sync_to_async(apply_initial_title)(conv.id, text)
+            close_old_connections()
+            if title:
+                conv.title, conv.title_source = title, Conversation.TITLE_AUTO
+                await self.send_json({'type': 'conversation_title_updated', 'conversation_id': conv.id, 'title': title})
         await self._run_agent_turn(conv, user)
 
     async def recipe_job_completed(self, event):
@@ -220,7 +230,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return
 
         try:
-            conv = await database_sync_to_async(Conversation.objects.filter(id=conv_id, user=user).first)()
+            conv = await database_sync_to_async(Conversation.objects.alive().filter(id=conv_id, user=user).first)()
             close_old_connections()
             if not conv:
                 return
@@ -316,8 +326,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             }
         )
 
-        if not continuation:
-            generate_conversation_title.delay(conv.id)
+        if not continuation and conv.title_source != Conversation.TITLE_USER:
+            # Publication bornée, jamais d'exception : un broker absent ne doit pas casser le chat.
+            await sync_to_async(publish)(generate_conversation_title, args=(conv.id,))
 
     async def _finalize_agent_result(self, conv, turn_id, result, *, continuation=False):
         if result.mutation_proposal:
@@ -423,6 +434,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json(
             {
                 'type': 'conversation_title_updated',
+                'conversation_id': event.get('conversation_id') or self.conversation_id,
                 'title': event.get('title'),
             }
         )
@@ -542,13 +554,13 @@ def _save_mutation(conv, turn_id, proposal, tool_name, tool_trace=None):
 
 
 def _touch_conversation(conv):
-    Conversation.objects.filter(id=conv.id).update(updated_at=timezone.now())
+    Conversation.objects.alive().filter(id=conv.id).update(updated_at=timezone.now())
 
 
 def _confirm_action(user, action_id):
     action = (
         PendingAction.objects.select_related('conversation', 'conversation__user')
-        .filter(id=action_id, conversation__user=user)
+        .filter(id=action_id, conversation__user=user, conversation__deleted_at__isnull=True)
         .first()
     )
     if not action:

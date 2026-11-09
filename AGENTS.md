@@ -474,6 +474,36 @@ OpenAI-compatible `GEMINI_OPENAI_BASE_URL`), indépendant de `AI_MODEL` (pipelin
   sans réseau). Ne pas utiliser `django_db(transaction=True)` : il vide les données seedées par migration
   de la base réutilisée (`make test-fresh` pour réparer).
 
+## Historique du chat : « Tes conversations » (`chat/services/history.py`, `conversation_title.py`)
+
+Contrat front : section « Contrat front » de `.claude-work/status/*/ITEM-20261110-0020-ai02.md`.
+
+- Existant avant : `GET|POST /api/chat/conversations/` (vides comprises, aperçu en N+1), `GET conversations/<id>/`,
+  `GET conversations/<id>/messages/` (`offset` / `page_size`), titre Celery = 80 premiers caractères. Inchangé pour
+  l'app 1.0.9 (mêmes champs), sauf : conversations supprimées masquées, requêtes constantes.
+- `GET /api/chat/sessions/` : paginé (`page`, `page_size` ≤ 100), `-updated_at`, **seulement ses conversations avec
+  au moins un message utilisateur**, non supprimées ; `id, title, title_source, created_at, updated_at,
+  last_message_at, last_message_role, last_message_preview (≤ 120 car., JSON d'outils retiré), message_count`
+  (user + assistant). Une requête pour la page (sous-requêtes ; test 3 vs 13). `POST` crée une conversation vide.
+- `GET|PATCH|DELETE /api/chat/sessions/<id>/` (aussi sur `conversations/<id>/`, payload historique). PATCH
+  `{"title"}` : 1–120 car. sinon 400 `invalid_title`, `title_source=user` (jamais réécrit), `updated_at` inchangé.
+  PUT → 405. Autre utilisateur / supprimée → 404.
+- **Suppression douce** : `Conversation.deleted_at` (migration chat 0004) ; masquée partout tout de suite (listes,
+  messages, feedback, WS `join_conversation` / `user_message` → `not_found`, confirmation d'action), ce qui évite
+  les écritures orphelines d'un stream ou d'une tâche en cours ; purge définitive (cascade messages / feedback /
+  actions) après `CHAT_DELETED_RETENTION_DAYS` (30) par le beat `chat-purge-deleted-conversations` (04:50).
+  Toujours filtrer avec `Conversation.objects.alive()`.
+- Reprise : `GET /api/chat/sessions/<id>/messages/?latest=1&page_size=50` (les derniers, ordre chronologique) puis
+  `?before=<id du plus ancien>` pour remonter ; `has_more` ajouté (aussi sur l'ancien endpoint).
+- Titres (`title_source` default → auto → llm | user) : au 1er message, le consumer pose tout de suite
+  `smart_title` (salutation retirée, 1re phrase ≥ 12 car., coupe au mot ≤ 60 car., URL seule → « Recette de
+  site.fr ») et envoie `conversation_title_updated` (avec `conversation_id`). Après le 1er échange, la tâche
+  `generate_conversation_title` (publiée par `core.celery_dispatch.publish`, jamais bloquante) fait **un** appel
+  `CHAT_AI_MODEL` (`CHAT_TITLE_LLM_TIMEOUT_SECONDS` 5 s, sans nouvel essai, JSON validé : 3–60 car., ni
+  santé / calories / « bande » / URL) ; échec → titre du message gardé. `CHAT_TITLE_LLM_ENABLED` (défaut True,
+  False en test ; sans clé d'API : ignoré). Tours suivants : aucun appel LLM.
+- Tests : `chat/tests/test_chat_history_api.py` (mock : `chat.services.conversation_title._call_llm`).
+
 ## Notifications (app `notifications`)
 
 Registre unique : `notifications/registry.py` (un type = catégorie, modèles de titre/corps en français,

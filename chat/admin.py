@@ -5,8 +5,8 @@ from chat.models import Conversation, Message, MessageFeedback, PendingAction
 
 @admin.register(Conversation)
 class ConversationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'title', 'user', 'updated_at']
-    list_filter = ['updated_at']
+    list_display = ['id', 'title', 'title_source', 'user', 'updated_at', 'deleted_at']
+    list_filter = ['title_source', 'updated_at', 'deleted_at']
     search_fields = ['title', 'user__username']
     raw_id_fields = ['user']
 

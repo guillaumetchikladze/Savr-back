@@ -36,8 +36,8 @@ Champs communs : `turn_id`, `stream_phase` (`text` | `tool` | `mutation` | `comp
 | `mutation_card` | Fin du tour agent |
 | `action_executed` | Post-confirmation backend |
 | `import_job_started` | Import URL lancé |
-| `message_complete` | Fin tour → Celery titre |
-| `conversation_title_updated` | Titre mis à jour |
+| `message_complete` | Fin tour → Celery titre (1er échange) |
+| `conversation_title_updated` | Titre mis à jour (`conversation_id`, `title`) : au 1er message puis après le titre LLM |
 | `error` | Erreur |
 
 ## Sécurité mutations

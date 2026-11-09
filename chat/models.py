@@ -4,19 +4,49 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+DEFAULT_CONVERSATION_TITLE = 'Nouvelle conversation'
+
+
+class ConversationQuerySet(models.QuerySet):
+    def alive(self):
+        """Conversations non supprimées (la suppression utilisateur est douce, purgée plus tard)."""
+        return self.filter(deleted_at__isnull=True)
+
 
 class Conversation(models.Model):
+    TITLE_DEFAULT = 'default'
+    TITLE_AUTO = 'auto'
+    TITLE_LLM = 'llm'
+    TITLE_USER = 'user'
+    TITLE_SOURCE_CHOICES = [
+        (TITLE_DEFAULT, 'Titre par défaut'),
+        (TITLE_AUTO, 'Premier message (tronqué)'),
+        (TITLE_LLM, 'Généré par le LLM'),
+        (TITLE_USER, 'Renommé par l’utilisateur'),
+    ]
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='chat_conversations',
     )
-    title = models.CharField(max_length=200, default='Nouvelle conversation')
+    title = models.CharField(max_length=200, default=DEFAULT_CONVERSATION_TITLE)
+    title_source = models.CharField(max_length=10, choices=TITLE_SOURCE_CHOICES, default=TITLE_DEFAULT)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Supprimée par l’utilisateur (masquée partout, purgée après CHAT_DELETED_RETENTION_DAYS).',
+    )
+
+    objects = ConversationQuerySet.as_manager()
 
     class Meta:
         ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['user', '-updated_at'], name='chat_conv_user_updated_idx'),
+        ]
 
     def __str__(self):
         return f'{self.title} ({self.user_id})'

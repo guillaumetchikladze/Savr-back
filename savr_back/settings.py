@@ -280,6 +280,12 @@ AI_PAYWALL_ENABLED = config('AI_PAYWALL_ENABLED', default=False, cast=bool)
 # recettes (formalisation, génération) et peut pointer vers un modèle dont le tool calling multi-tour
 # n'est pas compatible avec le bridge Agents SDK (ex. Gemini 3 : thought signatures obligatoires).
 CHAT_AI_MODEL = config('CHAT_AI_MODEL', default='gemini-2.5-flash')
+# Historique du chat (« Tes conversations ») : titre auto = 1re phrase du 1er message tout de suite, puis un appel
+# LLM court en Celery après le 1er échange (même endpoint / modèle que le chat, repli silencieux). Suppression
+# douce (`deleted_at`) purgée définitivement après CHAT_DELETED_RETENTION_DAYS (beat quotidien).
+CHAT_TITLE_LLM_ENABLED = config('CHAT_TITLE_LLM_ENABLED', default=True, cast=bool)
+CHAT_TITLE_LLM_TIMEOUT_SECONDS = config('CHAT_TITLE_LLM_TIMEOUT_SECONDS', default=5.0, cast=float)
+CHAT_DELETED_RETENTION_DAYS = config('CHAT_DELETED_RETENTION_DAYS', default=30, cast=int)
 
 # « Plan de bataille » (POST /api/battle-plan/) : le plan est déterministe ; la reformulation LLM (même endpoint
 # OpenAI-compatible et même modèle que le chat) est optionnelle, avec délai court et repli sur le texte déterministe.
@@ -451,6 +457,11 @@ CELERY_BEAT_SCHEDULE = {
     'stats-badge-rarity': {
         'task': 'stats.tasks.compute_badge_rarity_task',
         'schedule': crontab(hour=4, minute=40),
+    },
+    # Conversations du chat supprimées par l'utilisateur depuis plus de CHAT_DELETED_RETENTION_DAYS.
+    'chat-purge-deleted-conversations': {
+        'task': 'chat.tasks.purge_deleted_conversations_task',
+        'schedule': crontab(hour=4, minute=50),
     },
 }
 
