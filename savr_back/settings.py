@@ -23,6 +23,9 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-in-producti
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
+# Tracing OpenAI Agents SDK (export vers OpenAI) : désactivé sauf opt-in explicite (données utilisateur).
+AGENT_TRACING_ENABLED = config('AGENT_TRACING_ENABLED', default=False, cast=bool)
+
 # Sentry Configuration
 import sentry_sdk
 from sentry_sdk.integrations.celery import CeleryIntegration

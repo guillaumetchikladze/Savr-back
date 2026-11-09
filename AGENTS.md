@@ -179,6 +179,8 @@ OpenAI-compatible `GEMINI_OPENAI_BASE_URL`), indépendant de `AI_MODEL` (pipelin
   `auto_publish_cooked`, renvoie ardoise + `new_badges`), `add_to_shopping_list_from_basket`
   (→ `basket_service.items_for_shopping` + `add_to_shopping_list`), `remove_from_basket`, `undo_log_cooked`.
   Les 11 tools v1 restent exposés (app 1.0.9). Résultats : `card_type` + `message` + `undo` (`tool_schemas.py`).
+- Tracing SDK Agents : désactivé par défaut (`chat/services/tracing.py`, appelé au démarrage et à l'import de
+  `agent_factory`) ; opt-in via `AGENT_TRACING_ENABLED=true` (les traces contiennent des données utilisateur).
 - Tests : `chat/tests/test_chat_agent_v2.py` (aller-retour tool calling avec `chat.completions.create` mocké,
   sans réseau). Ne pas utiliser `django_db(transaction=True)` : il vide les données seedées par migration
   de la base réutilisée (`make test-fresh` pour réparer).

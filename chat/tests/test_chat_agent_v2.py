@@ -279,3 +279,20 @@ def test_tool_call_round_trip_through_openai_compatible_client(user, fake_api_ke
     assert not {'reasoning_effort', 'store', 'stream_options', 'metadata'} & set(first)
     tool_msg = next(m for m in calls[1]['messages'] if m.get('role') == 'tool')
     assert "card_type='basket_additions'" in tool_msg['content']  # sortie pydantic sérialisée par le SDK
+
+
+def test_agent_tracing_disabled_unless_opted_in():
+    from agents.tracing import get_trace_provider, set_tracing_disabled
+
+    from chat.services.tracing import apply_tracing_setting
+
+    try:
+        set_tracing_disabled(False)
+        with override_settings(AGENT_TRACING_ENABLED=False):
+            apply_tracing_setting()
+        assert get_trace_provider()._disabled is True
+        with override_settings(AGENT_TRACING_ENABLED=True):
+            apply_tracing_setting()
+        assert get_trace_provider()._disabled is False
+    finally:
+        apply_tracing_setting()

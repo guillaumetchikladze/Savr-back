@@ -7,7 +7,7 @@ from chat.services.gemini_tool_compat import install as install_gemini_tool_comp
 
 install_gemini_tool_compat()
 
-from agents import Agent, set_tracing_disabled
+from agents import Agent
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from decouple import config
@@ -34,9 +34,12 @@ from chat.services.async_tools import (
     undo_log_cooked,
 )
 from chat.services.session_context import build_session_context_prompt
+from chat.services.tracing import apply_tracing_setting
 from recipes.services.ai_service import sanitize_model_string
 
 logger = logging.getLogger(__name__)
+
+apply_tracing_setting()
 
 DEFAULT_CHAT_MODEL = 'gemini-2.5-flash'
 AI_API_KEY = config('AI_API_KEY', default='')
@@ -155,9 +158,6 @@ def create_planning_agent(user=None, *, session_context: str | None = None) -> A
     Agent du chat. `session_context` : bloc dates + profil déjà calculé pour ce tour (le consumer
     async le calcule via `database_sync_to_async`) ; sinon calculé ici (appelants sync).
     """
-    if config('DEBUG', default=True, cast=bool):
-        set_tracing_disabled(True)
-
     instructions = AGENT_INSTRUCTIONS
     if session_context is None and user is not None:
         session_context = build_session_context_prompt(user)
