@@ -113,6 +113,19 @@ python manage.py backfill_badges                       # badges déjà mérités
 
 Tests : `make test-domain d=stats` (LLM mocké via `stats.services.classification._call_llm`).
 
+## « L'ardoise » : post enrichi (`stats/services/highlights.py`)
+
+Les posts exposent `cuisine` ({code, label, flag, country} ou null) et `highlights` (≤ 3 puces `{kind, value, label, icon}`)
+dans le feed, le détail et la réponse de `POST /posts/cooked/`. Aperçu sans écriture : `POST /api/posts/cooked/preview/`
+(même corps). Contrat front : `.claude-work/specs/ardoise.md`.
+
+- Puces positives seulement, jamais de calories ni de score santé (liste fermée `KINDS`) ; rareté d'abord
+  (1re fois, nouveaux ingrédients, palier de série), puis végétaux / convives / durée mesurée par le mode cuisine.
+- Calcul **à la date du post** (historique `cooked_meal_plans` strictement antérieur) ; instantané `Post.highlights`
+  calculé paresseusement (feed : en lot, ≤ 7 requêtes constantes ; à chaud 0) et remis à null par les signaux `stats`
+  (invités, recettes du repas, fin du mode cuisine). Changer les règles → incrémenter `SNAPSHOT_VERSION`.
+- Backfill optionnel en prod : `python manage.py backfill_post_highlights`. Tests : `stats/tests/test_stats_highlights.py`.
+
 ## Notifications (app `notifications`)
 
 Registre unique : `notifications/registry.py` (un type = catégorie, modèles de titre/corps en français,
