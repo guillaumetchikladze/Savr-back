@@ -1,4 +1,4 @@
-"""Tâches Celery stats : classification des nouveaux ingrédients, badges, push « Nouveau badge »."""
+"""Tâches Celery stats : classification des nouveaux ingrédients, badges, notification « Nouveau badge »."""
 
 from __future__ import annotations
 
@@ -62,24 +62,26 @@ def evaluate_user_badges(user_id: int) -> int:
 
 
 @shared_task(ignore_result=True)
-def send_new_badge_push(user_id: int, codes: list[str]) -> None:
-    from accounts.models import PushDevice
-    from accounts.services.expo_push import send_expo_push_notifications
+def send_new_badge_push(user_id: int, codes: list[str], push: bool = True) -> None:
+    """In-app « Nouveau badge » (+ push catégorie `rewards`, si `push` et BADGE_PUSH_ENABLED)."""
+    from notifications.services import notify
 
     from .services.badges import BADGES_BY_CODE
 
     badges = [BADGES_BY_CODE[c] for c in codes if c in BADGES_BY_CODE]
-    tokens = list(
-        PushDevice.objects.filter(user_id=user_id, is_active=True)
-        .exclude(expo_push_token='')
-        .values_list('expo_push_token', flat=True)
-    )
-    if not badges or not tokens:
+    user = get_user_model().objects.filter(pk=user_id).first()
+    if not badges or user is None:
         return
     first = badges[0]
-    title = f'Nouveau badge : {first.title} {first.emoji}'
-    body = first.description if len(badges) == 1 else f'Et {len(badges) - 1} autre(s) badge(s) débloqué(s) !'
-    send_expo_push_notifications(
-        {'to': t, 'title': title, 'body': body, 'sound': 'default', 'data': {'kind': 'new_badge', 'codes': codes}}
-        for t in tokens
+    notify(
+        'new_badge',
+        user,
+        context={
+            'badge': first.title,
+            'emoji': first.emoji,
+            'description': first.description,
+            'others': len(badges) - 1,
+        },
+        data={'badge_codes': [b.code for b in badges]},
+        send_push=push and getattr(settings, 'BADGE_PUSH_ENABLED', True),
     )

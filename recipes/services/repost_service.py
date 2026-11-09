@@ -1,10 +1,8 @@
 import logging
-import random
 
 from django.contrib.auth import get_user_model
 
-from accounts.models import Notification, PushDevice
-from accounts.services.expo_push import send_expo_push_notifications
+from notifications.services import notify
 from recipes.models import MealInvitation, Post, PostRepost
 
 User = get_user_model()
@@ -64,52 +62,4 @@ def delete_post_repost(user, post: Post) -> bool:
 def notify_host_of_repost(reposter, post: Post) -> None:
     if post.user_id == reposter.id:
         return
-
-    titles = [
-        'Ton repas fait le tour',
-        'Quelqu’un a reposté ton repas',
-        'Ton meal plan se propage',
-    ]
-    messages = [
-        f'{reposter.username} a reposté ton repas.',
-        f'{reposter.username} partage ton repas avec ses amis.',
-        f'{reposter.username} a ajouté ton repas à son historique.',
-    ]
-
-    notification = Notification.objects.create(
-        user=post.user,
-        notification_type='post_repost',
-        title=random.choice(titles),
-        message=random.choice(messages),
-        related_user=reposter,
-        related_post_id=post.id,
-    )
-
-    devices = PushDevice.objects.filter(
-        user=post.user,
-        is_active=True,
-    ).exclude(expo_push_token='')
-    logger.info(
-        'post_repost: notification=%s host=%s reposter=%s devices=%s',
-        notification.id,
-        post.user_id,
-        reposter.id,
-        devices.count(),
-    )
-    messages_payload = [
-        {
-            'to': device.expo_push_token,
-            'title': notification.title,
-            'body': notification.message,
-            'data': {
-                'source': 'social',
-                'kind': 'post_repost',
-                'notification_id': notification.id,
-                'post_id': post.id,
-            },
-            'sound': 'default',
-        }
-        for device in devices
-    ]
-    if messages_payload:
-        send_expo_push_notifications(messages_payload)
+    notify('post_repost', post.user, actor=reposter, post=post)

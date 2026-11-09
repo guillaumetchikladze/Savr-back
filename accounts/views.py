@@ -24,7 +24,7 @@ from savr_back.settings import build_s3_client, build_s3_url
 
 from .blocks import are_blocked_either_way, blocked_user_ids_for, exclude_blocked_from_user_qs
 from .feed_suggestions import build_feed_user_suggestions
-from .models import Follow, FollowRequest, LoyaltyCard, Notification, PushDevice, UserBlock
+from .models import Follow, FollowRequest, LoyaltyCard, Notification, UserBlock
 from .permissions import IsValidated
 from .serializers import (
     FeedUserSuggestionSerializer,
@@ -36,7 +36,6 @@ from .serializers import (
     UserSerializer,
 )
 from .serializers_push import PushDeviceRegisterSerializer
-from .services.expo_push import send_expo_push_notifications
 from .services.follow_service import (
     accept_follow_request,
     decline_follow_request,
@@ -684,27 +683,13 @@ def test_push_device_view(request):
     Endpoint de test pour envoyer une notification push immédiate
     au(x) device(s) enregistrés de l'utilisateur courant.
     """
-    devices = PushDevice.objects.filter(user=request.user, is_active=True).exclude(expo_push_token='').all()
-    if not devices:
+    from notifications.services import push
+
+    result = push('test_push', request.user)
+    if result.status == 'no_devices':
         return Response({'error': 'Aucun device push actif pour cet utilisateur'}, status=status.HTTP_400_BAD_REQUEST)
-
-    messages = []
-    for device in devices:
-        messages.append(
-            {
-                'to': device.expo_push_token,
-                'title': 'Test notifications Tchikook',
-                'body': 'Si tu vois ceci, la push backend fonctionne.',
-                'data': {
-                    'source': 'debug',
-                    'kind': 'test_push',
-                },
-                'sound': 'default',
-            }
-        )
-
-    send_expo_push_notifications(messages)
-    return Response({'message': f'Push de test envoyée à {len(messages)} device(s).'}, status=status.HTTP_200_OK)
+    count = result.delivery.device_count if result.delivery else 0
+    return Response({'message': f'Push de test envoyée à {count} device(s).'}, status=status.HTTP_200_OK)
 
 
 def _password_reset_from_email():

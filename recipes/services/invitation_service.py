@@ -5,9 +5,9 @@ from django.contrib.auth.models import AbstractBaseUser
 from django.db import transaction
 from django.db.models import Q
 
-from accounts.models import Follow, Notification, PushDevice
-from accounts.services.expo_push import send_expo_push_notifications
+from accounts.models import Follow
 from chat.services.tool_schemas import CompliceSummary, MutationProposal
+from notifications.services import notify, push
 from recipes.models import MealInvitation, MealPlan
 from recipes.utils import get_accessible_meal_plan_filter
 
@@ -218,53 +218,46 @@ def execute_meal_invitation(user: AbstractBaseUser, payload: dict) -> dict:
                 revived = True
             if created or revived:
                 invitations.append(invitation)
-                notification_data.append(
-                    {
-                        'user': invitee,
-                        'notification_type': 'meal_invitation',
-                        'title': f'{user.username} vous invite à un repas',
-                        'message': (
-                            f'{user.username} vous invite à {meal_plan.get_meal_time_display()} '
-                            f'le {meal_plan.date.strftime("%d/%m/%Y")}'
-                        ),
-                        'related_user': user,
-                        'meal_plan': meal_plan,
-                    }
-                )
+                notification_data.append((invitee, meal_plan))
 
     if notification_data:
 
         def create_notifications_and_pushes():
-            for notif_data in notification_data:
-                meal_plan = notif_data.pop('meal_plan')
-                notification = Notification.objects.create(**notif_data)
-                target_user = notif_data.get('user')
-                if not target_user:
-                    continue
-                devices = PushDevice.objects.filter(
-                    user=target_user,
-                    is_active=True,
-                ).exclude(expo_push_token='')
-                messages = []
-                for device in devices:
-                    messages.append(
-                        {
-                            'to': device.expo_push_token,
-                            'title': notification.title,
-                            'body': notification.message,
-                            'data': {
-                                'source': 'social',
-                                'kind': 'meal_invitation',
-                                'notification_id': notification.id,
-                                'meal_plan_id': meal_plan.id,
-                                'meal_plan_date': meal_plan.date.isoformat(),
-                                'meal_time': meal_plan.meal_time,
-                            },
-                            'sound': 'default',
-                        }
+            # Une in-app par repas ; une seule push par invité (« Léa t'invite à 3 repas »).
+            by_invitee: dict[int, list] = {}
+            for invitee, meal_plan in notification_data:
+                by_invitee.setdefault(invitee.id, []).append((invitee, meal_plan))
+            for items in by_invitee.values():
+                invitee = items[0][0]
+                inboxes = []
+                for _, meal_plan in items:
+                    result = notify(
+                        'meal_invitation',
+                        invitee,
+                        actor=user,
+                        context={'meal_time': meal_plan.meal_time, 'date': meal_plan.date},
+                        send_push=False,
                     )
-                if messages:
-                    send_expo_push_notifications(messages)
+                    inboxes.append(result.inbox)
+                first = items[0][1]
+                push(
+                    'meal_invitation',
+                    invitee,
+                    context={
+                        'actor': user.username,
+                        'count': len(items),
+                        'meal_time': first.meal_time,
+                        'date': first.date,
+                    },
+                    data={
+                        'user_id': user.id,
+                        'meal_plan_id': first.id,
+                        'meal_plan_ids': [mp.id for _, mp in items],
+                        'meal_plan_date': first.date.isoformat(),
+                        'meal_time': first.meal_time,
+                    },
+                    inbox=inboxes[0] if len(inboxes) == 1 else None,
+                )
 
         transaction.on_commit(create_notifications_and_pushes)
 

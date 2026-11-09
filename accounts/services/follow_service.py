@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import random
-
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Q
 
-from ..models import Follow, FollowRequest, Notification, PushDevice
-from .expo_push import send_expo_push_notifications
+from notifications.services import notify
+
+from ..models import Follow, FollowRequest
 
 User = get_user_model()
 
@@ -50,109 +49,16 @@ def follow_relation_payload(viewer: User | None, target: User) -> dict:
     }
 
 
-def _push_to_user(user: User, *, title: str, message: str, kind: str, related_user_id: int, notification_id: int):
-    devices = PushDevice.objects.filter(user=user, is_active=True).exclude(expo_push_token='')
-    messages = [
-        {
-            'to': device.expo_push_token,
-            'title': title,
-            'body': message,
-            'data': {
-                'source': 'social',
-                'kind': kind,
-                'notification_id': notification_id,
-                'user_id': related_user_id,
-            },
-            'sound': 'default',
-        }
-        for device in devices
-    ]
-    if messages:
-        send_expo_push_notifications(messages)
-
-
-def _create_notification(
-    *,
-    user: User,
-    notification_type: str,
-    title: str,
-    message: str,
-    related_user: User,
-    push_kind: str,
-):
-    notification = Notification.objects.create(
-        user=user,
-        notification_type=notification_type,
-        title=title,
-        message=message,
-        related_user=related_user,
-    )
-    _push_to_user(
-        user,
-        title=title,
-        message=message,
-        kind=push_kind,
-        related_user_id=related_user.id,
-        notification_id=notification.id,
-    )
-    return notification
-
-
 def _notify_follow_request(requester: User, target: User):
-    titles = [
-        "Nouvelle demande d'ami",
-        "Quelqu'un veut te rejoindre",
-    ]
-    messages = [
-        f'{requester.username} souhaite devenir ton ami.',
-        f"{requester.username} t'a envoyé une demande d'ami.",
-    ]
-    _create_notification(
-        user=target,
-        notification_type='follow_request',
-        title=random.choice(titles),
-        message=random.choice(messages),
-        related_user=requester,
-        push_kind='follow_request',
-    )
+    notify('follow_request', target, actor=requester)
 
 
 def _notify_new_follower(follower: User, following: User):
-    titles = [
-        'Un nouvel ami arrive',
-        'Tu as gagné un nouvel ami',
-    ]
-    messages = [
-        f"{follower.username} t'a ajouté comme ami.",
-        f'{follower.username} a commencé à te suivre.',
-    ]
-    _create_notification(
-        user=following,
-        notification_type='follow',
-        title=random.choice(titles),
-        message=random.choice(messages),
-        related_user=follower,
-        push_kind='follow',
-    )
+    notify('follow_new', following, actor=follower)
 
 
 def _notify_request_accepted(accepter: User, requester: User):
-    titles = [
-        'Demande acceptée',
-        "C'est validé",
-    ]
-    messages = [
-        f"{accepter.username} a accepté ta demande d'ami.",
-        f'{accepter.username} et toi êtes maintenant connectés.',
-    ]
-    _create_notification(
-        user=requester,
-        notification_type='follow',
-        title=random.choice(titles),
-        message=random.choice(messages),
-        related_user=accepter,
-        push_kind='follow',
-    )
+    notify('follow_accepted', requester, actor=accepter)
 
 
 def _create_follow(follower: User, following: User, *, notify: bool = True) -> tuple[Follow, bool]:

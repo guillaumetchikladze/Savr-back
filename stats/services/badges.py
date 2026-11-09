@@ -5,7 +5,7 @@ Badges : définitions en code (registre), évaluées sur l'historique complet «
   (les plafonds doux de stats_service s'appliquent : un plat compte une fois par jour).
 - `evaluate_badges(user)` persiste les badges nouvellement atteints (idempotent, contrainte unique)
   et renvoie leurs payloads (champ `new_badges` de POST /posts/cooked/).
-- Push « Nouveau badge » derrière `settings.BADGE_PUSH_ENABLED` (défaut : désactivé).
+- Notification « Nouveau badge » (in-app + push catégorie `rewards`, registre `new_badge`) ; push coupée par `BADGE_PUSH_ENABLED`.
 """
 
 from __future__ import annotations
@@ -15,8 +15,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-
-from django.conf import settings
 
 from ..models import UserBadge
 from .stats_service import StatsResult, compute_stats, resolve_period
@@ -177,8 +175,12 @@ def _badge_payload(badge: BadgeDef, ub: UserBadge) -> dict:
     return {**badge.public(), 'earned_at': ub.earned_at.isoformat(), 'context': ub.context or {}}
 
 
-def evaluate_badges(user, *, stats: StatsResult | None = None, notify: bool = True) -> list[dict]:
-    """Persiste les badges atteints et pas encore obtenus ; renvoie les nouveaux (payloads)."""
+def evaluate_badges(user, *, stats: StatsResult | None = None, notify: bool = True, push: bool = True) -> list[dict]:
+    """
+    Persiste les badges atteints et pas encore obtenus ; renvoie les nouveaux (payloads).
+    `notify` : notification in-app « Nouveau badge » ; `push` : aussi en push (inutile quand l'app
+    affiche déjà les nouveaux badges dans la réponse, ex. POST /posts/cooked/ ou GET /badges/me/).
+    """
     stats = stats or lifetime_stats(user)
     owned = set(UserBadge.objects.filter(user=user).values_list('code', flat=True))
     to_create = []
@@ -196,33 +198,33 @@ def evaluate_badges(user, *, stats: StatsResult | None = None, notify: bool = Tr
     created = UserBadge.objects.filter(user=user, code__in=[b.code for b in to_create]).exclude(code__in=owned)
     new = [_badge_payload(BADGES_BY_CODE[ub.code], ub) for ub in created if ub.code in BADGES_BY_CODE]
     new.sort(key=lambda b: list(BADGES_BY_CODE).index(b['code']))
-    if notify and new and getattr(settings, 'BADGE_PUSH_ENABLED', False):
-        _schedule_push(user.id, [b['code'] for b in new])
+    if notify and new:
+        _schedule_notification(user.id, [b['code'] for b in new], push=push)
     return new
 
 
 def award_badges_safely(user) -> list[dict]:
     """Variante pour le chemin requête : ne lève jamais (le log « cuisiné » ne doit pas échouer)."""
     try:
-        return evaluate_badges(user)
+        return evaluate_badges(user, push=False)  # l'app affiche `new_badges` de la réponse
     except Exception:
         logger.exception('[badges] évaluation en échec pour user=%s', getattr(user, 'id', None))
         return []
 
 
-def _schedule_push(user_id: int, codes: list[str]) -> None:
+def _schedule_notification(user_id: int, codes: list[str], *, push: bool) -> None:
     try:
         from ..tasks import send_new_badge_push
 
-        send_new_badge_push.apply_async(args=[user_id, codes], retry=False)
+        send_new_badge_push.apply_async(args=[user_id, codes, push], retry=False)
     except Exception:
-        logger.warning('[badges] push non planifiée pour user=%s', user_id, exc_info=True)
+        logger.warning('[badges] notification non planifiée pour user=%s', user_id, exc_info=True)
 
 
 def badges_overview(user, *, next_limit: int = 5) -> dict:
     """GET /badges/me/ : badges obtenus + prochains à portée (progression)."""
     stats = lifetime_stats(user)
-    evaluate_badges(user, stats=stats)  # rattrape les « cuisiné » loggés hors POST /posts/cooked/
+    evaluate_badges(user, stats=stats, push=False)  # rattrape les « cuisiné » loggés hors POST /posts/cooked/
     owned = {ub.code: ub for ub in UserBadge.objects.filter(user=user)}
     earned = [_badge_payload(b, owned[b.code]) for b in BADGES if b.code in owned]
     order = {code: i for i, code in enumerate(BADGES_BY_CODE)}

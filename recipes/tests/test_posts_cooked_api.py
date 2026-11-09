@@ -1,11 +1,12 @@
 """Posts : « J'ai cuisiné » en 1 tap (POST /posts/cooked/), photos optionnelles, trace « cuisiné »."""
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from unittest import mock
 
 import pytest
 
 from accounts.models import PushDevice, UserBlock
+from notifications.models import NotificationPreference
 from recipes.models import MealInvitation, MealPlan, Post, PostPhoto, RecipeBatch
 from recipes.services.cooked_service import cooked_meal_plans
 
@@ -241,12 +242,15 @@ def test_meal_time_reminder_push_payload(user, make_meal_plan, make_recipe):
     recipe = make_recipe(user, 'Quiche')
     mp = make_meal_plan(user, day=date(2026, 11, 8), meal_time='dinner', recipes=[recipe])
     PushDevice.objects.create(user=user, expo_push_token='ExponentPushToken[x]', platform='ios')
+    # Heures calmes désactivées (début == fin) : le test ne dépend pas de l'heure d'exécution.
+    NotificationPreference.objects.create(user=user, quiet_hours_start=time(8), quiet_hours_end=time(8))
 
-    with mock.patch('accounts.tasks.send_expo_push_notifications') as send:
+    with mock.patch('notifications.services.send_expo_push_notifications') as send:
         send_meal_time_photo_reminder_push(user.id, mp.id)
 
     (message,) = send.call_args[0][0]
-    assert message['body'] == 'Tu as cuisiné Quiche ? Partage-le en 1 tap'
+    assert message['body'] == 'Tu as cuisiné Quiche ? Partage-le en 1 tap.'
+    assert message['categoryId'] == 'cooked_prompt' and message['data']['type'] == 'cooked_prompt'
     assert message['data']['kind'] == 'meal_time_photo_reminder' and message['data']['meal_plan_id'] == mp.id
     assert message['data']['title'] == 'Quiche' and message['data']['recipe_ids'] == [recipe.id]
     assert message['data']['action'] == 'cooked_prompt'

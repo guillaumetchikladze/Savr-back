@@ -1,5 +1,4 @@
 import logging
-import random
 import re
 import traceback
 import uuid
@@ -20,7 +19,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from accounts.models import Follow, LoyaltyCard, Notification, PushDevice
+from accounts.models import Follow, LoyaltyCard
 from accounts.permissions import IsValidated as IsAuthenticated
 from savr_back.settings import build_presigned_get_url, build_s3_client
 
@@ -86,8 +85,9 @@ from .services.repost_service import create_post_repost, delete_post_repost, use
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 from accounts.serializers import LoyaltyCardSerializer
-from accounts.services.expo_push import send_expo_push_notifications
 from accounts.tasks import send_meal_time_photo_reminder_push, send_timer_almost_finished_push
+from notifications.services import notify
+from notifications.text import quoted
 from savr_back.celery import app as celery_app
 
 from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
@@ -4323,8 +4323,6 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
         """Accepter une invitation à un repas"""
-        from accounts.models import Notification
-
         invitation = self.get_object()
 
         if invitation.invitee != request.user:
@@ -4341,13 +4339,16 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
 
         meal_plan = invitation.meal_plan
 
-        # Créer une notification pour l'inviteur
-        Notification.objects.create(
-            user=invitation.inviter,
-            notification_type='meal_invitation',
-            title=f'{request.user.username} a accepté votre invitation',
-            message=f'{request.user.username} a accepté votre invitation pour {meal_plan.get_meal_time_display()} le {meal_plan.date.strftime("%d/%m/%Y")}',
-            related_user=request.user,
+        notify(
+            'meal_invitation_accepted',
+            invitation.inviter,
+            actor=request.user,
+            context={'meal_time': meal_plan.meal_time, 'date': meal_plan.date},
+            data={
+                'meal_plan_id': meal_plan.id,
+                'meal_plan_date': meal_plan.date.isoformat(),
+                'meal_time': meal_plan.meal_time,
+            },
         )
 
         serializer = self.get_serializer(invitation)
@@ -5791,35 +5792,9 @@ class PostViewSet(viewsets.ModelViewSet):
 
         serializer = PostSerializer(post, context={'request': request})
         if created:
-            # Notification pour le propriétaire du post (sauf si c'est soi-même)
+            # In-app tout de suite ; push débouncée + agrégée (« Léa et 3 autres ont aimé … »).
             if post.user_id != user.id:
-                logger.info(
-                    'post_miam: creating notification for user=%s post=%s from user=%s', post.user_id, post.id, user.id
-                )
-
-                miam_titles = [
-                    'On parle de ton repas',
-                    'Ton repas fait des envieux',
-                    'Un miam de plus au compteur',
-                ]
-                miam_messages = [
-                    f'{user.username} a mis un miam à ton post.',
-                    f'{user.username} vient de miamer ton repas.',
-                    f'{user.username} a craqué pour ton repas.',
-                ]
-
-                Notification.objects.create(
-                    user=post.user,
-                    notification_type='post_miam',
-                    title=random.choice(miam_titles),
-                    message=random.choice(miam_messages),
-                    related_user=user,
-                    related_post_id=post.id,
-                )
-                # Push debouncée + agrégée (plusieurs likes rapides → 1 seule push)
-                from accounts.services.miam_push import schedule_post_miam_push
-
-                schedule_post_miam_push(owner_id=post.user_id, post_id=post.id)
+                notify('post_miam', post.user, actor=user, post=post)
             return Response(
                 {'message': 'Cookie sent successfully', 'post': serializer.data}, status=status.HTTP_201_CREATED
             )
@@ -5897,98 +5872,19 @@ class PostViewSet(viewsets.ModelViewSet):
             commenter = request.user
             text = (comment.text or '').strip()
 
-            # 1. Notification au propriétaire du post (sauf si c'est le commentateur)
+            # 1. Propriétaire du post (sauf si c'est le commentateur) : in-app + push groupée par post.
             if post.user_id != commenter.id:
-                comment_titles = [
-                    'Nouveau mot sur ton post',
-                    "Quelqu'un réagit à ton repas",
-                ]
-                comment_messages = [
-                    f'{commenter.username} a commenté ton post.',
-                    f'{commenter.username} a laissé un petit mot sous ton repas.',
-                ]
+                notify('post_comment', post.user, actor=commenter, post=post, context={'comment': text})
 
-                notification = Notification.objects.create(
-                    user=post.user,
-                    notification_type='post_comment',
-                    title=random.choice(comment_titles),
-                    message=random.choice(comment_messages),
-                    related_user=commenter,
-                    related_post_id=post.id,
-                )
-                # Push Expo vers le propriétaire du post
-                owner_devices = PushDevice.objects.filter(user=post.user, is_active=True).exclude(expo_push_token='')
-                owner_messages = []
-                for device in owner_devices:
-                    owner_messages.append(
-                        {
-                            'to': device.expo_push_token,
-                            'title': notification.title,
-                            'body': notification.message,
-                            'data': {
-                                'source': 'social',
-                                'kind': 'post_comment',
-                                'notification_id': notification.id,
-                                'post_id': post.id,
-                            },
-                            'sound': 'default',
-                        }
-                    )
-                if owner_messages:
-                    send_expo_push_notifications(owner_messages)
-
-            # 2. Parser les @mentions et notifier chaque utilisateur mentionné
+            # 2. @mentions (hors propriétaire et commentateur)
             User = get_user_model()
-            mention_pattern = r'@([a-zA-Z0-9_]+)'
-            mentioned_usernames = set(re.findall(mention_pattern, text))
-            notified_user_ids = {post.user_id, commenter.id}  # Éviter doublons avec propriétaire et commentateur
-
+            mentioned_usernames = set(re.findall(r'@([a-zA-Z0-9_]+)', text))
+            notified_user_ids = {post.user_id, commenter.id}
             for username in mentioned_usernames:
-                try:
-                    mentioned_user = User.objects.get(username__iexact=username)
-                    if mentioned_user.id not in notified_user_ids:
-                        mention_titles = [
-                            'On te cite à table',
-                            "Quelqu'un parle de toi",
-                        ]
-                        mention_messages = [
-                            f"{commenter.username} t'a mentionné dans un commentaire.",
-                            f"{commenter.username} t'a glissé dans la conversation.",
-                        ]
-
-                        notification = Notification.objects.create(
-                            user=mentioned_user,
-                            notification_type='post_comment_mention',
-                            title=random.choice(mention_titles),
-                            message=random.choice(mention_messages),
-                            related_user=commenter,
-                            related_post_id=post.id,
-                        )
-                        notified_user_ids.add(mentioned_user.id)
-                        # Push Expo vers l'utilisateur mentionné
-                        mention_devices = PushDevice.objects.filter(user=mentioned_user, is_active=True).exclude(
-                            expo_push_token=''
-                        )
-                        mention_messages_list = []
-                        for device in mention_devices:
-                            mention_messages_list.append(
-                                {
-                                    'to': device.expo_push_token,
-                                    'title': notification.title,
-                                    'body': notification.message,
-                                    'data': {
-                                        'source': 'social',
-                                        'kind': 'post_comment_mention',
-                                        'notification_id': notification.id,
-                                        'post_id': post.id,
-                                    },
-                                    'sound': 'default',
-                                }
-                            )
-                        if mention_messages_list:
-                            send_expo_push_notifications(mention_messages_list)
-                except User.DoesNotExist:
-                    pass  # Username invalide, ignorer
+                mentioned_user = User.objects.filter(username__iexact=username).first()
+                if mentioned_user and mentioned_user.id not in notified_user_ids:
+                    notified_user_ids.add(mentioned_user.id)
+                    notify('post_comment_mention', mentioned_user, actor=commenter, post=post)
 
             serializer = PostCommentSerializer(comment, context={'request': request})
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -6512,7 +6408,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         from django.contrib.auth import get_user_model
         from django.db import transaction
 
-        from accounts.models import Follow, Notification
+        from accounts.models import Follow
 
         User = get_user_model()
 
@@ -6560,22 +6456,17 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 )
                 if created:
                     invitations.append(invitation)
-                    notification_data.append(
-                        {
-                            'user': invitee,
-                            'notification_type': 'shopping_list_invitation',
-                            'title': f'{request.user.username} vous invite à une liste de courses',
-                            'message': f"{request.user.username} vous invite à collaborer sur '{shopping_list.name}'",
-                            'related_user': request.user,
-                        }
-                    )
+                    notification_data.append(invitee)
 
-        # Créer les notifications après commit
+        # Notifications après commit
         if notification_data:
+            inviter = request.user
+            list_ctx = {'list_name': quoted(shopping_list.name, 'partagée')}
+            list_data = {'shopping_list_id': shopping_list.id}
 
             def create_notifications():
-                for notif_data in notification_data:
-                    Notification.objects.create(**notif_data)
+                for invitee in notification_data:
+                    notify('shopping_list_invitation', invitee, actor=inviter, context=list_ctx, data=list_data)
 
             transaction.on_commit(create_notifications)
 
@@ -6589,7 +6480,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         from django.contrib.auth import get_user_model
         from django.db import transaction
 
-        from accounts.models import Follow, Notification
+        from accounts.models import Follow
 
         User = get_user_model()
 
@@ -6623,21 +6514,16 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 ShoppingListMember.objects.get_or_create(
                     shopping_list=shopping_list, user=invitee, defaults={'role': 'collaborator'}
                 )
-                notification_data.append(
-                    {
-                        'user': invitee,
-                        'notification_type': 'shopping_list_invitation',
-                        'title': f'{request.user.username} vous a ajouté à une liste de courses',
-                        'message': f"{request.user.username} vous a ajouté à la liste '{shopping_list.name}'",
-                        'related_user': request.user,
-                    }
-                )
+                notification_data.append(invitee)
 
         if notification_data:
+            inviter = request.user
+            list_ctx = {'list_name': quoted(shopping_list.name, 'partagée')}
+            list_data = {'shopping_list_id': shopping_list.id}
 
             def create_notifications():
-                for nd in notification_data:
-                    Notification.objects.create(**nd)
+                for invitee in notification_data:
+                    notify('shopping_list_member_added', invitee, actor=inviter, context=list_ctx, data=list_data)
 
             transaction.on_commit(create_notifications)
 
