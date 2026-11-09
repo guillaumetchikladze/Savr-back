@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import IngredientProfile, UserBadge
+from .models import BadgeRarity, IngredientProfile, UserBadge
 
 
 @admin.register(IngredientProfile)
@@ -18,3 +18,11 @@ class UserBadgeAdmin(admin.ModelAdmin):
     list_filter = ('code',)
     search_fields = ('user__username', 'code')
     raw_id_fields = ('user',)
+
+
+@admin.register(BadgeRarity)
+class BadgeRarityAdmin(admin.ModelAdmin):
+    list_display = ('code', 'percent', 'tier', 'holders', 'active_users', 'computed_at')
+    list_filter = ('tier',)
+    search_fields = ('code',)
+    ordering = ('percent',)

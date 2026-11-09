@@ -109,9 +109,11 @@ class Meal:
     date: date
     custom_label: str
     guest_count: int
-    recipes: list[dict] = field(default_factory=list)  # {id, title, cuisine, image_path}
+    recipes: list[dict] = field(default_factory=list)  # {id, title, cuisine, image_path, batch_id, …}
     batch_ids: list[int] = field(default_factory=list)
     posts: list[dict] = field(default_factory=list)
+    meal_time: str = ''
+    scheduled_time: object = None  # datetime.time | None (créneau prévu)
 
     @property
     def recipe_ids(self) -> tuple[int, ...]:
@@ -156,6 +158,15 @@ class StatsResult:
     # Pour le Récap
     months: list[int] = field(default_factory=list)
     biggest_fan: dict | None = None
+    # Données chargées, partagées avec les badges (`badge_history`) : aucune requête de plus pour les relire.
+    meals: list[Meal] = field(default_factory=list)
+    dish_days: list[Meal] = field(default_factory=list)
+    ingredients_by_recipe: dict[int, list[dict]] = field(default_factory=dict)
+    ing_info: dict[int, dict] = field(default_factory=dict)
+    guests_by_meal: dict[int, set[int]] = field(default_factory=dict)
+    today: date | None = None
+    user: object = None
+    history: object = None  # cache paresseux de `badge_history.history_of`
 
 
 def _week_monday(d: date) -> date:
@@ -185,8 +196,17 @@ def _streaks(mondays: set[date], today: date) -> tuple[int, int, list[tuple[int,
 def _load_meals(user, start, end) -> list[Meal]:
     plans = cooked_meal_plans(user, start, end)
     meals = {
-        row['id']: Meal(row['id'], row['date'], row['custom_label'] or '', row['guest_count'] or 0)
-        for row in plans.order_by('date', 'id').values('id', 'date', 'custom_label', 'guest_count')
+        row['id']: Meal(
+            row['id'],
+            row['date'],
+            row['custom_label'] or '',
+            row['guest_count'] or 0,
+            meal_time=row['meal_time'] or '',
+            scheduled_time=row['scheduled_time'],
+        )
+        for row in plans.order_by('date', 'id').values(
+            'id', 'date', 'custom_label', 'guest_count', 'meal_time', 'scheduled_time'
+        )
     }
     if not meals:
         return []
@@ -201,6 +221,8 @@ def _load_meals(user, start, end) -> list[Meal]:
             'recipe_batch__recipe__title',
             'recipe_batch__recipe__cuisine',
             'recipe_batch__recipe__image_path',
+            'recipe_batch__recipe__required_equipment',
+            'recipe_batch__sub_recipe_modes',
         )
     ):
         meal = meals.get(row['meal_plan_id'])
@@ -214,13 +236,27 @@ def _load_meals(user, start, end) -> list[Meal]:
                     'title': row['recipe_batch__recipe__title'] or '',
                     'cuisine': row['recipe_batch__recipe__cuisine'],
                     'image_path': row['recipe_batch__recipe__image_path'],
+                    'batch_id': row['recipe_batch_id'],
+                    'required_equipment': row['recipe_batch__recipe__required_equipment'] or [],
+                    'sub_recipe_modes': row['recipe_batch__sub_recipe_modes'] or {},
                 }
             )
     for row in (
         Post.objects.filter(meal_plan_id__in=plan_ids, user=user)
         .annotate(miam=Count('cookies', distinct=True), n_photos=Count('photos', distinct=True))
         .order_by('id')
-        .values('id', 'meal_plan_id', 'label', 'cooking_time_minutes', 'is_published', 'created_at', 'miam', 'n_photos')
+        .values(
+            'id',
+            'meal_plan_id',
+            'label',
+            'cooking_time_minutes',
+            'is_published',
+            'created_at',
+            'miam',
+            'n_photos',
+            'inspired_by_post_id',
+            'inspired_by_post__user_id',
+        )
     ):
         meals[row['meal_plan_id']].posts.append(row)
     return list(meals.values())
@@ -331,6 +367,9 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
             'ingredient__profile__food_group',
             'ingredient__profile__is_plant',
             'ingredient__profile__is_basic_staple',
+            'id',
+            'sub_recipe_id',
+            'default_mode',
         ):
             ingredients_by_recipe[row['recipe_id']].append(row)
 
@@ -536,6 +575,13 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
         cuisine_dates=sorted(cuisine_first[c] for c in explored),
         streak_runs=runs,
         people_fed_timeline=fed_timeline,
+        meals=meals,
+        dish_days=dish_days,
+        ingredients_by_recipe=ingredients_by_recipe,
+        ing_info=ing_info,
+        guests_by_meal=guests_by_meal,
+        today=today,
+        user=user,
     )
     if with_recap_extras:
         result.months = [month_counts.get((period.year or today.year, m), 0) for m in range(1, 13)]

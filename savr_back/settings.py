@@ -121,6 +121,15 @@ RECAP_AVAILABLE_FROM = config('RECAP_AVAILABLE_FROM', default='12-01')
 RECAP_FORCE_AVAILABLE = config('RECAP_FORCE_AVAILABLE', default=False, cast=bool)
 # Push « Nouveau badge : Aubergine 🍆 » (catégorie `rewards`, plafond quotidien). Interrupteur global.
 BADGE_PUSH_ENABLED = config('BADGE_PUSH_ENABLED', default=True, cast=bool)
+# Badges loufoques (.claude-work/specs/badges-quirky.md). Rareté : % des cuisiniers actifs (≥ 1 « cuisiné »
+# sur BADGE_RARITY_ACTIVE_DAYS jours) qui ont le badge, calcul quotidien (beat `stats-badge-rarity`).
+# Sous BADGE_RARITY_MIN_ACTIVE_USERS cuisiniers actifs, le palier reste l'estimation du registre.
+BADGE_RARITY_ACTIVE_DAYS = config('BADGE_RARITY_ACTIVE_DAYS', default=90, cast=int)
+BADGE_RARITY_MIN_ACTIVE_USERS = config('BADGE_RARITY_MIN_ACTIVE_USERS', default=20, cast=int)
+# Pas de notification pour un badge dont la date d'obtention a plus de N jours (rattrapage historique).
+BADGE_NOTIFY_MAX_AGE_DAYS = config('BADGE_NOTIFY_MAX_AGE_DAYS', default=7, cast=int)
+# Badges météo (phase 2, ville opt-in, Open-Meteo) : évalués en tâche Celery, jamais dans la requête.
+WEATHER_BADGES_ENABLED = config('WEATHER_BADGES_ENABLED', default=False, cast=bool)
 # « Classiques de tes amis » (recipes/services/dish_service.py) : plat cuisiné par ≥ N amis distincts
 # (posts visibles) sur une fenêtre glissante ; au plus MAX plats ; cache par utilisateur (secondes).
 DISH_CLASSICS_WINDOW_DAYS = config('DISH_CLASSICS_WINDOW_DAYS', default=30, cast=int)
@@ -437,6 +446,11 @@ CELERY_BEAT_SCHEDULE = {
     'core-purge-idempotency-records': {
         'task': 'core.tasks.purge_expired_idempotency_records_task',
         'schedule': crontab(minute=20),
+    },
+    # Rareté des badges (% des cuisiniers actifs), une fois par jour.
+    'stats-badge-rarity': {
+        'task': 'stats.tasks.compute_badge_rarity_task',
+        'schedule': crontab(hour=4, minute=40),
     },
 }
 

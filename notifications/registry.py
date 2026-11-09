@@ -255,6 +255,19 @@ def _render_new_badge(ctx: dict) -> tuple[str, str]:
     return title, body or 'Viens le voir sur ton profil.'
 
 
+def _render_badge_rare(ctx: dict) -> tuple[str, str]:
+    kind = 'secret' if ctx.get('secret') else 'rare'
+    title = f'Badge {kind} débloqué : {ctx["badge"]}'
+    if ctx.get('emoji'):
+        title = f'{title} {ctx["emoji"]}'
+    others = int(ctx.get('others') or 0)
+    body = (ctx.get('phrase') or ctx.get('description') or '').strip()
+    if others:
+        extra = f'Et {others} autre{"s" if others > 1 else ""} badge{"s" if others > 1 else ""} à découvrir.'
+        body = f'{body} {extra}'.strip()
+    return title, body or 'Viens le voir sur ton profil.'
+
+
 def _render_friends_digest(ctx: dict) -> tuple[str, str]:
     names = list(ctx.get('actors') or [])
     authors = max(int(ctx.get('author_count') or len(names)), 1)
@@ -434,6 +447,20 @@ _TYPES = (
         renderer=_render_new_badge,
         inbox_type='achievement',
         data_fields=('badge_codes',),
+        url='badges',
+        group_key='new_badge',
+        legacy_source='rewards',
+        legacy_kind='new_badge',
+        legacy_aliases={'badge_codes': 'codes'},
+    ),
+    # Badge rare ou secret (badges loufoques) : même catégorie, même plafond, même lien et même payload
+    # historique que `new_badge` (l'app 1.0.9 le traite pareil) ; texte « Badge secret débloqué : … ».
+    NotificationType(
+        'badge_rare',
+        'rewards',
+        renderer=_render_badge_rare,
+        inbox_type='achievement',
+        data_fields=('badge_codes', 'badge_code', 'secret'),
         url='badges',
         group_key='new_badge',
         legacy_source='rewards',

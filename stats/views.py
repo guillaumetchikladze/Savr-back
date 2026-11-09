@@ -3,7 +3,8 @@ Endpoints stats / badges / Récap.
 
 GET /api/stats/me/?period=week|month|year|all&year=2026
 GET /api/stats/users/{id}/?period=…  (sous-ensemble public + badges obtenus, mêmes règles que le profil)
-GET /api/badges/me/[?all=1]  (all=1 : tous les badges verrouillés avec progression dans `next`)
+GET /api/badges/me/[?all=1]  (all=1 : tous les badges verrouillés avec progression dans `next`, secrets en « ??? »)
+GET /api/badges/<code>/share/ (carte à partager d'un badge obtenu : badge, rareté, nom, lien d'invitation perso)
 GET /api/recap/{year}/        (mis en cache, cf. recap.get_recap)
 GET /api/recap/{year}/status/ (disponibilité seule, sans construire le Récap)
 """
@@ -20,7 +21,7 @@ from rest_framework.response import Response
 from accounts.permissions import IsValidated
 from accounts.privacy import can_view_profile_content
 
-from .services.badges import badges_overview, earned_badges_public
+from .services.badges import badge_share_payload, badges_overview, earned_badges_public
 from .services.recap import get_recap, is_recap_available, recap_available_from, recap_status
 from .services.stats_service import PeriodError, get_stats_payload, resolve_period
 
@@ -64,6 +65,15 @@ def stats_user_view(request, user_id: int):
 def badges_me_view(request):
     show_all = str(request.query_params.get('all', '')).lower() in ('1', 'true', 'yes')
     return Response(badges_overview(request.user, next_limit=None if show_all else 5))
+
+
+@api_view(['GET'])
+@permission_classes([IsValidated])
+def badge_share_view(request, code: str):
+    payload = badge_share_payload(request.user, code)
+    if payload is None:  # inconnu, pas obtenu, ou secret pas encore débloqué : même réponse
+        return Response({'error': 'Badge non obtenu.', 'code': 'badge_not_earned'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(payload)
 
 
 def _invalid_year(year: int, today):

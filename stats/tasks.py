@@ -1,4 +1,4 @@
-"""Tâches Celery stats : classification des nouveaux ingrédients, badges, notification « Nouveau badge »."""
+"""Tâches Celery stats : classification des nouveaux ingrédients, badges, notifications de badge, rareté."""
 
 from __future__ import annotations
 
@@ -63,25 +63,46 @@ def evaluate_user_badges(user_id: int) -> int:
 
 @shared_task(ignore_result=True)
 def send_new_badge_push(user_id: int, codes: list[str], push: bool = True) -> None:
-    """In-app « Nouveau badge » (+ push catégorie `rewards`, si `push` et BADGE_PUSH_ENABLED)."""
+    """
+    Une notification par évaluation : « Badge secret débloqué : Raclette en juillet » (`badge_rare`) si l'un
+    des nouveaux badges est rare ou secret, sinon « Nouveau badge » (`new_badge`). In-app + push catégorie
+    `rewards` (si `push` et BADGE_PUSH_ENABLED), plafond quotidien du registre.
+    """
     from notifications.services import notify
 
+    from .services.badge_rarity import is_special, rarity_map
     from .services.badges import BADGES_BY_CODE
 
     badges = [BADGES_BY_CODE[c] for c in codes if c in BADGES_BY_CODE]
     user = get_user_model().objects.filter(pk=user_id).first()
     if not badges or user is None:
         return
-    first = badges[0]
+    rmap = rarity_map()
+    special = [b for b in badges if is_special(b, rmap)]
+    # Les secrets d'abord, puis les plus rares : c'est eux qu'on annonce.
+    first = special[0] if special else badges[0]
+    if special:
+        first = next((b for b in special if b.secret), first)
+    ordered = [first.code] + [b.code for b in badges if b.code != first.code]
     notify(
-        'new_badge',
+        'badge_rare' if special else 'new_badge',
         user,
         context={
             'badge': first.title,
             'emoji': first.emoji,
             'description': first.description,
+            'phrase': first.phrase,
+            'secret': first.secret,
             'others': len(badges) - 1,
         },
-        data={'badge_codes': [b.code for b in badges]},
+        data={'badge_codes': ordered, 'badge_code': first.code, 'secret': first.secret},
         send_push=push and getattr(settings, 'BADGE_PUSH_ENABLED', True),
     )
+
+
+@shared_task(ignore_result=True)
+def compute_badge_rarity_task() -> int:
+    """Beat quotidien `stats-badge-rarity` : rareté de chaque badge (% des cuisiniers actifs)."""
+    from .services.badge_rarity import compute_badge_rarity
+
+    return len(compute_badge_rarity())

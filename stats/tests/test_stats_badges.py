@@ -12,8 +12,12 @@ from stats.services.badges import BADGES, evaluate_badges
 pytestmark = pytest.mark.django_db
 
 
+# Badges historiques (les loufoques ont leurs propres tests : test_stats_badges_quirky.py).
+HISTORIC = {b.code for b in BADGES if b.family in ('premiere_fois', 'ingredient', 'collection', 'serie', 'hote')}
+
+
 def _codes(badges):
-    return {b['code'] for b in badges}
+    return {b['code'] for b in badges} & HISTORIC
 
 
 def test_registry_has_mvp_set():
@@ -42,7 +46,7 @@ def test_evaluate_awards_once_with_context(user, make_user, make_recipe, make_me
     assert by_code['streak_4']['context']['achieved_on'] == '2026-10-26'
     assert by_code['host_5']['context'] == {'achieved_on': '2026-10-12', 'value': 5}
     assert evaluate_badges(user) == []  # idempotent
-    assert UserBadge.objects.filter(user=user).count() == 4
+    assert UserBadge.objects.filter(user=user, code__in=HISTORIC).count() == 4
 
 
 def test_backfill_command_is_idempotent(user, make_user, make_recipe, make_meal_plan):
@@ -53,7 +57,7 @@ def test_backfill_command_is_idempotent(user, make_user, make_recipe, make_meal_
     call_command('backfill_badges')
     call_command('backfill_badges')
 
-    assert set(UserBadge.objects.filter(user=user).values_list('code', flat=True)) == {
+    assert set(UserBadge.objects.filter(user=user, code__in=HISTORIC).values_list('code', flat=True)) == {
         'first_cooked',
         'ingredient_saumon',
     }
@@ -70,8 +74,11 @@ def test_cooked_log_returns_new_badges_then_none(api, user, make_recipe):
     assert first.status_code == 201, first.data
     assert _codes(first.data['new_badges']) == {'first_cooked', 'ingredient_aubergine'}
     badge = next(b for b in first.data['new_badges'] if b['code'] == 'ingredient_aubergine')
-    assert set(badge) == {'code', 'title', 'emoji', 'description', 'category', 'earned_at', 'context'}
-    assert again.status_code == 201 and again.data['new_badges'] == []
+    legacy = {'code', 'title', 'emoji', 'description', 'category', 'earned_at', 'context'}  # app 1.0.9
+    added = {'family', 'family_label', 'phrase', 'secret', 'hint', 'celebration'}
+    added |= {'rarity_percent', 'rarity_tier', 'rarity_label', 'rarity_text'}
+    assert set(badge) == legacy | added
+    assert again.status_code == 201 and not _codes(again.data['new_badges'])
 
 
 def test_badges_me_lists_earned_and_progress(api, user, make_recipe, make_meal_plan):
@@ -80,7 +87,7 @@ def test_badges_me_lists_earned_and_progress(api, user, make_recipe, make_meal_p
     resp = api.as_user(user).get('/api/badges/me/')
 
     assert resp.status_code == 200
-    assert [b['code'] for b in resp.data['earned']] == ['first_cooked']  # rattrapé à la lecture
-    assert resp.data['earned_count'] == 1 and resp.data['total_count'] == len(BADGES)
+    assert [b['code'] for b in resp.data['earned'] if b['code'] in HISTORIC] == ['first_cooked']  # rattrapé
+    assert resp.data['total_count'] == len(BADGES)
     nxt = {b['code']: b['progress'] for b in resp.data['next']}
     assert nxt['cuisines_5'] == {'current': 1, 'target': 5, 'ratio': 0.2}

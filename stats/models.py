@@ -50,3 +50,24 @@ class UserBadge(models.Model):
 
     def __str__(self):
         return f'{self.user_id} · {self.code}'
+
+
+class BadgeRarity(models.Model):
+    """
+    Rareté d'un badge (tâche quotidienne `stats.tasks.compute_badge_rarity_task`) : part des cuisiniers
+    actifs (≥ 1 « cuisiné » sur 90 jours) qui l'ont obtenu. Une ligne par code du registre.
+    """
+
+    code = models.CharField(max_length=64, primary_key=True)
+    holders = models.PositiveIntegerField(default=0, help_text='Cuisiniers actifs qui ont ce badge.')
+    active_users = models.PositiveIntegerField(default=0, help_text='Cuisiniers actifs au moment du calcul.')
+    percent = models.FloatField(default=0.0)
+    tier = models.CharField(max_length=16, default='commun')
+    computed_at = models.DateTimeField()
+
+    class Meta:
+        verbose_name = 'Rareté de badge'
+        verbose_name_plural = 'Raretés des badges'
+
+    def __str__(self):
+        return f'{self.code} · {self.percent:.1f} % ({self.tier})'
