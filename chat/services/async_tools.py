@@ -11,6 +11,7 @@ from chat.services.tool_schemas import (
     AddShoppingListItemResult,
     BasketRemovalResult,
     BasketShoppingResult,
+    BattlePlanResult,
     CreateMealPlanSlotResult,
     GetMealPlansResult,
     GetShoppingListItemsResult,
@@ -343,6 +344,42 @@ async def add_to_shopping_list_from_basket(
         week=week,
         shopping_list_id=shopping_list_id,
         name=name,
+    )
+
+
+@function_tool(strict_mode=False)
+async def battle_plan(
+    ctx: RunContextWrapper[AgentContext],
+    recipe_ids: list[int] | None = None,
+    basket_item_ids: list[int] | None = None,
+    meal_plan_id: int | None = None,
+    target_ready_time: str | None = None,
+    start_time: str | None = None,
+    servings: int | None = None,
+) -> BattlePlanResult:
+    """Plan de bataille : dans quel ordre cuisiner plusieurs plats (étapes entremêlées, four partagé, la veille).
+
+    Lecture seule. Donne UNE source : recipe_ids (recettes), basket_item_ids (envies du panier, batch cooking)
+    ou meal_plan_id (repas planifié).
+
+    Args:
+        recipe_ids: recettes à cuisiner ensemble (ids issus de search_recipes).
+        basket_item_ids: envies du panier (#id du contexte) pour une session de batch cooking.
+        meal_plan_id: repas planifié à plusieurs recettes.
+        target_ready_time: heure du repas « HH:MM » si l'utilisateur la donne (« pour manger à 20 h »).
+        start_time: heure de début « HH:MM » si l'utilisateur la donne (exclusif avec target_ready_time).
+        servings: portions, si l'utilisateur les précise.
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        kitchen_tools.battle_plan_for_chat,
+        user,
+        recipe_ids=recipe_ids,
+        basket_item_ids=basket_item_ids,
+        meal_plan_id=meal_plan_id,
+        servings=servings,
+        start_time=start_time,
+        target_ready_time=target_ready_time,
     )
 
 

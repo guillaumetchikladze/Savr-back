@@ -192,3 +192,28 @@ class BasketRemovalResult(BaseModel):
 class UndoCookedResult(BaseModel):
     post_id: int
     message: str = ''
+
+
+class BattlePlanResult(BaseModel):
+    """Plan de bataille (même contenu que POST /api/battle-plan/, sans reformulation LLM)."""
+
+    card_type: str = 'battle_plan'
+    headline: str = ''
+    summary: list[str] = Field(default_factory=list, description='Moves clés (déterministes), dernière = horaire')
+    total_duration_min: int = 0
+    sequential_duration_min: int = 0
+    saved_min: int = 0
+    active_duration_min: int = 0
+    start_at: str | None = None
+    ready_at: str | None = None
+    start_label: str | None = None
+    ready_label: str | None = None
+    recipes: list[dict[str, Any]] = Field(default_factory=list)
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    day_before: list[dict[str, Any]] = Field(default_factory=list)
+    shared_prep: list[dict[str, Any]] = Field(default_factory=list)
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    source: dict[str, Any] = Field(default_factory=dict)
+    polished: bool = False
+    message: str = ''

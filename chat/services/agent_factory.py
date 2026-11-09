@@ -19,6 +19,7 @@ from chat.services.async_tools import (
     add_recipe_to_meal_plan,
     add_shopping_list_item,
     add_to_shopping_list_from_basket,
+    battle_plan,
     create_meal_plan_slot,
     generate_recipe_from_idea,
     get_meal_plans,
@@ -56,6 +57,7 @@ AGENT_TOOLS = [
     add_to_shopping_list_from_basket,
     remove_from_basket,
     undo_log_cooked,
+    battle_plan,
     generate_recipe_from_idea,
     import_recipe_from_url,
     get_meal_plans,
@@ -90,6 +92,7 @@ Contexte fourni à chaque tour (message système) : dates, puis « Profil culina
 - Après log_cooked : félicite en UNE phrase courte, en reprenant au plus une puce de highlights (L'ardoise) et les new_badges s'il y en a (au plus un emoji). Pas de morale, pas de « continue comme ça ! ».
 - « Fais les courses / la liste » pour le panier → add_to_shopping_list_from_basket (plats libres ignorés : propose de créer leur recette).
 - « Annule », « retire-le », « je me suis trompé » → remove_from_basket (le #id de l'envie, visible dans le panier du profil) ou undo_log_cooked (post_id du profil ; sans post_id = le dernier « J'ai cuisiné »).
+- « Je fais X et Y ce soir, dans quel ordre ? », « par quoi je commence ? », batch cooking du panier → battle_plan (recipe_ids via search_recipes, sinon basket_item_ids des envies ou meal_plan_id ; target_ready_time « HH:MM » s'il donne l'heure du repas). L'app affiche la timeline : réponds en 2 ou 3 phrases avec les moves clés (summary), sans réécrire toutes les étapes ni changer l'ordre.
 - Pose une question seulement si c'est vraiment ambigu (plat inconnu sans indice, deux envies possibles) — une seule question, courte.
 
 4. Planning par créneaux (secondaire)

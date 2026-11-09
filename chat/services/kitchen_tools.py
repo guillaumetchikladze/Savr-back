@@ -22,6 +22,7 @@ from chat.services.tool_schemas import (
     BasketAddition,
     BasketRemovalResult,
     BasketShoppingResult,
+    BattlePlanResult,
     LogCookedResult,
     PlanWeekResult,
     SkippedDish,
@@ -430,3 +431,38 @@ def basket_to_shopping_list(
         skipped=result.skipped,
         message=message,
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan de bataille : « je fais X et Y ce soir, dans quel ordre ? »
+# ---------------------------------------------------------------------------
+def battle_plan_for_chat(
+    user: AbstractBaseUser,
+    *,
+    recipe_ids=None,
+    basket_item_ids=None,
+    meal_plan_id: int | None = None,
+    servings: int | None = None,
+    start_time: str | None = None,
+    target_ready_time: str | None = None,
+) -> BattlePlanResult:
+    """Ordre des étapes de plusieurs recettes (déterministe, même service que POST /api/battle-plan/)."""
+    from recipes.services.battle_plan_service import BattlePlanError, battle_plan_for_user
+
+    try:
+        plan = battle_plan_for_user(
+            user,
+            meal_plan_id=meal_plan_id,
+            basket_item_ids=list(basket_item_ids or []),
+            recipe_ids=list(recipe_ids or []),
+            servings=servings,
+            start_time=start_time,
+            target_ready_time=target_ready_time,
+            polish=False,  # le modèle du chat reformule déjà : pas de second appel LLM
+        )
+    except BattlePlanError as exc:
+        raise ValueError(exc.message) from exc
+    message = ' '.join(plan['summary'][:3])
+    if len(plan['summary']) > 3:
+        message += ' ' + plan['summary'][-1]
+    return BattlePlanResult(**plan, message=message)

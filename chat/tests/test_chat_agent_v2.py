@@ -194,13 +194,33 @@ def fake_api_key():
         yield
 
 
+def test_battle_plan_tool_returns_a_card_from_basket_items(user, make_recipe):
+    from recipes.models import Step
+
+    cake = make_recipe(user, 'Gâteau', prep_time=20, cook_time=40)
+    soup = make_recipe(user, 'Velouté')
+    for order, text in enumerate(['Mélanger la pâte.', 'Enfourner 40 min à 180°C.', 'Laisser refroidir 1 h.'], 1):
+        Step.objects.create(recipe=cake, order=order, instruction=text)
+    Step.objects.create(recipe=soup, order=1, instruction='Mixer les légumes 5 min.')
+    items = [basket_service.add_item(user, recipe_id=r.id) for r in (soup, cake)]
+
+    result = kitchen_tools.battle_plan_for_chat(user, basket_item_ids=[i.id for i in items], target_ready_time='20:00')
+
+    assert result.card_type == 'battle_plan' and result.polished is False
+    assert result.steps[0]['recipe_id'] == cake.id and result.ready_label == '20 h'
+    assert result.message.startswith('Lance d’abord Gâteau')
+    with pytest.raises(ValueError):
+        kitchen_tools.battle_plan_for_chat(user, recipe_ids=[999999])
+
+
 def test_agent_keeps_v1_tools_adds_v2_tools_and_uses_gemini_25_by_default(user, fake_api_key):
     from chat.services.agent_factory import chat_model_name, create_planning_agent
 
     agent = create_planning_agent(user, session_context='Contexte de test')
     names = {t.name for t in agent.tools}
     assert V1_TOOL_NAMES <= names
-    assert {'plan_week', 'log_cooked', 'add_to_shopping_list_from_basket'} <= names
+    assert {'plan_week', 'log_cooked', 'add_to_shopping_list_from_basket', 'battle_plan'} <= names
+    assert 'battle_plan' in agent.instructions
     assert agent.model.model == chat_model_name() == 'gemini-2.5-flash'
     assert agent.instructions.endswith('Contexte de test')
     with override_settings(CHAT_AI_MODEL='models/gemini-2.5-pro'):
