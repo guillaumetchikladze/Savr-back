@@ -145,3 +145,116 @@ def build_feed_user_suggestions(viewer):
             }
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Onboarding social (« Ta bande avant ton premier plat ») : amis d'amis + liens d'invitation.
+# Jamais de géolocalisation ni de carnet d'adresses : seulement le graphe Follow et les invitations.
+# ---------------------------------------------------------------------------
+REASON_INVITED_YOU = 'invited_you'
+REASON_YOU_INVITED = 'you_invited'
+REASON_FOLLOWS_YOU = 'follows_you'
+REASON_MUTUAL_FRIENDS = 'mutual_friends'
+REASON_SUGGESTED = 'suggested'
+_REASON_BONUS = {REASON_INVITED_YOU: 100.0, REASON_YOU_INVITED: 90.0, REASON_FOLLOWS_YOU: 50.0}
+MAX_SECOND_DEGREE_EDGES = 5000
+
+
+def _second_degree_mutuals(network: set[int], excluded: set[int]) -> dict[int, set[int]]:
+    """Amis d'amis : pour chaque candidat hors `excluded`, les complices du viewer qui le relient."""
+    mutual: dict[int, set[int]] = defaultdict(set)
+    if not network:
+        return mutual
+    outgoing = (
+        Follow.objects.filter(follower_id__in=network)
+        .exclude(following_id__in=excluded)
+        .values_list('follower_id', 'following_id')[:MAX_SECOND_DEGREE_EDGES]
+    )
+    for u, c in outgoing:
+        mutual[c].add(u)
+    incoming = (
+        Follow.objects.filter(following_id__in=network)
+        .exclude(follower_id__in=excluded)
+        .values_list('following_id', 'follower_id')[:MAX_SECOND_DEGREE_EDGES]
+    )
+    for u, c in incoming:
+        mutual[c].add(u)
+    return mutual
+
+
+def build_onboarding_people_suggestions(viewer, limit: int = MAX_RETURN):
+    """
+    Personnes à ajouter pendant l'onboarding social, classées :
+    lien d'invitation (qui t'a invité / que tu as invité) > te suit déjà > amis en commun.
+    Exclut soi, les comptes déjà suivis, les blocages (deux sens), les comptes inactifs ou en attente.
+    Complété si besoin par `build_feed_user_suggestions` (raison `suggested`).
+
+    Retourne des dicts `{user, mutual_complices_count, mutual_preview, reason, follow_request_outgoing}`.
+    """
+    from .models import FollowRequest, InviteRedemption
+
+    following = set(Follow.objects.filter(follower=viewer).values_list('following_id', flat=True))
+    followers = set(Follow.objects.filter(following=viewer).values_list('follower_id', flat=True))
+    blocked = blocked_user_ids_for(viewer)
+    excluded = following | {viewer.id} | blocked
+
+    mutual_map = _second_degree_mutuals(following | followers, excluded)
+    reasons: dict[int, str] = {uid: REASON_FOLLOWS_YOU for uid in followers - excluded}
+    for uid in InviteRedemption.objects.filter(inviter=viewer).values_list('invitee_id', flat=True):
+        if uid not in excluded:
+            reasons[uid] = REASON_YOU_INVITED
+    for uid in InviteRedemption.objects.filter(invitee=viewer).values_list('inviter_id', flat=True):
+        if uid not in excluded:
+            reasons[uid] = REASON_INVITED_YOU
+
+    candidate_ids = set(mutual_map) | set(reasons)
+    users = {
+        u.id: u
+        for u in User.objects.filter(id__in=candidate_ids, is_active=True, validated_at__isnull=False).only(
+            'id', 'username', 'avatar_url', 'created_at'
+        )
+    }
+
+    def score(uid: int) -> tuple:
+        reason = reasons.get(uid)
+        return (_REASON_BONUS.get(reason, 0.0) + 3.0 * len(mutual_map.get(uid, ())), -uid)
+
+    ranked = sorted(users, key=score, reverse=True)[:limit]
+    rows = [
+        {
+            'user': users[uid],
+            'mset': mutual_map.get(uid, set()),
+            'reason': reasons.get(uid) or REASON_MUTUAL_FRIENDS,
+        }
+        for uid in ranked
+    ]
+
+    preview_ids = {i for row in rows for i in sorted(row['mset'])[:PREVIEW_N]}
+    preview_by_id = {x.id: x for x in User.objects.filter(id__in=preview_ids).only('id', 'username', 'avatar_url')}
+    out = [
+        {
+            'user': row['user'],
+            'mutual_complices_count': len(row['mset']),
+            'mutual_preview': [preview_by_id[i] for i in sorted(row['mset'])[:PREVIEW_N] if i in preview_by_id],
+            'reason': row['reason'],
+        }
+        for row in rows
+    ]
+
+    if len(out) < limit:
+        seen = {row['user'].id for row in out}
+        for row in build_feed_user_suggestions(viewer):
+            if len(out) >= limit:
+                break
+            if row['user'].id not in seen:
+                seen.add(row['user'].id)
+                out.append({**row, 'reason': REASON_SUGGESTED})
+
+    pending = set(
+        FollowRequest.objects.filter(
+            requester=viewer, target_id__in=[row['user'].id for row in out], status='pending'
+        ).values_list('target_id', flat=True)
+    )
+    for row in out:
+        row['follow_request_outgoing'] = row['user'].id in pending
+    return out

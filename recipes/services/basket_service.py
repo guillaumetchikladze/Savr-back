@@ -696,6 +696,8 @@ def can_see_post(user: AbstractBaseUser, post: Post) -> bool:
 
     if post.user_id in blocked_user_ids_for(user):
         return False
+    if post.is_public:  # partagé avec la communauté (Suggestions du feed)
+        return True
     return can_view_profile_content(user, post.user)
 
 

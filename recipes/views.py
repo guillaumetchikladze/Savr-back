@@ -4607,6 +4607,12 @@ class TimerViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
+def _truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in ('false', '0', 'no', 'off', '')
+    return bool(value)
+
+
 class PostViewSet(viewsets.ModelViewSet):
     """ViewSet pour les posts"""
 
@@ -4686,6 +4692,74 @@ class PostViewSet(viewsets.ModelViewSet):
             return photo.post.user_id == user.id
         return False
 
+    def _optimize_list_queryset(self, queryset):
+        """Feed : champs chargés, préchargements et annotations du viewer (pas de N+1)."""
+        queryset = queryset.select_related(
+            'user',
+            'recipe_batch',
+            'recipe_batch__recipe',
+            'meal_plan',
+        ).prefetch_related(
+            'photos',
+            'cookies',
+            'comments',
+            Prefetch(
+                'reposts',
+                queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+            ),
+            Prefetch(
+                'recipe_batch__meal_plan_recipe_batches',
+                queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only(
+                    'meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time'
+                ),
+            ),
+            # display_title (recettes du repas) sans N+1
+            Prefetch(
+                'meal_plan__meal_plan_recipe_batches',
+                queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+            ),
+        )
+        if self.request.user.is_authenticated:
+            from accounts.models import FollowRequest
+
+            viewer_id = self.request.user.id
+            follow_exists = Follow.objects.filter(
+                follower_id=viewer_id,
+                following_id=OuterRef('user_id'),
+            )
+            followed_by_exists = Follow.objects.filter(
+                follower_id=OuterRef('user_id'),
+                following_id=viewer_id,
+            )
+            outgoing_request = FollowRequest.objects.filter(
+                requester_id=viewer_id,
+                target_id=OuterRef('user_id'),
+                status='pending',
+            )
+            incoming_request = FollowRequest.objects.filter(
+                requester_id=OuterRef('user_id'),
+                target_id=viewer_id,
+                status='pending',
+            )
+            queryset = queryset.annotate(
+                _viewer_follows_post_author=Exists(follow_exists),
+                _viewer_followed_by_post_author=Exists(followed_by_exists),
+                _follow_request_outgoing=Exists(outgoing_request),
+                _follow_request_incoming=Exists(incoming_request),
+            )
+        queryset = self._annotate_repost_fields(queryset)
+        queryset = queryset.order_by('-created_at')
+        return queryset
+
+    @classmethod
+    def feed_list_queryset(cls, request, queryset):
+        """Même préparation que le feed, pour d'autres vues (suggestions, onboarding social)."""
+        view = cls()
+        view.request = request
+        view.action = 'list'
+        view.format_kwarg = None
+        return view._optimize_list_queryset(queryset)
+
     def get_queryset(self):
         # retrieve : post publié visible seulement si auteur = soi ou suivi approuvé
         if self.action == 'retrieve':
@@ -4711,8 +4785,13 @@ class PostViewSet(viewsets.ModelViewSet):
                 .order_by('-created_at')
             )
             if self.request.user.is_authenticated:
+                from accounts.blocks import blocked_user_ids_for
+
+                # + posts partagés avec la communauté (`is_public`, choix de l'auteur), hors blocages :
+                # une carte « Suggestions » du feed doit pouvoir s'ouvrir.
                 author_ids = self._get_feed_author_ids(self.request.user)
-                queryset = queryset.filter(user_id__in=author_ids)
+                public = Q(is_public=True) & ~Q(user_id__in=blocked_user_ids_for(self.request.user))
+                queryset = queryset.filter(Q(user_id__in=author_ids) | public)
             return self._annotate_repost_fields(queryset)
 
         # Posts publiés : feed social (abonnements approuvés + soi) sauf profil explicite (?user=)
@@ -4756,61 +4835,7 @@ class PostViewSet(viewsets.ModelViewSet):
 
         # Optimisation : pour les listes, limiter les champs chargés
         if self.action == 'list':
-            queryset = queryset.select_related(
-                'user',
-                'recipe_batch',
-                'recipe_batch__recipe',
-                'meal_plan',
-            ).prefetch_related(
-                'photos',
-                'cookies',
-                'comments',
-                Prefetch(
-                    'reposts',
-                    queryset=PostRepost.objects.select_related('user').order_by('created_at'),
-                ),
-                Prefetch(
-                    'recipe_batch__meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only(
-                        'meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time'
-                    ),
-                ),
-                # display_title (recettes du repas) sans N+1
-                Prefetch(
-                    'meal_plan__meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
-                ),
-            )
-            if self.request.user.is_authenticated:
-                from accounts.models import FollowRequest
-
-                viewer_id = self.request.user.id
-                follow_exists = Follow.objects.filter(
-                    follower_id=viewer_id,
-                    following_id=OuterRef('user_id'),
-                )
-                followed_by_exists = Follow.objects.filter(
-                    follower_id=OuterRef('user_id'),
-                    following_id=viewer_id,
-                )
-                outgoing_request = FollowRequest.objects.filter(
-                    requester_id=viewer_id,
-                    target_id=OuterRef('user_id'),
-                    status='pending',
-                )
-                incoming_request = FollowRequest.objects.filter(
-                    requester_id=OuterRef('user_id'),
-                    target_id=viewer_id,
-                    status='pending',
-                )
-                queryset = queryset.annotate(
-                    _viewer_follows_post_author=Exists(follow_exists),
-                    _viewer_followed_by_post_author=Exists(followed_by_exists),
-                    _follow_request_outgoing=Exists(outgoing_request),
-                    _follow_request_incoming=Exists(incoming_request),
-                )
-            queryset = self._annotate_repost_fields(queryset)
-            queryset = queryset.order_by('-created_at')
+            queryset = self._optimize_list_queryset(queryset)
         else:
             queryset = (
                 queryset.select_related(
@@ -4958,6 +4983,10 @@ class PostViewSet(viewsets.ModelViewSet):
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
 
+        if 'is_public' in data:  # partage communauté : choix explicite, jamais par défaut
+            is_public = _truthy(data.get('is_public'))
+            if result.post.is_public != is_public:
+                Post.objects.filter(pk=result.post.pk).update(is_public=is_public)
         if cache_key:
             cache.set(cache_key, result.post.id, 60 * 60 * 24)
         # Badges débloqués par ce log (célébration immédiate côté app) ; ne fait jamais échouer le log.
@@ -5748,6 +5777,9 @@ class PostViewSet(viewsets.ModelViewSet):
         if 'comment' in request.data:
             post.comment = str(request.data.get('comment') or '').strip()
             update_fields.extend(['comment', 'updated_at'])
+        if 'is_public' in request.data:  # partage avec la communauté (Suggestions du feed)
+            post.is_public = _truthy(request.data.get('is_public'))
+            update_fields.extend(['is_public', 'updated_at'])
 
         photo_ids = request.data.get('photo_ids')
         if photo_ids is not None:

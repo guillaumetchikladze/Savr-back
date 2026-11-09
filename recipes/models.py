@@ -871,6 +871,11 @@ class Post(models.Model):
         help_text='Temps de cuisine saisi ou dérivé de la recette (minutes)',
     )
     is_published = models.BooleanField(default=False, help_text='Le post est publié')
+    is_public = models.BooleanField(
+        default=False,
+        help_text='Partagé avec la communauté (choix explicite de l’auteur) : visible hors amis, '
+        'dans les « Suggestions » du feed des nouveaux. False = amis seulement.',
+    )
     highlights = models.JSONField(
         null=True,
         blank=True,
@@ -894,6 +899,11 @@ class Post(models.Model):
             models.Index(fields=['user', 'is_published'], name='post_user_published_idx'),
             models.Index(fields=['recipe_batch'], name='post_recipebatch_idx'),
             models.Index(fields=['is_published', '-created_at'], name='post_published_created_idx'),
+            models.Index(
+                fields=['-created_at'],
+                condition=models.Q(is_public=True, is_published=True),
+                name='post_public_created_idx',
+            ),
         ]
 
     def __str__(self):

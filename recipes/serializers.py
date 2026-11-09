@@ -2418,6 +2418,7 @@ class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, s
             'comment',
             'cooking_time_minutes',
             'is_published',
+            'is_public',
             'recipe_meta',
             'recipe',
             'recipes',
@@ -2437,7 +2438,7 @@ class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, s
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['user', 'label', 'created_at', 'updated_at']
+        read_only_fields = ['user', 'label', 'is_public', 'created_at', 'updated_at']
 
     def get_display_title(self, obj):
         return post_display_title(obj)
@@ -2673,6 +2674,7 @@ class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixi
             'comment',
             'cooking_time_minutes',
             'is_published',
+            'is_public',
             'photos',
             'cookies_count',
             'has_cookie_from_user',

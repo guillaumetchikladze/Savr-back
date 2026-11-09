@@ -341,6 +341,13 @@ class FeedUserSuggestionSerializer(serializers.Serializer):
         ]
 
 
+class OnboardingPeopleSuggestionSerializer(FeedUserSuggestionSerializer):
+    """Onboarding social : + raison (`invited_you`, `you_invited`, `follows_you`, `mutual_friends`, `suggested`)."""
+
+    reason = serializers.CharField()
+    follow_request_outgoing = serializers.BooleanField(default=False)
+
+
 class NotificationSerializer(serializers.ModelSerializer):
     related_user = serializers.SerializerMethodField()
     notification_type_display = serializers.CharField(source='get_notification_type_display', read_only=True)

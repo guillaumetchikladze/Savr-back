@@ -4,6 +4,7 @@ from rest_framework.routers import APIRootView, DefaultRouter
 from accounts.permissions import IsValidated as IsAuthenticated
 
 from .basket_views import BasketViewSet
+from .density_views import feed_suggestions_view, onboarding_social_view
 from .dietary_views import (
     dietary_conflict_dismiss_view,
     dietary_conflicts_view,
@@ -66,6 +67,8 @@ router.register(r'shopping-list-invitations', ShoppingListInvitationViewSet, bas
 router.register(r'basket', BasketViewSet, basename='basket')
 
 urlpatterns = [
+    path('onboarding/social/', onboarding_social_view, name='onboarding_social'),
+    path('feed/suggestions/', feed_suggestions_view, name='feed_suggestions'),
     path('dietary-conflicts/', dietary_conflicts_view, name='dietary_conflicts'),
     path('dietary-conflicts/dismiss/', dietary_conflict_dismiss_view, name='dietary_conflict_dismiss'),
     path('dietary-conflicts/exceptions/', dietary_exceptions_list_view, name='dietary_exceptions_list'),
