@@ -256,3 +256,34 @@ def test_post_detail_query_count_does_not_grow_with_co_cookers(api, user, make_u
     resp, large = measure(client, url)
     assert len(resp.data['co_cooked_users']) >= 6
     assert_constant(small, large, 'détail')
+
+
+def test_onboarding_suggested_people_query_count_is_constant(api, user, make_user, follow):
+    """`suggested_people` (amis d'amis) : requêtes constantes de 2 à 10 personnes, `display_name` exposé."""
+    from accounts.models import InviteRedemption
+
+    lea = make_user('lea_q', first_name='Léa')
+    InviteRedemption.objects.create(inviter=lea, invitee=user, at_signup=True, is_acquisition=True)
+    follow(user, lea)
+    follow(lea, user)
+    client = api.as_user(user)
+
+    def add_friends_of_friend(n):
+        for _ in range(n):
+            candidate = make_user(first_name='Tom')
+            follow(lea, candidate)
+            FollowRequest.objects.create(requester=user, target=candidate, status='pending')
+
+    add_friends_of_friend(2)
+    resp, small = measure(client, '/api/onboarding/social/')
+    assert len(resp.data['suggested_people']) == 2
+    add_friends_of_friend(8)
+    resp, large = measure(client, '/api/onboarding/social/')
+    people = resp.data['suggested_people']
+    assert len(people) == 10
+    assert_constant(small, large, 'onboarding suggested_people')
+    # Aucune origine ne grandit (le petit cas paie en plus le complément par les suggestions du feed).
+    assert not {o: n for o, n in large.items() if n > small.get(o, 0)}, large
+    assert all(p['display_name'] == 'Tom' and p['follow_request_outgoing'] for p in people)
+    assert people[0]['mutual_preview'][0]['display_name'] == 'Léa'
+    assert resp.data['invited_by']['display_name'] == 'Léa' and resp.data['invited_by']['username'] == 'lea_q'

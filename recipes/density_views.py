@@ -19,6 +19,7 @@ from accounts.models import InviteRedemption
 from accounts.permissions import IsValidated
 from accounts.serializers import OnboardingPeopleSuggestionSerializer, UserSerializer
 from accounts.services.invite_service import invite_payload
+from core.public_links import public_display_name
 
 from .pagination import CustomPageNumberPagination
 from .serializers import PostListSerializer
@@ -65,6 +66,7 @@ def _invited_by(request, user) -> dict | None:
     return {
         'id': inviter.id,
         'username': inviter.username,
+        'display_name': public_display_name(inviter),
         'avatar_url': UserSerializer(context={'request': request}).get_avatar_url(inviter),
     }
 

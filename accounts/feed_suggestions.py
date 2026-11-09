@@ -104,7 +104,7 @@ def build_feed_user_suggestions(viewer):
     network = _viewer_network_ids(viewer.id)
     mutual_map = _mutual_sets(network, pool_ids)
 
-    users = User.objects.filter(id__in=pool_ids).only('id', 'username', 'avatar_url', 'created_at')
+    users = User.objects.filter(id__in=pool_ids).only('id', 'username', 'first_name', 'avatar_url', 'created_at')
     scored = []
     for u in users:
         mset = mutual_map.get(u.id, set())
@@ -130,7 +130,7 @@ def build_feed_user_suggestions(viewer):
     for _, _u, mset in top:
         preview_user_ids.update(list(mset)[:PREVIEW_N])
 
-    preview_bulk = User.objects.filter(id__in=preview_user_ids).only('id', 'username', 'avatar_url')
+    preview_bulk = User.objects.filter(id__in=preview_user_ids).only('id', 'username', 'first_name', 'avatar_url')
     preview_by_id = {x.id: x for x in preview_bulk}
 
     out = []
@@ -211,7 +211,7 @@ def build_onboarding_people_suggestions(viewer, limit: int = MAX_RETURN):
     users = {
         u.id: u
         for u in User.objects.filter(id__in=candidate_ids, is_active=True, validated_at__isnull=False).only(
-            'id', 'username', 'avatar_url', 'created_at'
+            'id', 'username', 'first_name', 'avatar_url', 'created_at'
         )
     }
 
@@ -230,7 +230,9 @@ def build_onboarding_people_suggestions(viewer, limit: int = MAX_RETURN):
     ]
 
     preview_ids = {i for row in rows for i in sorted(row['mset'])[:PREVIEW_N]}
-    preview_by_id = {x.id: x for x in User.objects.filter(id__in=preview_ids).only('id', 'username', 'avatar_url')}
+    preview_by_id = {
+        x.id: x for x in User.objects.filter(id__in=preview_ids).only('id', 'username', 'first_name', 'avatar_url')
+    }
     out = [
         {
             'user': row['user'],

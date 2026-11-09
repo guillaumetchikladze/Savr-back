@@ -2,7 +2,7 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework import serializers
 
-from core.public_links import profile_share_url
+from core.public_links import profile_share_url, public_display_name
 
 from .models import AllowedEmail, Follow, LoyaltyCard, Notification, User
 from .privacy import can_view_dietary_preferences
@@ -327,12 +327,22 @@ class FeedUserSuggestionSerializer(serializers.Serializer):
 
     id = serializers.IntegerField(source='user.id')
     username = serializers.CharField(source='user.username')
+    # Prénom sinon pseudo (« Toi et Guillaume êtes amis ») ; additif, `username` reste.
+    display_name = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     mutual_complices_count = serializers.IntegerField()
     mutual_preview = serializers.SerializerMethodField()
 
     def _avatar_url(self, user):
-        return UserSerializer(user, context=self.context).data.get('avatar_url')
+        # Seule l'URL de l'avatar (aucune requête) : sérialiser tout le `UserSerializer` coûtait ~10 requêtes
+        # par personne (compteurs, relations de suivi, champs différés par `.only()`).
+        avatar_serializer = getattr(self, '_avatar_serializer', None)
+        if avatar_serializer is None:
+            avatar_serializer = self._avatar_serializer = UserSerializer(context=self.context)
+        return avatar_serializer.get_avatar_url(user)
+
+    def get_display_name(self, obj):
+        return public_display_name(obj['user'])
 
     def get_avatar_url(self, obj):
         return self._avatar_url(obj['user'])
@@ -342,6 +352,7 @@ class FeedUserSuggestionSerializer(serializers.Serializer):
             {
                 'id': u.id,
                 'username': u.username,
+                'display_name': public_display_name(u),
                 'avatar_url': self._avatar_url(u),
             }
             for u in (obj.get('mutual_preview') or [])

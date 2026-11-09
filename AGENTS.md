@@ -212,6 +212,9 @@ Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas d
 - `GET /api/onboarding/social/` : compteurs, `has_given_miam`, `invite`, `invited_by`, `suggested_people`
   (`accounts/feed_suggestions.build_onboarding_people_suggestions` : invitations > te suit > amis d'amis,
   complété par les suggestions existantes du feed), `first_miam_posts` (≤ 3 posts d'amis sans ton miam).
+  `display_name` (prénom sinon pseudo, `public_display_name`) sur `invited_by`, chaque personne suggérée et son
+  `mutual_preview` ; requêtes constantes quel que soit le nombre de suggestions (avatar seul, jamais tout le
+  `UserSerializer` par personne ; `.only()` inclut `first_name`). Test 2 vs 10 : `test_posts_feed_queries_api.py`.
 - `GET /api/feed/suggestions/` : endpoint **séparé** (feed principal inchangé pour l'app 1.0.9), posts publiés
   **et** `Post.is_public` (partage communauté opt-in par post, défaut False, via `POST /posts/cooked/` ou
   `PATCH /posts/{id}/update-content/`), hors amis / soi / blocages, `suggested: true` ; vide (`active: false`)
