@@ -561,7 +561,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['get'])
     def ingredients(self, request, pk=None):
         batch = self.get_object()
-        ingredients = RecipeIngredient.objects.filter(recipe=batch.recipe).select_related('ingredient')
+        ingredients = RecipeIngredient.objects.filter(recipe=batch.recipe).select_related('ingredient', 'sub_recipe')
         from .serializers import RecipeIngredientSerializer
 
         serializer = RecipeIngredientSerializer(ingredients, many=True, context={'request': request})
@@ -1354,7 +1354,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         recipe = self.get_object()
 
         # Charger les recipe_ingredients
-        ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient')
+        ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient', 'sub_recipe')
 
         from .serializers import RecipeIngredientSerializer
 
@@ -1411,10 +1411,10 @@ class RecipeViewSet(viewsets.ModelViewSet):
             recipe.is_public = True
             recipe.save()
 
-            # Mettre à jour les ingrédients
+            # Mettre à jour les ingrédients (les lignes liées à une sous-recette gardent leur id et leur lien)
             if 'ingredients' in data:
                 ingredients_payload = data.get('ingredients') or []
-                RecipeIngredient.objects.filter(recipe=recipe).delete()
+                rows = []
 
                 for item in ingredients_payload:
                     if not isinstance(item, dict):
@@ -1449,13 +1449,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
                     except Exception:
                         quantity_decimal = Decimal('0')
 
-                    unit = item.get('unit') or 'g'
-                    RecipeIngredient.objects.create(
-                        recipe=recipe,
-                        ingredient=ingredient_obj,
-                        quantity=quantity_decimal,
-                        unit=unit,
-                    )
+                    rows.append((ingredient_obj, quantity_decimal, item.get('unit') or 'g'))
+
+                from .services.sub_recipe_service import replace_recipe_ingredients
+
+                replace_recipe_ingredients(recipe, rows)
 
             # Mettre à jour les steps
             if 'steps' in data:
@@ -3024,7 +3022,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
         from .models import RecipeIngredient
 
-        ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient')
+        ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient', 'sub_recipe')
 
         from .serializers import RecipeIngredientSerializer
 

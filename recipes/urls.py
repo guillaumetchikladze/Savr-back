@@ -21,6 +21,11 @@ from .preference_views import (
     preference_mapping_validate,
     preference_mappings_list,
 )
+from .sub_recipe_views import (
+    recipe_batch_sub_recipe_modes_view,
+    recipe_ingredient_sub_recipe_suggestions_view,
+    recipe_ingredient_sub_recipe_view,
+)
 from .views import (
     CategoryViewSet,
     CollectionViewSet,
@@ -79,6 +84,21 @@ urlpatterns = [
         name='cooked_pending_confirmation_dismiss',
     ),
     path('battle-plan/', battle_plan_view, name='battle_plan'),
+    path(
+        'recipe-ingredients/<int:line_id>/sub-recipe/',
+        recipe_ingredient_sub_recipe_view,
+        name='recipe_ingredient_sub_recipe',
+    ),
+    path(
+        'recipe-ingredients/<int:line_id>/sub-recipe-suggestions/',
+        recipe_ingredient_sub_recipe_suggestions_view,
+        name='recipe_ingredient_sub_recipe_suggestions',
+    ),
+    path(
+        'recipe-batches/<int:batch_id>/sub-recipe-modes/',
+        recipe_batch_sub_recipe_modes_view,
+        name='recipe_batch_sub_recipe_modes',
+    ),
     path('dishes/classics/', dish_classics_view, name='dish_classics'),
     path('dishes/recipe/<int:recipe_id>/', dish_recipe_view, name='dish_recipe'),
     path('dishes/label/<str:slug>/', dish_label_view, name='dish_label'),

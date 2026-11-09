@@ -243,8 +243,11 @@ def add_batch_ingredients_to_list(shopping_list: ShoppingList, batch: RecipeBatc
     - ShoppingListItem (ingrédient + unit_group) ;
     - ShoppingListItemQuantity par batch (unité canonique pour les dimensions convertibles),
       fusionnée (additionnée) si la ligne existe déjà.
+    Sous-recettes : ligne « acheter » telle quelle ; « faire maison » (`batch.sub_recipe_modes`, sinon
+    `default_mode`) → ingrédients de la sous-recette à l'échelle, récursivement, fusionnés de la même façon.
     """
     from recipes.services.ingredient_categorization import ensure_ingredient_category
+    from recipes.services.sub_recipe_service import expand_ingredients
 
     recipe = batch.recipe
     if not recipe:
@@ -254,12 +257,11 @@ def add_batch_ingredients_to_list(shopping_list: ShoppingList, batch: RecipeBatc
     base_servings = float(recipe.servings or 1)
     ratio = servings / base_servings if base_servings else 1.0
 
-    for ri in recipe.recipe_ingredients.all().select_related('ingredient__category'):
+    for ri, qty in expand_ingredients(recipe, ratio, batch.sub_recipe_modes):
         if ri.ingredient_id:
             ensure_ingredient_category(ri.ingredient)
 
         unit_group = _unit_group_for_unit(ri.unit)
-        qty = float(ri.quantity) * ratio
         qty_canon, unit_canon = _canonicalize_quantity(qty, ri.unit)
 
         # V2 : fusion seulement dans un même unit_group ; non convertibles = lignes séparées.

@@ -9,6 +9,7 @@ visibles (publiques, à soi, ou d'un repas où l'on est invité). Inaccessible �
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import date as date_type
 from datetime import datetime, time
 
@@ -195,23 +196,25 @@ def _from_meal_plan(user, meal_plan_id: int, servings: int | None):
         raise BattlePlanError('Repas introuvable.', 404, 'not_found')
     recipe_ids: list[int] = []
     by_recipe: dict[int, int | None] = {}
+    modes: dict[str, str] = {}
     people = None
     for mprb in meal_plan.meal_plan_recipe_batches.all():
         rid = mprb.recipe_batch.recipe_id
         if rid in by_recipe:
             continue
+        modes.update(mprb.recipe_batch.sub_recipe_modes or {})
         recipe_ids.append(rid)
         if servings is None and not mprb.portions and people is None:
             people = diners_service.meal_plan_people_count(meal_plan)
         by_recipe[rid] = servings or mprb.portions or people
     source = {'type': 'meal_plan', 'meal_plan_id': meal_plan.id}
-    return recipe_ids, by_recipe, [], source, meal_plan
+    return recipe_ids, by_recipe, [], source, meal_plan, modes
 
 
 def _from_basket(user, item_ids: list[int], servings: int | None):
     from recipes.services import basket_service
 
-    items = list(basket_service.basket_queryset(user).filter(id__in=item_ids).select_related('recipe'))
+    items = list(basket_service.basket_queryset(user).filter(id__in=item_ids).select_related('recipe', 'recipe_batch'))
     if len(items) != len(item_ids):
         raise BattlePlanError('Envie introuvable dans ton panier.', 404, 'not_found')
     items.sort(key=lambda i: item_ids.index(i.id))
@@ -219,25 +222,87 @@ def _from_basket(user, item_ids: list[int], servings: int | None):
     by_recipe: dict[int, int | None] = {}
     skipped = []
     cache: dict = {}
+    modes: dict[str, str] = {}
     for item in items:
         if not item.recipe_id:
             skipped.append({'basket_item_id': item.id, 'label': item.label, 'reason': 'no_recipe'})
             continue
         if item.recipe_id in by_recipe:
             continue
+        if item.recipe_batch_id and item.recipe_batch.recipe_id == item.recipe_id:
+            modes.update(item.recipe_batch.sub_recipe_modes or {})
         recipe_ids.append(item.recipe_id)
         by_recipe[item.recipe_id] = (
             servings or item.servings or diners_service.basket_item_people_count(item, cache=cache)
         )
     source = {'type': 'basket', 'basket_item_ids': [i.id for i in items]}
-    return recipe_ids, by_recipe, skipped, source
+    return recipe_ids, by_recipe, skipped, source, modes
 
 
 def _from_recipes(user, recipe_ids: list[int], servings: int | None):
     found = set(visible_recipes(user).filter(id__in=recipe_ids).values_list('id', flat=True).distinct())
     if len(found) != len(recipe_ids):
         raise BattlePlanError('Recette introuvable.', 404, 'not_found')
-    return recipe_ids, dict.fromkeys(recipe_ids, servings), [], {'type': 'recipes', 'recipe_ids': recipe_ids}
+    source = {'type': 'recipes', 'recipe_ids': recipe_ids}
+    return recipe_ids, dict.fromkeys(recipe_ids, servings), [], source, {}
+
+
+MAX_PLAN_RECIPES = bp.MAX_RECIPES * 2  # recettes du repas + sous-recettes faites maison
+
+
+def with_sub_recipes(recipes: list[bp.RecipeInput], modes: dict[str, str]) -> tuple[list[bp.RecipeInput], list[dict]]:
+    """
+    Ajoute les sous-recettes faites maison (choix du batch, sinon `default_mode`) avant leur recette parente, à
+    l'échelle des portions de la parente × `sub_recipe_ratio`. Au-delà de `MAX_PLAN_RECIPES` → `skipped`.
+    """
+    from recipes.services.sub_recipe_service import made_sub_recipes
+
+    trees = {r.recipe_id: made_sub_recipes(r.recipe_id, r.servings / (r.base_servings or 1), modes) for r in recipes}
+    sub_ids: list[int] = []
+
+    def collect(nodes):
+        for node in nodes:
+            sub_ids.append(node.recipe_id)
+            collect(node.children)
+
+    for nodes in trees.values():
+        collect(nodes)
+    if not sub_ids:
+        return recipes, []
+    loaded = {r.recipe_id: r for r in load_recipe_inputs(list(dict.fromkeys(sub_ids)), {})}
+    out: list[bp.RecipeInput] = []
+    parents: dict[int, bp.RecipeInput] = {}  # id(sous-recette) → recette qui l'utilise
+    skipped: list[dict] = []
+
+    def emit(nodes, parent: bp.RecipeInput) -> None:
+        # Post-ordre : sous-recettes d'abord, la parente ensuite (dépendances toujours vers une recette antérieure).
+        for node in nodes:
+            base = loaded.get(node.recipe_id)
+            if base is None:
+                continue
+            if len(out) + len(recipes) >= MAX_PLAN_RECIPES:
+                skipped.append({'recipe_id': node.recipe_id, 'line_id': node.line_id, 'reason': 'too_many_recipes'})
+                continue
+            sub = replace(
+                base,
+                servings=max(1, round((base.base_servings or 1) * node.ratio)),
+                used_line_id=node.line_id,
+                used_ingredient_id=node.ingredient_id,
+                used_ingredient_name=node.ingredient_name,
+            )
+            emit(node.children, sub)
+            out.append(sub)
+            parents[id(sub)] = parent
+
+    for recipe in recipes:
+        top = replace(recipe)
+        emit(trees[recipe.recipe_id], top)
+        out.append(top)
+    position = {id(r): i for i, r in enumerate(out)}
+    for r in out:
+        if id(r) in parents:
+            r.parent_idx = position[id(parents[id(r)])]
+    return out, skipped
 
 
 def battle_plan_for_user(
@@ -250,9 +315,19 @@ def battle_plan_for_user(
     start_time=None,
     target_ready_time=None,
     polish: bool = False,
+    sub_recipe_modes=None,
 ) -> dict:
-    """Plan de bataille d'un repas, d'envies du panier ou de recettes (exactement une source)."""
+    """
+    Plan de bataille d'un repas, d'envies du panier ou de recettes (exactement une source). Sous-recettes faites
+    maison : choix des batches, surchargés par `sub_recipe_modes` ({line_id: "make" | "buy"}), sinon `default_mode`.
+    """
+    from recipes.services.sub_recipe_service import SubRecipeError, clean_modes
+
     servings = _servings(servings)
+    try:
+        mode_overrides = clean_modes(sub_recipe_modes)
+    except SubRecipeError as exc:
+        raise BattlePlanError(exc.message, 400, 'invalid_sub_recipe_modes') from exc
     basket_ids = _int_list(basket_item_ids, 'basket_item_ids')
     rids = _int_list(recipe_ids, 'recipe_ids')
     sources = sum(bool(x) for x in (meal_plan_id not in (None, ''), basket_ids, rids))
@@ -269,11 +344,12 @@ def battle_plan_for_user(
             mp_id = int(meal_plan_id)
         except (TypeError, ValueError) as exc:
             raise BattlePlanError('meal_plan_id doit être un entier.') from exc
-        rids, by_recipe, skipped, source, meal_plan = _from_meal_plan(user, mp_id, servings)
+        rids, by_recipe, skipped, source, meal_plan, modes = _from_meal_plan(user, mp_id, servings)
     elif basket_ids:
-        rids, by_recipe, skipped, source = _from_basket(user, basket_ids, servings)
+        rids, by_recipe, skipped, source, modes = _from_basket(user, basket_ids, servings)
     else:
-        rids, by_recipe, skipped, source = _from_recipes(user, rids, servings)
+        rids, by_recipe, skipped, source, modes = _from_recipes(user, rids, servings)
+    modes = {**modes, **mode_overrides}
 
     if not rids:
         raise BattlePlanError('Aucune recette avec des étapes à organiser.', 400, 'no_recipes')
@@ -283,7 +359,8 @@ def battle_plan_for_user(
     default_day = meal_plan.date if meal_plan is not None else None
     if meal_plan is not None and not start and not ready and meal_plan.scheduled_time:
         ready = (None, meal_plan.scheduled_time)
-    recipes = load_recipe_inputs(rids, by_recipe)
+    recipes, too_many = with_sub_recipes(load_recipe_inputs(rids, by_recipe), modes)
+    skipped = [*skipped, *too_many]
     plan = bp.build_plan(
         recipes,
         start_at=_anchor(user, start, default_day),

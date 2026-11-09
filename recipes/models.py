@@ -313,7 +313,9 @@ class Recipe(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     # Many-to-many avec Ingredient via RecipeIngredient
-    ingredients = models.ManyToManyField(Ingredient, through='RecipeIngredient', related_name='recipes')
+    ingredients = models.ManyToManyField(
+        Ingredient, through='RecipeIngredient', through_fields=('recipe', 'ingredient'), related_name='recipes'
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -365,10 +367,41 @@ class RecipeIngredient(models.Model):
         ('clove', 'Gousse(s)'),
     ]
 
+    MODE_BUY = 'buy'
+    MODE_MAKE = 'make'
+    MODE_CHOICES = [
+        (MODE_BUY, 'Acheter'),
+        (MODE_MAKE, 'Faire maison'),
+    ]
+
     recipe = models.ForeignKey(Recipe, on_delete=models.CASCADE, related_name='recipe_ingredients')
     ingredient = models.ForeignKey(Ingredient, on_delete=models.CASCADE)
     quantity = models.DecimalField(max_digits=10, decimal_places=2)
     unit = models.CharField(max_length=20, choices=UNIT_CHOICES, default='g')
+    # Sous-recette (« pâte brisée » d'une quiche) : acheter la ligne telle quelle, ou la faire maison.
+    sub_recipe = models.ForeignKey(
+        Recipe,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='used_as_sub_recipe_in',
+        help_text='Recette pour faire cette ligne maison (graphe sans cycle, profondeur ≤ 3).',
+    )
+    default_mode = models.CharField(
+        max_length=8,
+        choices=MODE_CHOICES,
+        default=MODE_BUY,
+        help_text='Choix par défaut si la sous-recette est liée (surchargé par RecipeBatch.sub_recipe_modes).',
+    )
+    sub_recipe_ratio = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        default=1,
+        help_text=(
+            'Fournées de la sous-recette (à ses portions de base) pour la recette parente à ses portions '
+            'de base : 1 = une fournée entière, 0.5 = la moitié.'
+        ),
+    )
 
     class Meta:
         unique_together = ['recipe', 'ingredient']
@@ -401,6 +434,14 @@ class RecipeBatch(models.Model):
         blank=True,
         default='',
         help_text='ID tâche Celery (rappel push photo à table) pour révocation si replanification',
+    )
+    sub_recipe_modes = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            'Choix acheter / faire maison par ligne à sous-recette, pour cette préparation : '
+            '{"<recipe_ingredient_id>": "make" | "buy"} ; absent = RecipeIngredient.default_mode.'
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -10,6 +10,7 @@ from recipes.dietary_filters import conflict_reasons_by_recipe_id
 from recipes.models import Recipe
 from recipes.services.ingredient_matcher import get_batch_embeddings
 from recipes.services.recipe_search import hybrid_recipe_queryset
+from recipes.services.sub_recipe_service import sub_recipe_hints
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ def search_recipes_for_user(
         pass
 
     items = items[:limit]
+    hints = sub_recipe_hints([r.id for r in items]) if items else {}
     summaries = [
         RecipeSummary(
             id=r.id,
@@ -80,6 +82,7 @@ def search_recipes_for_user(
             cook_time=r.cook_time,
             difficulty=r.difficulty,
             image_url=getattr(r, 'image_url', None) or getattr(r, 'thumbnail_url', None),
+            sub_recipes=hints.get(r.id, []),
         )
         for r in items
     ]

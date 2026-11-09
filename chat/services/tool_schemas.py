@@ -5,6 +5,16 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class SubRecipeHint(BaseModel):
+    line_id: int
+    ingredient_name: str
+    sub_recipe_id: int
+    sub_recipe_title: str
+    default_mode: str = 'buy'
+    extra_time_min: int = 0
+    hint: str = ''
+
+
 class RecipeSummary(BaseModel):
     id: int
     title: str
@@ -12,6 +22,10 @@ class RecipeSummary(BaseModel):
     cook_time: int | None = None
     difficulty: str | None = None
     image_url: str | None = None
+    sub_recipes: list[SubRecipeHint] = Field(
+        default_factory=list,
+        description='Lignes qui ont leur propre recette (pâte brisée…) : à acheter ou à faire maison.',
+    )
 
 
 class MealPlanRecipeSummary(BaseModel):

@@ -20,6 +20,8 @@ Algorithme :
    préchauffage est placé juste avant sa cuisson.
 4. Repos / marinades longs (≥ 4 h, « une nuit », marinade ≥ 2 h) → section « la veille » (hors durée totale).
 5. Prépa commune : ingrédients (hors basiques) taillés dans ≥ 2 recettes → une seule ligne « Émince 3 oignons pour… ».
+6. Sous-recettes faites maison (`parent_idx`) : une recette de plus, dont toutes les étapes finissent avant l'étape de
+   la recette parente qui utilise la ligne (`used_ingredient_id` ou son nom dans le texte ; sinon sa 1re étape).
 """
 
 from __future__ import annotations
@@ -309,6 +311,12 @@ class RecipeInput:
     ingredients: list[IngredientInput] = field(default_factory=list)
     image_url: str | None = None
     version: str = ''  # updated_at de la recette (clé de cache de la reformulation)
+    # Sous-recette faite maison : index (dans la liste) de la recette qui l'utilise, et sa ligne d'ingrédient.
+    # La liste doit placer une sous-recette avant sa parente.
+    parent_idx: int | None = None
+    used_line_id: int | None = None
+    used_ingredient_id: int | None = None
+    used_ingredient_name: str = ''
 
 
 @dataclass
@@ -457,6 +465,42 @@ def _link(tasks: list[Task]) -> None:
             prev = t
 
 
+def _using_task(parent_tasks: list[Task], parent: RecipeInput, sub: RecipeInput) -> Task | None:
+    """Étape de la parente qui utilise la sous-recette : ingrédient lié à l'étape ou cité, sinon la 1re."""
+    if not parent_tasks:
+        return None
+    if sub.used_ingredient_id is not None:
+        ingredient = IngredientInput(sub.used_ingredient_id, sub.used_ingredient_name, 0, '')
+        steps = {s.step_id: s for s in parent.steps if s.step_id is not None}
+        for t in parent_tasks:
+            step = steps.get(t.step_id)
+            if step is not None and _mentions(step, ingredient):
+                return t
+    return parent_tasks[0]
+
+
+def _link_sub_recipes(tasks: list[Task], recipes: list[RecipeInput]) -> dict[int, Task]:
+    """
+    Dépendances sous-recette → parente (fin → début), seulement dans un même jour (la veille est faite avant).
+    Renvoie {index de la sous-recette: étape de la parente qui l'attend}.
+    """
+    by_recipe: dict[int, list[Task]] = {}
+    for t in tasks:
+        by_recipe.setdefault(t.recipe_idx, []).append(t)
+    waits: dict[int, Task] = {}
+    for sub_idx, sub in enumerate(recipes):
+        if sub.parent_idx is None or sub.parent_idx <= sub_idx:
+            continue
+        parent_tasks = by_recipe.get(sub.parent_idx, [])
+        using = _using_task(parent_tasks, recipes[sub.parent_idx], sub)
+        if using is None:
+            continue
+        sub_tasks = [t for t in by_recipe.get(sub_idx, []) if t.day == using.day]
+        using.fs.extend(t.idx for t in sub_tasks if t.idx not in using.fs)
+        waits[sub_idx] = using
+    return waits
+
+
 def _oven_compatible(a: int | None, b: int | None) -> bool:
     return a is None or b is None or abs(a - b) <= OVEN_TEMP_TOLERANCE
 
@@ -527,6 +571,9 @@ def _feasible_shift(group: list[Task], others: list[Task], delta: int) -> bool:
     for t in group:
         s, e = t.start + delta, t.end + delta
         for o in others:
+            # Dépendance entre recettes (sous-recette → étape de la parente) : jamais après son successeur.
+            if (t.idx in o.fs and e > o.start) or (t.idx in o.ss and s > o.start):
+                return False
             if not _overlaps(s, e, o.start, o.end):
                 continue
             if t.active and o.active:
@@ -542,14 +589,17 @@ def _align_to_finish(tasks: list[Task]) -> None:
         return
     makespan = max(t.end for t in tasks)
     recipes = sorted({t.recipe_idx for t in tasks}, key=lambda r: max(t.end for t in tasks if t.recipe_idx == r))
-    for r in recipes:
-        group = [t for t in tasks if t.recipe_idx == r]
-        others = [t for t in tasks if t.recipe_idx != r]
-        for delta in range(makespan - max(t.end for t in group), 0, -1):
-            if _feasible_shift(group, others, delta):
-                for t in group:
-                    t.start += delta
-                break
+    by_idx = {t.idx: t for t in tasks}
+    cross = any(by_idx.get(d) is not None and by_idx[d].recipe_idx != t.recipe_idx for t in tasks for d in t.fs)
+    for _ in range(2 if cross else 1):  # 2e passe : une sous-recette suit sa parente décalée
+        for r in recipes:
+            group = [t for t in tasks if t.recipe_idx == r]
+            others = [t for t in tasks if t.recipe_idx != r]
+            for delta in range(makespan - max(t.end for t in group), 0, -1):
+                if _feasible_shift(group, others, delta):
+                    for t in group:
+                        t.start += delta
+                    break
     # Préchauffage juste avant sa cuisson.
     for t in tasks:
         if t.kind != 'preheat':
@@ -759,7 +809,9 @@ def shared_prep(recipes: list[RecipeInput]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Plan
 # ---------------------------------------------------------------------------
-def _task_payload(t: Task, titles: dict[int, str], origin: datetime | None) -> dict:
+def _task_payload(
+    t: Task, titles: dict[int, str], origin: datetime | None, waits_for: dict[int, list[int]] | None = None
+) -> dict:
     payload = {
         'recipe_id': t.recipe_id,
         'recipe_title': titles[t.recipe_idx],
@@ -777,6 +829,7 @@ def _task_payload(t: Task, titles: dict[int, str], origin: datetime | None) -> d
         'estimated': t.estimated,
         'note': t.note,
         'day': t.day,
+        'waits_for_recipe_ids': (waits_for or {}).get(t.idx, []),
     }
     if origin is not None and t.day == DAY_SAME:
         payload['start_at'] = (origin + timedelta(minutes=t.start)).isoformat()
@@ -860,6 +913,11 @@ def build_plan(
         alone_durations.append(_makespan(alone))
     sequential = sum(alone_durations)
 
+    waits = _link_sub_recipes(all_tasks, recipes)
+    waits_for: dict[int, list[int]] = {}
+    for sub_idx, using in waits.items():
+        waits_for.setdefault(using.idx, []).append(recipes[sub_idx].recipe_id)
+
     _schedule(day_before)
     _schedule(same_day)
     _align_to_finish(same_day)
@@ -878,6 +936,9 @@ def build_plan(
     day_before.sort(key=order_key)
     prep = shared_prep(recipes) if with_shared_prep and len(recipes) >= 2 else []
     summary = _summary(same_day, day_before, titles, conflicts, prep)
+    for sub_idx, using in waits.items():
+        parent_title = titles[recipes[sub_idx].parent_idx]
+        summary.append(f'{titles[sub_idx]} maison : à terminer avant « {using.label} » ({parent_title}).')
 
     if start_at is not None and ready_at is not None:
         headline = f'Commence à {format_clock(start_at)} pour manger à {format_clock(ready_at)}'
@@ -902,11 +963,14 @@ def build_plan(
                 'servings': r.servings,
                 'image_url': r.image_url,
                 'duration_min': alone_durations[i],
+                'role': 'sub_recipe' if r.parent_idx is not None else 'main',
+                'parent_recipe_id': recipes[r.parent_idx].recipe_id if r.parent_idx is not None else None,
+                'line_id': r.used_line_id,
             }
             for i, r in enumerate(recipes)
         ],
-        'steps': [_task_payload(t, titles, start_at) for t in same_day],
-        'day_before': [_task_payload(t, titles, None) for t in day_before],
+        'steps': [_task_payload(t, titles, start_at, waits_for) for t in same_day],
+        'day_before': [_task_payload(t, titles, None, waits_for) for t in day_before],
         'shared_prep': prep,
         'conflicts': conflicts,
         'total_duration_min': total,

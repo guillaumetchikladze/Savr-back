@@ -11,6 +11,7 @@ API du panier « Cette semaine » (envies non datées). Contrat front : `.claude
     DELETE /basket/{id}/schedule/            → de nouveau sans date
     POST   /basket/carry-over/               {from_week?, to_week?, item_ids?}
     POST   /basket/shopping-list/            {item_ids? | week?, shopping_list_id? | name?}
+    GET|POST /basket/{id}/sub-recipe-modes/  {modes: {recipe_ingredient_id: "buy" | "make"}, replace?}
 
 Cuisiner une envie : `POST /posts/cooked/` avec `basket_item_id` (flux « J'ai cuisiné » canonique).
 « À mon tour » : `POST|DELETE /posts/{id}/my-turn/` (PostViewSet).
@@ -82,6 +83,8 @@ def basket_item_payload(
             else None
         ),
         'recipe_batch_id': item.recipe_batch_id,
+        # Choix acheter / faire maison explicites (sous-recettes) ; absent = default_mode de la ligne.
+        'sub_recipe_modes': dict(item.recipe_batch.sub_recipe_modes or {}) if item.recipe_batch_id else {},
         'meal_plan': (
             {
                 'id': meal_plan.id,
@@ -195,6 +198,25 @@ class BasketViewSet(viewsets.ViewSet):
     def destroy(self, request, pk=None):
         basket.remove_item(basket.get_item(request.user, pk))
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['get', 'post'], url_path='sub-recipe-modes')
+    @_basket_errors
+    def sub_recipe_modes(self, request, pk=None):
+        """Acheter / faire maison par sous-recette pour cette envie (batch créé à la demande)."""
+        from .services.sub_recipe_service import SubRecipeError
+        from .sub_recipe_views import apply_modes, batch_modes_payload
+
+        item = basket.get_item(request.user, pk)
+        if not item.recipe_id:
+            raise BasketError('Envie sans recette.', 400, 'no_recipe')
+        batch = basket.ensure_batch(item)
+        if request.method == 'POST':
+            body = request.data if isinstance(request.data, dict) else {}
+            try:
+                apply_modes(batch, {'modes': body.get('modes'), 'replace': body.get('replace')})
+            except SubRecipeError as exc:
+                raise BasketError(exc.message, exc.status_code, exc.code) from exc
+        return Response(batch_modes_payload(batch, request.user))
 
     @action(detail=False, methods=['post'])
     @_basket_errors

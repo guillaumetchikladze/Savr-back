@@ -118,7 +118,9 @@ def _apply_edit_payload(recipe: Recipe, data: dict) -> None:
     recipe.save()
 
     if 'ingredients' in data:
-        RecipeIngredient.objects.filter(recipe=recipe).delete()
+        from recipes.services.sub_recipe_service import replace_recipe_ingredients
+
+        rows = []
         for item in data.get('ingredients') or []:
             if not isinstance(item, dict):
                 continue
@@ -135,12 +137,9 @@ def _apply_edit_payload(recipe: Recipe, data: dict) -> None:
                 quantity_decimal = Decimal(str(item.get('quantity', 0)))
             except Exception:
                 quantity_decimal = Decimal('0')
-            RecipeIngredient.objects.create(
-                recipe=recipe,
-                ingredient=ingredient_obj,
-                quantity=quantity_decimal,
-                unit=item.get('unit') or 'g',
-            )
+            rows.append((ingredient_obj, quantity_decimal, item.get('unit') or 'g'))
+        # Les lignes liées à une sous-recette gardent leur id et leur lien.
+        replace_recipe_ingredients(recipe, rows)
 
     if 'steps' in data:
         Step.objects.filter(recipe=recipe).delete()

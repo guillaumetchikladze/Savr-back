@@ -2,7 +2,8 @@
 « Plan de bataille » (contrat front : .claude-work/specs/battle-plan.md).
 
     POST /api/battle-plan/   {meal_plan_id} | {basket_item_ids: [...]} | {recipe_ids: [...]}
-                             + servings, start_time | target_ready_time (« 20:00 » ou ISO), polish (défaut true)
+                             + servings, start_time | target_ready_time (« 20:00 » ou ISO), polish (défaut true),
+                             sub_recipe_modes ({recipe_ingredient_id: "make" | "buy"}, surcharge les choix des batches)
 
 Lecture seule : rien n'est écrit en base. Inaccessible → 404.
 """
@@ -35,6 +36,7 @@ def battle_plan_view(request):
             start_time=data.get('start_time'),
             target_ready_time=data.get('target_ready_time'),
             polish=not _falsy(data.get('polish', True)),
+            sub_recipe_modes=data.get('sub_recipe_modes'),
         )
     except BattlePlanError as exc:
         return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)

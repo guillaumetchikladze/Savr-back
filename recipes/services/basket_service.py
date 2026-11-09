@@ -133,7 +133,9 @@ def parse_servings(value) -> int | None:
 # Lecture
 # ---------------------------------------------------------------------------
 def basket_queryset(user: AbstractBaseUser) -> QuerySet[BasketItem]:
-    return BasketItem.objects.filter(user=user).select_related('recipe', 'meal_plan', 'inspired_by_post__user')
+    return BasketItem.objects.filter(user=user).select_related(
+        'recipe', 'meal_plan', 'inspired_by_post__user', 'recipe_batch'
+    )
 
 
 def item_status(item: BasketItem, week_now: date_type) -> str:

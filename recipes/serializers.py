@@ -216,10 +216,30 @@ class RecipeIngredientSerializer(serializers.ModelSerializer):
         queryset=Ingredient.objects.all(), source='ingredient', write_only=True
     )
     unit_display = serializers.CharField(source='get_unit_display', read_only=True)
+    # Sous-recette (« simplifié / compliqué ») : null si la ligne n'en a pas. Lien via /recipe-ingredients/{id}/sub-recipe/.
+    sub_recipe = serializers.SerializerMethodField()
 
     class Meta:
         model = RecipeIngredient
-        fields = ['id', 'ingredient', 'ingredient_id', 'quantity', 'unit', 'unit_display']
+        fields = [
+            'id',
+            'ingredient',
+            'ingredient_id',
+            'quantity',
+            'unit',
+            'unit_display',
+            'sub_recipe',
+            'default_mode',
+            'sub_recipe_ratio',
+        ]
+        read_only_fields = ['default_mode', 'sub_recipe_ratio']
+
+    def get_sub_recipe(self, obj):
+        if not obj.sub_recipe_id:
+            return None
+        from .services.sub_recipe_service import sub_recipe_summary
+
+        return sub_recipe_summary(obj.sub_recipe)
 
 
 class StepIngredientSerializer(serializers.ModelSerializer):
@@ -253,6 +273,10 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     share_url = serializers.SerializerMethodField()
+    # Sous-recettes (acheter / faire maison) + « version maison » : voir sub_recipe_service.recipe_sub_recipes_payload.
+    sub_recipes = serializers.SerializerMethodField()
+    total_time_if_made = serializers.SerializerMethodField()
+    difficulty_if_made = serializers.SerializerMethodField()
     # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
 
     class Meta:
@@ -282,8 +306,29 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
             'updated_at',
             'is_favorited',
             'is_author',
+            'sub_recipes',
+            'total_time_if_made',
+            'difficulty_if_made',
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
+
+    def _sub_payload(self, obj) -> dict:
+        cache = self.__dict__.setdefault('_sub_recipes_cache', {})
+        if obj.id not in cache:
+            from .services.sub_recipe_service import recipe_sub_recipes_payload
+
+            request = self.context.get('request')
+            cache[obj.id] = recipe_sub_recipes_payload(obj, getattr(request, 'user', None))
+        return cache[obj.id]
+
+    def get_sub_recipes(self, obj):
+        return self._sub_payload(obj)['sub_recipes']
+
+    def get_total_time_if_made(self, obj):
+        return self._sub_payload(obj)['total_time_if_made']
+
+    def get_difficulty_if_made(self, obj):
+        return self._sub_payload(obj)['difficulty_if_made']
 
     def get_share_url(self, obj):
         return recipe_share_url(obj.id) if obj.id else None
@@ -564,9 +609,11 @@ class RecipeBatchLightSerializer(serializers.ModelSerializer):
             'shopping_done',
             'steps',
             'photo_step_orders',
+            'sub_recipe_modes',
             'created_at',
             'updated_at',
         ]
+        read_only_fields = ['sub_recipe_modes']
 
 
 class RecipeMinimalSerializer(serializers.ModelSerializer):
