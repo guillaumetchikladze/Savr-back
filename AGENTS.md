@@ -114,10 +114,44 @@ Commandes prod, dans l'ordre (idempotentes, reprenables) :
 ```bash
 python manage.py classify_ingredients --only-missing   # seed + Gemini par lots de 50
 python manage.py normalize_cuisines --only-missing     # synonymes + Gemini pour le reste
-python manage.py backfill_badges                       # badges déjà mérités, sans push
+python manage.py backfill_badges                       # badges déjà mérités, sans push (+ rareté)
 ```
 
 Tests : `make test-domain d=stats` (LLM mocké via `stats.services.classification._call_llm`).
+
+### Badges loufoques (`stats/services/badges_quirky.py`, spec `.claude-work/specs/badges-quirky.md`)
+
+51 badges en familles (`badge_types.FAMILIES` : même recette, calendrier, heures, défis absurdes, à plusieurs,
+matériel) + 5 météo (phase 2), en plus des 28 historiques. Contrat front : fin de la spec (« Contrat front »).
+
+- Registre : `BadgeDef` (`badge_types.py`) = code, titre, emoji, `description` (condition), `phrase` drôle, `family`,
+  `secret` + `hint`, `rarity_guess`, `feature_flag`, `async_only`. Copie : tutoiement, jamais culpabilisant, jamais
+  « bande » ni nom d'app de référence (test `test_registry_is_big_unique_and_well_written`).
+- Évaluation : `compute_stats(user, 'all')` garde repas / plats-jours / ingrédients / convives dans le `StatsResult` ;
+  `badge_history.history_of(stats)` les enrichit une fois (heure locale de saisie = 1er `Post.created_at` dans le
+  fuseau `NotificationPreference.timezone`, durées `CookingProgress`, « À mon tour », invitations, tablées, cuisine)
+  en lectures paresseuses d'une requête chacune. ~19 requêtes constantes pour 20 ou 200 repas (test).
+  Un même plat compte une fois par jour ; convives = cuisinier + invités hors foyer + anonymes plafonnés.
+- Couleurs (« Arc-en-ciel », « Monochrome orange ») : table statique `stats/badge_colors.py` (`colour_of`).
+- Rareté : `BadgeRarity` (beat quotidien `stats-badge-rarity` → `compute_badge_rarity`) = % des cuisiniers actifs
+  (≥ 1 « cuisiné » sur `BADGE_RARITY_ACTIVE_DAYS` = 90 j) ; paliers légendaire < 1 % < très rare < 5 % < rare
+  < 20 % < commun ; sous `BADGE_RARITY_MIN_ACTIVE_USERS` (20) actifs, palier = estimation du registre. Relu en cache 1 h.
+- Payloads (`/badges/me/`, `new_badges`, badges d'un autre) : champs historiques + `family`, `family_label`, `phrase`,
+  `secret`, `hint`, `rarity_percent`, `rarity_tier`, `rarity_label`, `rarity_text`, `celebration` (normal|rare|secret).
+  Secrets non obtenus : absents de l'aperçu, « ??? » + indice (code opaque `secret_…`) dans `?all=1`. `families` :
+  compteurs par famille. Carte à partager : `GET /api/badges/<code>/share/` (badge obtenu, sinon 404).
+- Anti-spam : un badge dont `achieved_on` a plus de `BADGE_NOTIFY_MAX_AGE_DAYS` (7) jours n'est ni notifié ni renvoyé
+  dans `new_badges` (rattrapage silencieux). Rare / secret frais → notif `badge_rare` (« Badge secret débloqué : … »,
+  même plafond, même payload historique que `new_badge`) au lieu de `new_badge`. `backfill_badges` : sans notification,
+  recalcule la rareté à la fin (`--skip-rarity`).
+- Météo (phase 2, `WEATHER_BADGES_ENABLED` défaut False) : ville opt-in `GET|PUT|DELETE /api/weather/city/`
+  (`User.city` + coordonnées, migration accounts 0029, jamais de GPS) ; géocodage et météo Open-Meteo
+  (`stats/services/weather.py`, archive > 5 jours sinon prévision) **uniquement en tâche** (`geocode_user_city_task`,
+  `evaluate_user_badges`) ; cache `WeatherDay` par (lieu arrondi 0,01°, date). Badges `async_only` : jamais évalués
+  dans une requête.
+- Non faits : « Passeport tamponné » (doublon de `cuisines_20`) ; « Ton badge le plus rare » du Récap.
+- Tests : `stats/tests/test_stats_badges_quirky.py`, `test_stats_badges_weather.py` (réseau mocké :
+  `stats.services.weather._get_json`).
 
 ## « L'ardoise » : post enrichi (`stats/services/highlights.py`)
 
