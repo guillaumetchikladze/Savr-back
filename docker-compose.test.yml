@@ -1,0 +1,22 @@
+# Postgres + pgvector éphémère pour la suite de tests (données en tmpfs, fsync off).
+#   make test-db      # démarre
+#   make test-db-down # arrête
+name: savr-test
+services:
+  test-db:
+    image: pgvector/pgvector:pg16
+    container_name: savr-test-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: savr_test
+    ports:
+      - "${TEST_DB_PORT:-55432}:5432"
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_connections=200"]
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

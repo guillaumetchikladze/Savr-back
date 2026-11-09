@@ -43,3 +43,34 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["accounts", "chat", "core", "emails", "recipes", "savr_back"]
+
+# ---------------------------------------------------------------------------
+# Pytest — voir Makefile (`make test`, `make test-all`, `make test-domain d=...`)
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "savr_back.settings_test"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
+testpaths = ["accounts", "chat", "recipes", "emails", "core"]
+# Les commandes de gestion `test_*.py` ne sont pas des tests.
+norecursedirs = [".git", ".venv", "venv", "management", "migrations", "embedding", "node_modules"]
+addopts = [
+    "--reuse-db",
+    "--strict-markers",
+    "-m", "not slow",
+]
+markers = [
+    "slow: tests lents (exclus par défaut, inclus par `make test-all`)",
+    "integration: traverse plusieurs couches (API + services + tâches)",
+    "auth: inscription / login / JWT / access gate / entitlements",
+    "mealplan: planning, créneaux, invitations repas",
+    "posts: publication et feed social",
+    "shopping: listes de courses",
+    "dietary: allergies / goûts / conflits",
+    "chat: agent conversationnel et outils",
+    "imports: import URL / génération IA de recettes",
+    "recipes: recettes, collections, recherche",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
