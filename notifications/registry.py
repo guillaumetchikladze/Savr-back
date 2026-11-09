@@ -210,6 +210,13 @@ def _render_cooked_prompt(ctx: dict) -> tuple[str, str]:
     return 'À table', f'{question} Partage-le en 1 tap.'
 
 
+def _render_cooked_pending(ctx: dict) -> tuple[str, str]:
+    """« Je l'ai déjà » : rappel du soir d'un repas planifié non confirmé (Oui / Pas fait en 1 tap)."""
+    dish = (ctx.get('dish_title') or '').strip()
+    question = f'Tu as cuisiné {dish} ?' if dish else 'Tu as cuisiné ce que tu avais prévu ?'
+    return 'À table', f'{question} Un tap suffit.'
+
+
 def _table(ctx: dict) -> str:
     return quoted(ctx.get('table'), 'ta tablée')
 
@@ -441,6 +448,34 @@ _TYPES = (
         transactional=True,  # 1 par repas cuisiné, déclenché par l'utilisateur : hors plafond
         quiet_hours=QUIET_DEFER,  # repoussée à la fin des heures calmes, jamais à minuit
         data_fields=('meal_plan_id', 'recipe_id', 'recipe_ids', 'date', 'meal_time', 'title', 'action'),
+        url='cooked/{meal_plan_id}',
+        group_key='cooked_prompt:{meal_plan_id}',
+        channel_id='meal_photos',
+        ios_category='cooked_prompt',
+        legacy_source='cooking',
+        legacy_kind='meal_time_photo_reminder',
+    ),
+    # « Je l'ai déjà » : rappel du soir d'un repas planifié dont le créneau est passé, sans confirmation
+    # (liste `pending_confirmations`, refus « Pas fait » respectés). 1 par soir au plus, jamais un repas
+    # déjà relancé (même `dedupe_key` `cooked_prompt:{meal_plan_id}` que la push de fin de cuisson).
+    # Payload identique à `cooked_prompt` (`action`, `source`/`kind`) : l'app 1.0.9 le traite pareil.
+    NotificationType(
+        'cooked_pending',
+        'cooking_reminders',
+        renderer=_render_cooked_pending,
+        quiet_hours=QUIET_SKIP,
+        data_fields=(
+            'meal_plan_id',
+            'basket_item_id',
+            'pending_kind',
+            'pending_id',
+            'recipe_id',
+            'recipe_ids',
+            'date',
+            'meal_time',
+            'title',
+            'action',
+        ),
         url='cooked/{meal_plan_id}',
         group_key='cooked_prompt:{meal_plan_id}',
         channel_id='meal_photos',

@@ -7,6 +7,8 @@ Notifications de rétention planifiées (Celery beat, toutes les heures, idempot
   a cuisiné au moins un plat ou si ses amis en ont partagé ;
 - tablées « Cette semaine, 3 sur 5 ont cuisiné dans « Les colocs » » : même beat que le récap (dimanche,
   `NOTIFICATIONS_TABLES_WEEKLY_HOUR`), 1 par semaine au plus, jamais quand personne n'a cuisiné ;
+- « Je l'ai déjà » : rappel du soir (`NOTIFICATIONS_COOKED_PENDING_HOUR`, 21:00) d'un repas planifié du jour
+  passé sans confirmation, 1 par soir au plus, jamais un repas refusé (« Pas fait ») ni déjà relancé ;
 - jamais de message de manque ou de perte (« tu vas perdre ta série », « ça fait longtemps »).
 
 Le plafond quotidien et les heures calmes sont appliqués par `services.push()`.
@@ -233,6 +235,74 @@ def send_tables_weekly(now: datetime | None = None) -> dict:
             status = tables_weekly_for_user(user, now=now).status
         except Exception:
             logger.exception('[notify] tablées hebdo en échec user=%s', user.id)
+            status = 'error'
+        report[status] = report.get(status, 0) + 1
+    return report
+
+
+# ---------------------------------------------------------------------------
+# « Je l'ai déjà » : « Tu as cuisiné les pâtes au pesto ? » le soir
+# ---------------------------------------------------------------------------
+def cooked_pending_for_user(user, *, now: datetime | None = None) -> PushResult:
+    """
+    1 push par soir au plus (une `NotificationDelivery` `cooked_pending` depuis minuit local), pour le repas
+    du jour le plus récent de `pending_confirmations` (créneau passé, non confirmé, pas « Pas fait ») jamais
+    encore relancé : même clé `cooked_prompt:{meal_plan_id}` que la push de fin de cuisson, donc jamais deux
+    fois le même repas.
+    """
+    from recipes.services.pending_confirmations import pending_confirmations
+
+    now = now or timezone.now()
+    prefs = get_preferences(user)
+    if not category_enabled(prefs, get_type('cooked_pending').category):
+        return PushResult('muted')
+    midnight = local_now(prefs, now).replace(hour=0, minute=0, second=0, microsecond=0)
+    if NotificationDelivery.objects.filter(user_id=user.id, type='cooked_pending', created_at__gte=midnight).exists():
+        return PushResult('duplicate')  # déjà une relance ce soir (envoyée, plafonnée ou heures calmes)
+    items = pending_confirmations(user, now=now, days=1, limit=10)
+    if not items:
+        return PushResult('nothing_pending')
+    asked = set(
+        NotificationDelivery.objects.filter(
+            user_id=user.id, dedupe_key__in=[f'cooked_prompt:{i.meal_plan.id}' for i in items]
+        ).values_list('dedupe_key', flat=True)
+    )
+    item = next((i for i in items if f'cooked_prompt:{i.meal_plan.id}' not in asked), None)
+    if item is None:
+        return PushResult('duplicate')
+    mp = item.meal_plan
+    data = {
+        'meal_plan_id': mp.id,
+        'basket_item_id': item.basket_item.id if item.basket_item is not None else None,
+        'pending_kind': item.kind,
+        'pending_id': item.id,
+        # 1 tap « Oui, je l'ai cuisiné » → POST /posts/cooked/ {meal_plan_id} (app 1.0.9 comprise)
+        'action': 'cooked_prompt',
+        'title': item.title,
+        'recipe_ids': item.recipe_ids,
+        'recipe_id': item.recipe_ids[0] if item.recipe_ids else None,
+        'date': mp.date.isoformat(),
+        'meal_time': mp.meal_time,
+    }
+    return push(
+        'cooked_pending',
+        user,
+        context={'dish_title': item.title},
+        data=data,
+        dedupe_key=f'cooked_prompt:{mp.id}',
+        now=now,
+    )
+
+
+def send_cooked_pending_reminders(now: datetime | None = None) -> dict:
+    now = now or timezone.now()
+    hour = int(getattr(settings, 'NOTIFICATIONS_COOKED_PENDING_HOUR', 21))
+    report: dict[str, int] = {}
+    for user, _prefs in _candidates(now, hour=hour):
+        try:
+            status = cooked_pending_for_user(user, now=now).status
+        except Exception:
+            logger.exception("[notify] rappel « Je l'ai déjà » en échec user=%s", user.id)
             status = 'error'
         report[status] = report.get(status, 0) + 1
     return report

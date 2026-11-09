@@ -84,6 +84,13 @@ def send_meal_time_photo_reminder_push(self, user_id: int, meal_plan_id: int) ->
             logger.info('[MealPhotoReminder] no push devices for user=%s', user_id)
             return
 
+        # « Pas fait » (« Je l'ai déjà ») : on ne redemande jamais.
+        from recipes.services.pending_confirmations import is_dismissed
+
+        if is_dismissed(meal_plan_id):
+            logger.info('[MealPhotoReminder] meal_plan %s dismissed (pas fait), skip', meal_plan_id)
+            return
+
         # Ne pas notifier si un post "du repas" existe déjà (publié ou log « J'ai cuisiné » privé)
         if Post.objects.filter(meal_plan_id=meal_plan_id).exists():
             logger.info('[MealPhotoReminder] meal_plan %s already has a post, skip', meal_plan_id)

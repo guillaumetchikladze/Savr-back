@@ -399,6 +399,12 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 TABLE_MIN_MEMBERS = config('TABLE_MIN_MEMBERS', default=2, cast=int)
 TABLE_MAX_MEMBERS = config('TABLE_MAX_MEMBERS', default=8, cast=int)
 TABLES_MAX_PER_USER = config('TABLES_MAX_PER_USER', default=5, cast=int)
+# « Je l'ai déjà » : un repas planifié est proposé à la confirmation une fois son créneau passé
+# (heure prévue + COOKED_PENDING_GRACE_MINUTES, sinon fin de créneau par défaut), aujourd'hui et hier.
+COOKED_PENDING_GRACE_MINUTES = config('COOKED_PENDING_GRACE_MINUTES', default=60, cast=int)
+COOKED_PENDING_MAX = config('COOKED_PENDING_MAX', default=3, cast=int)
+# Rappel du soir « Tu as cuisiné … ? » (heure locale, 1 par soir au plus).
+NOTIFICATIONS_COOKED_PENDING_HOUR = config('NOTIFICATIONS_COOKED_PENDING_HOUR', default=21, cast=int)
 # Push du dimanche des tablées (même beat que le récap hebdo, même jour).
 NOTIFICATIONS_TABLES_WEEKLY_HOUR = config('NOTIFICATIONS_TABLES_WEEKLY_HOUR', default=19, cast=int)
 
@@ -412,6 +418,10 @@ CELERY_BEAT_SCHEDULE = {
     'notifications-weekly-recap': {
         'task': 'notifications.tasks.send_weekly_recaps_task',
         'schedule': crontab(minute=5),
+    },
+    'notifications-cooked-pending': {
+        'task': 'notifications.tasks.send_cooked_pending_reminders_task',
+        'schedule': crontab(minute=10),
     },
     'core-purge-idempotency-records': {
         'task': 'core.tasks.purge_expired_idempotency_records_task',

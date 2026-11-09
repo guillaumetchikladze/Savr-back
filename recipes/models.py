@@ -1013,6 +1013,31 @@ class BasketItem(models.Model):
         return self.label
 
 
+class CookedConfirmationDismissal(models.Model):
+    """
+    « Je l'ai déjà » : « Pas fait » sur un repas planifié passé (`GET /cooked/pending-confirmations/`).
+    Le repas n'est plus proposé (carte d'Accueil, rappel du soir) ; rien d'autre ne change : le repas reste
+    planifié et l'envie du panier (`basket_item`, si le repas en vient) reste dans le panier.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cooked_confirmation_dismissals'
+    )
+    meal_plan = models.ForeignKey(MealPlan, on_delete=models.CASCADE, related_name='confirmation_dismissals')
+    basket_item = models.ForeignKey(
+        BasketItem, on_delete=models.SET_NULL, null=True, blank=True, related_name='confirmation_dismissals'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'meal_plan'], name='cookeddismissal_user_mealplan_uniq'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id} pas fait {self.meal_plan_id}'
+
+
 class PostPhoto(models.Model):
     """Photo d'un post ou d'un meal_plan (avant publication)"""
 

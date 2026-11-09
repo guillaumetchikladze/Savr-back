@@ -12,6 +12,7 @@ from .dietary_views import (
     dietary_exceptions_list_view,
 )
 from .dish_views import dish_classics_view, dish_detail_view, dish_label_view, dish_recipe_view
+from .pending_views import pending_confirmation_dismiss_view, pending_confirmations_view
 from .preference_views import (
     preference_mapping_fork,
     preference_mapping_propose,
@@ -70,6 +71,12 @@ router.register(r'basket', BasketViewSet, basename='basket')
 urlpatterns = [
     path('onboarding/social/', onboarding_social_view, name='onboarding_social'),
     path('feed/suggestions/', feed_suggestions_view, name='feed_suggestions'),
+    path('cooked/pending-confirmations/', pending_confirmations_view, name='cooked_pending_confirmations'),
+    path(
+        'cooked/pending-confirmations/<str:kind>/<int:object_id>/dismiss/',
+        pending_confirmation_dismiss_view,
+        name='cooked_pending_confirmation_dismiss',
+    ),
     path('dishes/classics/', dish_classics_view, name='dish_classics'),
     path('dishes/recipe/<int:recipe_id>/', dish_recipe_view, name='dish_recipe'),
     path('dishes/label/<str:slug>/', dish_label_view, name='dish_label'),

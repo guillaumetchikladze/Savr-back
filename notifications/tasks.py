@@ -75,3 +75,13 @@ def send_weekly_recaps_task() -> dict:
     if report:
         logger.info('[notify] récap hebdo + tablées : %s', report)
     return report
+
+
+@shared_task(ignore_result=True)
+def send_cooked_pending_reminders_task() -> dict:
+    from .retention import send_cooked_pending_reminders
+
+    report = send_cooked_pending_reminders()
+    if report:
+        logger.info('[notify] rappels « Je l’ai déjà » : %s', report)
+    return report
