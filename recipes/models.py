@@ -309,6 +309,35 @@ class Recipe(models.Model):
         help_text='Type de source de la recette',
     )
     import_source_url = models.URLField(blank=True, null=True, help_text='URL source si la recette a été importée')
+    # Équipements (recipes/services/equipment_service.py) : clés du catalogue `equipment_catalog`.
+    required_equipment = models.JSONField(
+        null=True,
+        blank=True,
+        help_text='Équipements requis effectifs (surcharge manuelle, sinon inférence ∪ indices IA). Null = non calculé.',
+    )
+    equipment_alternatives = models.JSONField(
+        default=dict, blank=True, help_text='Alternatives propres à la recette : {"four": ["airfryer"]}.'
+    )
+    required_equipment_override = models.JSONField(
+        null=True, blank=True, help_text='Surcharge manuelle (liste de clés) ; prime sur l’inférence.'
+    )
+    equipment_ai_hints = models.JSONField(
+        null=True, blank=True, help_text='Équipements déclarés par le pipeline IA (unis à l’inférence).'
+    )
+    adapted_from = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='equipment_adaptations',
+        help_text='« Adapter pour chez moi » : recette d’origine de cette copie privée.',
+    )
+    adapted_for_equipment = models.JSONField(
+        null=True, blank=True, help_text='Équipements de la cuisine pour laquelle la copie a été adaptée.'
+    )
+    adaptation_signature = models.CharField(
+        max_length=32, blank=True, default='', help_text='Empreinte des équipements (idempotence par recette + user).'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -319,6 +348,13 @@ class Recipe(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['adapted_from', 'created_by', 'adaptation_signature'],
+                condition=models.Q(adapted_from__isnull=False),
+                name='recipe_unique_equipment_adaptation',
+            ),
+        ]
         indexes = [
             HnswIndex(
                 name='recipe_embedding_hnsw_idx',

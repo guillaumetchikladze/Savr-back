@@ -13,6 +13,7 @@ from chat.services.tool_schemas import (
     BasketShoppingResult,
     BattlePlanResult,
     CreateMealPlanSlotResult,
+    EquipmentAdaptationResult,
     GetMealPlansResult,
     GetShoppingListItemsResult,
     ImportJobStarted,
@@ -381,6 +382,25 @@ async def battle_plan(
         start_time=start_time,
         target_ready_time=target_ready_time,
     )
+
+
+@function_tool(strict_mode=False)
+async def adapt_recipe_equipment(
+    ctx: RunContextWrapper[AgentContext],
+    recipe_id: int,
+) -> EquipmentAdaptationResult:
+    """« Adapter pour chez moi » : version privée d'une recette réécrite pour les équipements de l'utilisateur
+    (airfryer au lieu du four, casserole au lieu du Cookeo…). Exécution immédiate, renvoie une carte.
+
+    À utiliser quand une recette (search_recipes → missing_equipment, recette d'un ami) demande un équipement
+    absent de sa cuisine, ou quand il demande « je n'ai pas de four, comment je fais ? ». Une adaptation déjà
+    faite est renvoyée telle quelle.
+
+    Args:
+        recipe_id: id de la recette d'origine.
+    """
+    user = ctx.context.user
+    return await _run_sync(kitchen_tools.adapt_recipe_equipment_for_chat, user, recipe_id=recipe_id)
 
 
 def _chat_payload(conversation_id: int | None, base: dict) -> dict:

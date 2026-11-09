@@ -287,3 +287,33 @@ def test_onboarding_suggested_people_query_count_is_constant(api, user, make_use
     assert all(p['display_name'] == 'Tom' and p['follow_request_outgoing'] for p in people)
     assert people[0]['mutual_preview'][0]['display_name'] == 'Léa'
     assert resp.data['invited_by']['display_name'] == 'Léa' and resp.data['invited_by']['username'] == 'lea_q'
+
+
+def test_feed_missing_equipment_is_constant_and_uses_the_household_kitchen(api, user, make_user, follow, world_factory):
+    """« Il te manque : un four » sur chaque post : cuisine du viewer lue une fois par requête (foyer : 1 requête)."""
+    from accounts.models import HouseholdMember
+    from recipes.models import Recipe
+    from recipes.services.equipment_service import set_equipment
+
+    authors = [make_user() for _ in range(3)]
+    for a in authors:
+        follow(user, a)
+    partner = make_user()
+    set_equipment(partner, {'keys': ['plaques', 'micro_ondes']})  # cuisine du foyer : pas de four
+    HouseholdMember.objects.create(owner=partner, user=user, status=HouseholdMember.STATUS_ACCEPTED)
+    world = world_factory(user, authors)
+    client = api.as_user(user)
+
+    world.add(2)
+    Recipe.objects.update(required_equipment=['four'])
+    resp, small = measure(client, FEED_URL)
+    world.add(18)
+    Recipe.objects.update(required_equipment=['four'])
+    resp, large = measure(client, FEED_URL)
+    assert len(resp.data['results']) == 20
+    assert_constant(small, large, 'feed + équipements')
+    assert sum(large.values()) <= 16, large
+    post = resp.data['results'][0]
+    assert [m['key'] for m in post['missing_equipment']] == ['four']
+    assert post['missing_equipment_label'] == 'Il te manque : un four' and post['adapt_recipe_id']
+    assert post['adapt_recipe_id'] in post['missing_equipment'][0]['recipe_ids']

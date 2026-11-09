@@ -26,6 +26,10 @@ class RecipeSummary(BaseModel):
         default_factory=list,
         description='Lignes qui ont leur propre recette (pâte brisée…) : à acheter ou à faire maison.',
     )
+    missing_equipment: list[str] = Field(
+        default_factory=list,
+        description="Équipements de la recette absents de sa cuisine : propose l'adaptation (adapt_recipe_equipment).",
+    )
 
 
 class MealPlanRecipeSummary(BaseModel):
@@ -205,6 +209,21 @@ class BasketRemovalResult(BaseModel):
 
 class UndoCookedResult(BaseModel):
     post_id: int
+    message: str = ''
+
+
+class EquipmentAdaptationResult(BaseModel):
+    """« Adapter pour chez moi » : copie privée de la recette, réécrite pour les équipements de l'utilisateur."""
+
+    card_type: str = 'recipe_adaptation'
+    recipe_id: int
+    original_recipe_id: int
+    title: str
+    image_url: str | None = None
+    created: bool = True
+    adapted_for: list[str] = Field(default_factory=list, description='Équipements de la cuisine (libellés)')
+    replaced: list[str] = Field(default_factory=list, description='Équipements absents contournés (libellés)')
+    note: str = ''
     message: str = ''
 
 

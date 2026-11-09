@@ -277,6 +277,11 @@ CHAT_AI_MODEL = config('CHAT_AI_MODEL', default='gemini-2.5-flash')
 BATTLE_PLAN_LLM_ENABLED = config('BATTLE_PLAN_LLM_ENABLED', default=False, cast=bool)
 BATTLE_PLAN_LLM_TIMEOUT_SECONDS = config('BATTLE_PLAN_LLM_TIMEOUT_SECONDS', default=6.0, cast=float)
 BATTLE_PLAN_POLISH_CACHE_SECONDS = config('BATTLE_PLAN_POLISH_CACHE_SECONDS', default=7 * 24 * 3600, cast=int)
+# « Ta cuisine » (recipes/services/equipment_*.py) : recherche (exclude = plats infaisables retirés + déclassement,
+# rank = déclassement seul, off) et « Adapter pour chez moi » (LLM synchrone, délai court, sans nouvel essai).
+EQUIPMENT_SEARCH_MODE = config('EQUIPMENT_SEARCH_MODE', default='exclude')
+EQUIPMENT_ADAPT_ENABLED = config('EQUIPMENT_ADAPT_ENABLED', default=True, cast=bool)
+EQUIPMENT_ADAPT_LLM_TIMEOUT_SECONDS = config('EQUIPMENT_ADAPT_LLM_TIMEOUT_SECONDS', default=8.0, cast=float)
 
 # Billing architecture:
 # - contact_email : mailto support (défaut — safe App Store / en attendant IAP ou web)

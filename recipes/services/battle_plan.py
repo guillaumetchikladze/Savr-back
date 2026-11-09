@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
+from recipes.services.equipment_inference import PREHEAT, step_resource
 from stats.text import fold
 
 MAX_RECIPES = 8
@@ -82,13 +83,9 @@ _OVERNIGHT_RE = re.compile(r'\b(la veille|une nuit|toute la nuit|la nuit|pendant
 _TEMP_RE = re.compile(r'(\d{2,3})\s*(?:°|degr)')
 _THERMOSTAT_RE = re.compile(r'\bth(?:ermostat)?\.?\s*(\d{1,2})\b')
 
-# Sur texte « fold » (minuscules, sans accents ni ponctuation).
-_PREHEAT = re.compile(r'\bprechauff')
-_OVEN = re.compile(r'\benfourn\w*|\bfours?\b|\bgratin(?:er|ez)\b|\bsous le grill\b|\bau grill\b')
-_OUT_OF_OVEN = re.compile(r'\bsort\w*\s+(?:\w+\s+){0,3}du four\b|\bsortie du four\b')
-_MICROWAVE = re.compile(r'\bmicro\s*ondes?\b')
-_HOB = re.compile(r'\b(poele|casserole|sauteuse|wok|faitout|cocotte|feu|plaque)s?\b')
-_FRIDGE = re.compile(r'\b(refrigerat\w*|frigo|au frais|congelat\w*)\b')
+# Sur texte « fold » (minuscules, sans accents ni ponctuation). Four / plaques / frigo : module partagé avec
+# `Recipe.required_equipment` (`equipment_inference`).
+_PREHEAT = PREHEAT
 _KIND_PATTERNS = (  # ordre = priorité du « type » de temps passif
     ('marinate', re.compile(r'\bmarin(?:er|ez|ade|ades)\b')),
     ('rise', re.compile(r'\blaiss\w*\s+(?:\w+\s+)?(?:lever|pousser|gonfler)\b|\bdoubler de volume\b')),
@@ -240,10 +237,7 @@ def analyze_step(
         temperature = parse_temperature(text)
 
     duration = timer_duration if has_timer and timer_duration and timer_duration > 0 else parse_duration_minutes(text)
-    oven = bool(_OVEN.search(folded)) and not _MICROWAVE.search(folded)
-    if oven and _OUT_OF_OVEN.search(folded) and 'enfourn' not in folded:
-        oven = False
-    resource = 'oven' if oven else ('fridge' if _FRIDGE.search(folded) else ('hob' if _HOB.search(folded) else None))
+    resource, oven = step_resource(folded)
 
     if is_preheat:
         return StepFacts(duration, False, 'preheat', 'oven', temperature, False, False)
@@ -320,6 +314,37 @@ class RecipeInput:
 
 
 @dataclass
+class KitchenResources:
+    """
+    Ressources réelles de la cuisine (« Ta cuisine ») : `burners` = feux utilisables en même temps (None = sans
+    limite : cuisine inconnue), `ovens` (1 ou 2 températures en parallèle), four absent → l'airfryer le remplace
+    (une fournée à la fois) s'il y en a un, sinon avertissement.
+    """
+
+    burners: int | None = None
+    ovens: int = 1
+    has_oven: bool = True
+    airfryer: bool = False
+    has_hob: bool = True
+    induction: bool = False
+    known: bool = False
+
+    def payload(self) -> dict:
+        return {
+            'known': self.known,
+            'burners': self.burners,
+            'induction': self.induction,
+            'ovens': self.ovens if self.has_oven else 0,
+            'has_oven': self.has_oven,
+            'airfryer': self.airfryer,
+            'has_hob': self.has_hob,
+        }
+
+
+DEFAULT_KITCHEN = KitchenResources()
+
+
+@dataclass
 class Task:
     idx: int
     recipe_idx: int
@@ -340,14 +365,24 @@ class Task:
     note: str = ''
     parallel: bool = False
     start: int | None = None
+    alternative: str | None = None  # 'airfryer' : étape « four » faite à l'airfryer (pas de four)
 
     @property
     def end(self) -> int:
         return (self.start or 0) + self.duration
 
     @property
-    def uses_oven(self) -> bool:
+    def bakes(self) -> bool:
+        """Cuisson « four » de la recette (préchauffage exclu), quel que soit l'appareil réel."""
         return self.resource == 'oven' and self.kind != 'preheat'
+
+    @property
+    def uses_oven(self) -> bool:
+        return self.bakes and self.alternative is None
+
+    @property
+    def uses_airfryer(self) -> bool:
+        return self.bakes and self.alternative == 'airfryer'
 
 
 def short_label(title: str, instruction: str, limit: int = 110) -> str:
@@ -450,7 +485,7 @@ def _link(tasks: list[Task]) -> None:
                 preheats.append(t.idx)
                 prev = t
                 continue
-            if t.uses_oven:
+            if t.bakes:
                 t.fs.extend(preheats)
                 preheats = []
             if t.parallel and prev is not None and prev.idx in open_ends:
@@ -505,8 +540,38 @@ def _oven_compatible(a: int | None, b: int | None) -> bool:
     return a is None or b is None or abs(a - b) <= OVEN_TEMP_TOLERANCE
 
 
-def _schedule(tasks: list[Task]) -> None:
-    """Ordonnancement par liste, sans délai : actif = un seul cuisinier, four = une température à la fois."""
+def _oven_groups(temperatures: list[int | None]) -> int:
+    """Nombre de fours nécessaires pour des cuissons simultanées (températures à ±10 °C = même four)."""
+    groups: list[int] = []
+    has_any = False
+    for temp in temperatures:
+        has_any = True
+        if temp is None or any(_oven_compatible(g, temp) for g in groups):
+            continue
+        groups.append(temp)
+    return max(len(groups), 1 if has_any else 0)
+
+
+def _load_ok(running: list[Task], kitchen: KitchenResources) -> bool:
+    """Charge simultanée compatible avec la cuisine : fours (températures), airfryer (1), feux."""
+    if _oven_groups([o.temperature for o in running if o.uses_oven]) > max(kitchen.ovens, 1):
+        return False
+    if sum(1 for o in running if o.uses_airfryer) > 1:
+        return False
+    if kitchen.burners is not None and sum(1 for o in running if o.resource == 'hob') > kitchen.burners:
+        return False
+    return True
+
+
+def _uses_capacity(t: Task) -> bool:
+    return t.uses_oven or t.uses_airfryer or t.resource == 'hob'
+
+
+def _schedule(tasks: list[Task], kitchen: KitchenResources = DEFAULT_KITCHEN) -> None:
+    """
+    Ordonnancement par liste, sans délai : actif = un seul cuisinier ; fours, airfryer et feux = capacités de la
+    cuisine (un four par défaut : une température à la fois ; feux sans limite si la cuisine est inconnue).
+    """
     if not tasks:
         return
     pos = {t.idx: i for i, t in enumerate(tasks)}
@@ -542,9 +607,7 @@ def _schedule(tasks: list[Task]) -> None:
             for t in ready:
                 if t.active and cook_free > now:
                     continue
-                if t.uses_oven and any(
-                    o.uses_oven and o.end > now and not _oven_compatible(o.temperature, t.temperature) for o in started
-                ):
+                if _uses_capacity(t) and not _load_ok([o for o in started if o.end > now] + [t], kitchen):
                     continue
                 t.start = now
                 remaining.discard(t.idx)
@@ -567,7 +630,21 @@ def _overlaps(a0: int, a1: int, b0: int, b1: int) -> bool:
     return a0 < b1 and b0 < a1
 
 
-def _feasible_shift(group: list[Task], others: list[Task], delta: int) -> bool:
+def _capacity_ok(group: list[Task], others: list[Task], delta: int, kitchen: KitchenResources) -> bool:
+    """Capacités (fours, airfryer, feux) respectées à chaque début d'étape pendant les étapes décalées."""
+    spans = [(t.start + delta, t.end + delta, t) for t in group] + [(o.start, o.end, o) for o in others]
+    for s, e, t in spans[: len(group)]:
+        if not _uses_capacity(t):
+            continue
+        for p in {s} | {xs for xs, _, _ in spans if s < xs < e}:
+            if not _load_ok([x for xs, xe, x in spans if xs <= p < xe and _uses_capacity(x)], kitchen):
+                return False
+    return True
+
+
+def _feasible_shift(
+    group: list[Task], others: list[Task], delta: int, kitchen: KitchenResources = DEFAULT_KITCHEN
+) -> bool:
     for t in group:
         s, e = t.start + delta, t.end + delta
         for o in others:
@@ -578,12 +655,10 @@ def _feasible_shift(group: list[Task], others: list[Task], delta: int) -> bool:
                 continue
             if t.active and o.active:
                 return False
-            if t.uses_oven and o.uses_oven and not _oven_compatible(t.temperature, o.temperature):
-                return False
-    return True
+    return _capacity_ok(group, others, delta, kitchen)
 
 
-def _align_to_finish(tasks: list[Task]) -> None:
+def _align_to_finish(tasks: list[Task], kitchen: KitchenResources = DEFAULT_KITCHEN) -> None:
     """Décale chaque recette au plus tard (sans conflit) : tout est prêt en même temps."""
     if not tasks:
         return
@@ -596,7 +671,7 @@ def _align_to_finish(tasks: list[Task]) -> None:
             group = [t for t in tasks if t.recipe_idx == r]
             others = [t for t in tasks if t.recipe_idx != r]
             for delta in range(makespan - max(t.end for t in group), 0, -1):
-                if _feasible_shift(group, others, delta):
+                if _feasible_shift(group, others, delta, kitchen):
                     for t in group:
                         t.start += delta
                     break
@@ -604,7 +679,7 @@ def _align_to_finish(tasks: list[Task]) -> None:
     for t in tasks:
         if t.kind != 'preheat':
             continue
-        bakes = [o for o in tasks if t.idx in o.fs and o.uses_oven]
+        bakes = [o for o in tasks if t.idx in o.fs and o.bakes]
         if bakes:
             t.start = max(t.start, min(b.start for b in bakes) - t.duration)
 
@@ -641,6 +716,8 @@ def _notes(tasks: list[Task], titles: dict[int, str]) -> None:
             base = _PASSIVE_NOTE.get(t.kind, 'Temps passif')
             if t.kind in ('bake', 'preheat') and t.temperature:
                 base += f' ({t.temperature} °C)'
+            if t.alternative == 'airfryer':
+                base = base.replace('Au four', 'À l’airfryer').replace('Préchauffe le four', 'Préchauffe l’airfryer')
             t.note = f'{base} · {t.note}' if t.note else base
             continue
         others = [
@@ -825,6 +902,7 @@ def _task_payload(
         'active': t.active,
         'kind': t.kind,
         'resource': t.resource,
+        'alternative_resource': t.alternative,
         'temperature_c': t.temperature,
         'estimated': t.estimated,
         'note': t.note,
@@ -878,14 +956,65 @@ def _summary(
     return lines
 
 
+def _apply_kitchen(
+    tasks: list[Task], titles: dict[int, str], recipes: list[RecipeInput], kitchen: KitchenResources
+) -> list[dict]:
+    """Four absent → airfryer (une fournée à la fois) ou avertissement ; plaques absentes → avertissement."""
+    warnings: list[dict] = []
+
+    def recipe_ids(idxs) -> list[int]:
+        return [recipes[i].recipe_id for i in idxs]
+
+    if not kitchen.has_oven:
+        oven_recipes = sorted({t.recipe_idx for t in tasks if t.resource == 'oven'})
+        if oven_recipes:
+            names = join_fr([titles[i] for i in oven_recipes])
+            if kitchen.airfryer:
+                for t in tasks:
+                    if t.resource == 'oven':
+                        t.alternative = 'airfryer'
+                verb = 'passent' if len(oven_recipes) > 1 else 'passe'
+                warnings.append(
+                    {
+                        'type': 'oven_to_airfryer',
+                        'recipe_ids': recipe_ids(oven_recipes),
+                        'message': f'Pas de four : {names} {verb} à l’airfryer, une fournée à la fois.',
+                    }
+                )
+            else:
+                warnings.append(
+                    {
+                        'type': 'missing_oven',
+                        'recipe_ids': recipe_ids(oven_recipes),
+                        'message': f'Il te manque un four pour {names}.',
+                    }
+                )
+    if not kitchen.has_hob:
+        hob_recipes = sorted({t.recipe_idx for t in tasks if t.resource == 'hob'})
+        if hob_recipes:
+            warnings.append(
+                {
+                    'type': 'missing_hob',
+                    'recipe_ids': recipe_ids(hob_recipes),
+                    'message': f'Il te manque des plaques pour {join_fr([titles[i] for i in hob_recipes])}.',
+                }
+            )
+    return warnings
+
+
 def build_plan(
     recipes: list[RecipeInput],
     *,
     start_at: datetime | None = None,
     ready_at: datetime | None = None,
     with_shared_prep: bool = True,
+    kitchen: KitchenResources | None = None,
 ) -> dict:
-    """Plan déterministe (pur, sans base) ; `start_at` ou `ready_at` (aware) fixent l'horaire."""
+    """
+    Plan déterministe (pur, sans base) ; `start_at` ou `ready_at` (aware) fixent l'horaire. `kitchen` : ressources
+    réelles (feux, fours, airfryer) ; None = cuisine inconnue (un four, feux sans limite).
+    """
+    kitchen = kitchen or DEFAULT_KITCHEN
     titles = {i: r.title for i, r in enumerate(recipes)}
     all_tasks: list[Task] = []
     per_recipe: list[list[Task]] = []
@@ -896,6 +1025,7 @@ def build_plan(
     for n, t in enumerate(all_tasks):
         t.idx = n
     _link(all_tasks)
+    equipment_warnings = _apply_kitchen(all_tasks, titles, recipes, kitchen)
 
     same_day = [t for t in all_tasks if t.day == DAY_SAME]
     day_before = [t for t in all_tasks if t.day == DAY_BEFORE]
@@ -909,7 +1039,7 @@ def build_plan(
     alone_durations = []
     for tasks in per_recipe:
         alone = [t for t in tasks if t.day == DAY_SAME]
-        _schedule(alone)
+        _schedule(alone, kitchen)
         alone_durations.append(_makespan(alone))
     sequential = sum(alone_durations)
 
@@ -918,11 +1048,11 @@ def build_plan(
     for sub_idx, using in waits.items():
         waits_for.setdefault(using.idx, []).append(recipes[sub_idx].recipe_id)
 
-    _schedule(day_before)
-    _schedule(same_day)
-    _align_to_finish(same_day)
+    _schedule(day_before, kitchen)
+    _schedule(same_day, kitchen)
+    _align_to_finish(same_day, kitchen)
     total = _makespan(same_day)
-    conflicts = _oven_conflicts(same_day, titles)
+    conflicts = _oven_conflicts(same_day, titles) if kitchen.ovens <= 1 else []
     _notes(same_day, titles)
     _notes(day_before, titles)
 
@@ -936,6 +1066,7 @@ def build_plan(
     day_before.sort(key=order_key)
     prep = shared_prep(recipes) if with_shared_prep and len(recipes) >= 2 else []
     summary = _summary(same_day, day_before, titles, conflicts, prep)
+    summary.extend(w['message'] for w in equipment_warnings)
     for sub_idx, using in waits.items():
         parent_title = titles[recipes[sub_idx].parent_idx]
         summary.append(f'{titles[sub_idx]} maison : à terminer avant « {using.label} » ({parent_title}).')
@@ -973,6 +1104,8 @@ def build_plan(
         'day_before': [_task_payload(t, titles, None, waits_for) for t in day_before],
         'shared_prep': prep,
         'conflicts': conflicts,
+        'kitchen': kitchen.payload(),
+        'equipment_warnings': equipment_warnings,
         'total_duration_min': total,
         'sequential_duration_min': sequential,
         'saved_min': max(0, sequential - total),

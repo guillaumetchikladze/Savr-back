@@ -213,7 +213,9 @@ def execute_recipe_revision(user: AbstractBaseUser, payload: dict) -> dict:
         raise ValueError('Recette introuvable ou non autorisée.')
 
     edit_payload = _formalized_to_edit_payload(after_formalized)
-    with transaction.atomic():
+    from recipes.services.equipment_service import deferred_equipment_refresh
+
+    with transaction.atomic(), deferred_equipment_refresh():
         _apply_edit_payload(recipe, edit_payload)
 
     schedule_recipe_search_reindex(recipe.id)

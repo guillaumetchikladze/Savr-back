@@ -58,3 +58,11 @@ class RecipeFormalized(BaseModel):
         default_factory=list, description='Liste des ingrédients globaux de la recette'
     )
     steps: list[StepFormalized] = Field(default_factory=list, description='Liste des étapes de préparation')
+    required_equipment: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Équipements indispensables, clés parmi : four, plaques, micro_ondes, robot_cuiseur, cocotte_minute, '
+            'mixeur_plongeant, blender, robot_patissier, airfryer, barbecue_plancha, cocotte_fonte, machine_a_pain, '
+            'sorbetiere, gaufrier, appareil_raclette_fondue, wok, autocuiseur_vapeur'
+        ),
+    )

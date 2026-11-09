@@ -23,6 +23,7 @@ from chat.services.tool_schemas import (
     BasketRemovalResult,
     BasketShoppingResult,
     BattlePlanResult,
+    EquipmentAdaptationResult,
     LogCookedResult,
     PlanWeekResult,
     SkippedDish,
@@ -429,6 +430,37 @@ def basket_to_shopping_list(
         created_list=result.created_list,
         added_basket_item_ids=result.added_item_ids,
         skipped=result.skipped,
+        message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# « Adapter pour chez moi » : recette qui demande un équipement absent
+# ---------------------------------------------------------------------------
+def adapt_recipe_equipment_for_chat(user: AbstractBaseUser, *, recipe_id: int) -> EquipmentAdaptationResult:
+    """Copie privée adaptée à la cuisine de l'utilisateur (même service que POST /api/recipes/<id>/adapt-equipment/)."""
+    from recipes.services import equipment_catalog as catalog
+    from recipes.services.equipment_adaptation import AdaptationError, adapt_recipe_for_user
+
+    try:
+        copy, created, missing = adapt_recipe_for_user(user, recipe_id)
+    except AdaptationError as exc:
+        raise ValueError(exc.message) from exc
+    replaced = [m['label'] for m in missing]
+    note = (copy.description or '').split('\n\n', 1)[0]  # 1er paragraphe = note de l'adaptation
+    if created:
+        message = f'Version adaptée prête : « {copy.title} ».'
+    else:
+        message = f'Tu as déjà une version adaptée : « {copy.title} ».'
+    return EquipmentAdaptationResult(
+        recipe_id=copy.id,
+        original_recipe_id=copy.adapted_from_id or int(recipe_id),
+        title=copy.title,
+        image_url=copy.image_url,
+        created=created,
+        adapted_for=[catalog.label(k) for k in copy.adapted_for_equipment or []],
+        replaced=replaced,
+        note=note[:300],
         message=message,
     )
 

@@ -142,6 +142,36 @@ def _household_lines(user) -> list[str]:
     return lines
 
 
+def _equipment_lines(user) -> list[str]:
+    """« Ta cuisine » : équipements présents + absents qui comptent (four, plaques, barbecue…)."""
+    from recipes.services import equipment_catalog as catalog
+    from recipes.services.equipment_service import effective_kitchen
+
+    kitchen = effective_kitchen(user)
+    if kitchen is None:
+        return ['- Cuisine : équipements non renseignés (suppose une cuisine classique : four, plaques, micro-ondes).']
+    owned = []
+    for key in catalog.sort_keys(kitchen.keys):
+        name = catalog.label(key).split(' (')[0].lower()
+        if key == 'plaques' and kitchen.burners:
+            name += f' ({kitchen.burners} feux{", induction" if kitchen.induction else ""})'
+        if key == 'four' and kitchen.ovens > 1:
+            name = f'{kitchen.ovens} fours'
+        owned.append(name)
+    whose = 'celle de ton foyer' if kitchen.source == 'household' else 'la tienne'
+    lines = [f'- Cuisine ({whose}) : ' + (', '.join(owned) if owned else 'aucun équipement') + '.']
+    absent = [
+        e.short_label
+        for e in catalog.CATALOG
+        if not kitchen.has(e.key) and (e.hard or e.key in ('robot_cuiseur', 'airfryer', 'micro_ondes'))
+    ]
+    if absent:
+        lines.append(
+            "- Tu n'as pas : " + ', '.join(absent) + ". Ne propose pas de plat qui en demande, ou propose l'adaptation."
+        )
+    return lines
+
+
 def _basket_lines(user) -> list[str]:
     from recipes.services import basket_service as basket
 
@@ -231,6 +261,7 @@ def build_profile_context(user: AbstractBaseUser, today=None) -> str:
     lines += _safe(_season_lines, today)
     lines += _safe(_preference_lines, user)
     lines += _safe(_household_lines, user)
+    lines += _safe(_equipment_lines, user)
     lines += _safe(_basket_lines, user)
     lines += _safe(_recent_cook_lines, user, today)
     lines += _safe(_novelty_lines, user, today)

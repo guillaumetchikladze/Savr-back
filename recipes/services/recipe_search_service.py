@@ -8,6 +8,7 @@ from django.db.models import Q
 from chat.services.tool_schemas import RecipeSummary, SearchRecipesResult
 from recipes.dietary_filters import conflict_reasons_by_recipe_id
 from recipes.models import Recipe
+from recipes.services.equipment_service import effective_kitchen, exclude_unfeasible, rank_penalty, recipe_missing
 from recipes.services.ingredient_matcher import get_batch_embeddings
 from recipes.services.recipe_search import hybrid_recipe_queryset
 from recipes.services.sub_recipe_service import sub_recipe_hints
@@ -59,15 +60,17 @@ def search_recipes_for_user(
     if not vector:
         logger.warning('[search_recipes_for_user] embedding indisponible pour q=%r', query)
 
-    base_qs = _recipe_base_queryset(user)
+    # « Ta cuisine » : plats infaisables retirés (four absent sans airfryer…), manques « mous » déclassés.
+    kitchen = effective_kitchen(user)
+    base_qs = exclude_unfeasible(_recipe_base_queryset(user), user, kitchen=kitchen)
     queryset = hybrid_recipe_queryset(base_qs, query, vector)
     items = list(queryset[: limit * 2])
 
     try:
         ids = [r.id for r in items if getattr(r, 'id', None) is not None]
         reasons_map = conflict_reasons_by_recipe_id(ids, user) or {}
-        indexed = [(idx, r, _penalty(reasons_map.get(r.id))) for idx, r in enumerate(items)]
-        indexed.sort(key=lambda t: (t[2], t[0]))
+        indexed = [(idx, r, _penalty(reasons_map.get(r.id)), rank_penalty(r, kitchen)) for idx, r in enumerate(items)]
+        indexed.sort(key=lambda t: (t[2], t[3], t[0]))
         items = [t[1] for t in indexed]
     except Exception:
         pass
@@ -83,6 +86,7 @@ def search_recipes_for_user(
             difficulty=r.difficulty,
             image_url=getattr(r, 'image_url', None) or getattr(r, 'thumbnail_url', None),
             sub_recipes=hints.get(r.id, []),
+            missing_equipment=[m['label'] for m in recipe_missing(r, kitchen)],
         )
         for r in items
     ]

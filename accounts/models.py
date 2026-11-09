@@ -40,6 +40,16 @@ class User(AbstractUser):
         blank=True,
         help_text='Date du dernier choix explicite (null = jamais demandé).',
     )
+    # « Ta cuisine » (recipes/services/equipment_catalog.py) : {keys, burners, induction, ovens}. Null = jamais
+    # renseigné (on retombe sur la cuisine d'un compte du foyer, sinon cuisine inconnue).
+    kitchen_equipment = models.JSONField(
+        null=True,
+        blank=True,
+        help_text='Équipements de cuisine : {"keys": [...], "burners": 4, "induction": false, "ovens": 1}.',
+    )
+    kitchen_equipment_set_at = models.DateTimeField(
+        null=True, blank=True, help_text='Dernier enregistrement de « Ta cuisine » (null = jamais renseigné).'
+    )
 
     # Waitlist / access gate — null = en attente de validation admin
     validated_at = models.DateTimeField(

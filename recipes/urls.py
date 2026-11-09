@@ -13,6 +13,7 @@ from .dietary_views import (
     dietary_exceptions_list_view,
 )
 from .dish_views import dish_classics_view, dish_detail_view, dish_label_view, dish_recipe_view
+from .equipment_views import equipment_catalog_view, equipment_view, recipe_adapt_equipment_view
 from .pending_views import pending_confirmation_dismiss_view, pending_confirmations_view
 from .preference_views import (
     preference_mapping_fork,
@@ -84,6 +85,9 @@ urlpatterns = [
         name='cooked_pending_confirmation_dismiss',
     ),
     path('battle-plan/', battle_plan_view, name='battle_plan'),
+    path('equipment/', equipment_view, name='equipment'),
+    path('equipment/catalog/', equipment_catalog_view, name='equipment_catalog'),
+    path('recipes/<int:recipe_id>/adapt-equipment/', recipe_adapt_equipment_view, name='recipe_adapt_equipment'),
     path(
         'recipe-ingredients/<int:line_id>/sub-recipe/',
         recipe_ingredient_sub_recipe_view,

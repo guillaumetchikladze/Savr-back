@@ -1067,6 +1067,16 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 )
             except (ValueError, TypeError):
                 pass
+        # « Ta cuisine » : la recherche retire les plats infaisables (équipement « dur » absent, sans alternative) ;
+        # `?equipment=any` pour tout voir. Listes générales inchangées.
+        if (
+            user.is_authenticated
+            and self.action in ('search', 'search_fuzzy', 'search_semantic')
+            and self.request.query_params.get('equipment', '').lower() != 'any'
+        ):
+            from .services.equipment_service import exclude_unfeasible, request_kitchen
+
+            queryset = exclude_unfeasible(queryset, user, kitchen=request_kitchen(self.request))
         if search:
             # Pour les listes, chercher uniquement dans le titre (plus rapide)
             if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic']:
@@ -1402,7 +1412,9 @@ class RecipeViewSet(viewsets.ModelViewSet):
             'image_path',
         ]
 
-        with transaction.atomic():
+        from .services.equipment_service import deferred_equipment_refresh
+
+        with transaction.atomic(), deferred_equipment_refresh():
             # Mettre à jour les métadonnées si présentes
             for field in meta_fields:
                 if field in data:
@@ -2045,8 +2057,13 @@ class RecipeViewSet(viewsets.ModelViewSet):
                         return 1
                     return 0
 
-                indexed = [(idx, r, _penalty(reasons_map.get(r.id))) for idx, r in enumerate(items)]
-                indexed.sort(key=lambda t: (t[2], t[0]))
+                from .services.equipment_service import rank_penalty, request_kitchen
+
+                kitchen = request_kitchen(request)
+                indexed = [
+                    (idx, r, _penalty(reasons_map.get(r.id)), rank_penalty(r, kitchen)) for idx, r in enumerate(items)
+                ]
+                indexed.sort(key=lambda t: (t[2], t[3], t[0]))
                 items = [t[1] for t in indexed]
             except Exception:
                 pass

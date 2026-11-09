@@ -198,6 +198,10 @@ Instructions importantes:
 5. Génère un résumé des étapes (steps_summary)
    - 2-3 phrases concises résumant les étapes principales
 
+6. required_equipment : clés des équipements indispensables (four, plaques, micro_ondes, robot_cuiseur, cocotte_minute,
+   mixeur_plongeant, blender, robot_patissier, airfryer, barbecue_plancha, cocotte_fonte, machine_a_pain, sorbetiere,
+   gaufrier, appareil_raclette_fondue, wok, autocuiseur_vapeur). Seulement ce que les étapes utilisent vraiment.
+
 Sois précis et structuré dans tes réponses.""",
     )
 
@@ -637,6 +641,9 @@ Instructions :
    - Active has_timer et timer_duration quand une durée est pertinente
 5. Infère meal_type, difficulty, prep_time, cook_time, servings (défaut 4 si non précisé).
 6. steps_summary : 2-3 phrases résumant la préparation.
+7. required_equipment : clés des équipements indispensables (four, plaques, micro_ondes, robot_cuiseur, cocotte_minute,
+   mixeur_plongeant, blender, robot_patissier, airfryer, barbecue_plancha, cocotte_fonte, machine_a_pain, sorbetiere,
+   gaufrier, appareil_raclette_fondue, wok, autocuiseur_vapeur) que tes étapes utilisent vraiment.
 
 Contraintes :
 - Recette faisable à la maison avec des ingrédients courants en supermarché.

@@ -39,6 +39,8 @@ class UserSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     is_validated = serializers.BooleanField(read_only=True)
     share_url = serializers.SerializerMethodField()
+    # Onboarding « Ta cuisine » : détail via GET /api/equipment/.
+    has_set_equipment = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -67,6 +69,7 @@ class UserSerializer(serializers.ModelSerializer):
             'auto_publish_cooked',
             'auto_publish_cooked_set_at',
             'share_url',
+            'has_set_equipment',
         )
         read_only_fields = (
             'id',
@@ -82,7 +85,10 @@ class UserSerializer(serializers.ModelSerializer):
         )
 
     # Préférences privées : uniquement dans le profil de l'utilisateur lui-même.
-    SELF_ONLY_FIELDS = ('auto_publish_cooked', 'auto_publish_cooked_set_at')
+    SELF_ONLY_FIELDS = ('auto_publish_cooked', 'auto_publish_cooked_set_at', 'has_set_equipment')
+
+    def get_has_set_equipment(self, obj):
+        return bool(getattr(obj, 'kitchen_equipment_set_at', None))
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

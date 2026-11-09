@@ -51,6 +51,91 @@ def post_display_title(post):
     return _post_display_title(post)
 
 
+class RecipeEquipmentFieldsMixin(serializers.Serializer):
+    """
+    « Ta cuisine » sur une recette : `missing_equipment` (ce qui manque au viewer : clés, libellés, alternatives
+    qu'il possède) + `missing_equipment_label` (« Il te manque : un four ») + `can_adapt_equipment`. Cuisine du
+    viewer évaluée une fois par requête (0 requête si renseignée, 1 sinon pour le foyer) ; `required_equipment`
+    est un champ de la recette : aucune requête par recette.
+    """
+
+    missing_equipment = serializers.SerializerMethodField()
+    missing_equipment_label = serializers.SerializerMethodField()
+    can_adapt_equipment = serializers.SerializerMethodField()
+
+    def _missing(self, obj) -> list:
+        cache = self.__dict__.setdefault('_missing_equipment_cache', {})
+        if obj.id not in cache:
+            from .services.equipment_service import recipe_missing, viewer_kitchen
+
+            cache[obj.id] = recipe_missing(obj, viewer_kitchen(self.context))
+        return cache[obj.id]
+
+    def get_missing_equipment(self, obj):
+        return self._missing(obj)
+
+    def get_missing_equipment_label(self, obj):
+        from .services.equipment_catalog import missing_label
+
+        return missing_label(self._missing(obj))
+
+    def get_can_adapt_equipment(self, obj):
+        from .services.equipment_service import adaptation_enabled
+
+        return bool(self._missing(obj)) and adaptation_enabled()
+
+
+class PostEquipmentFieldsMixin(serializers.Serializer):
+    """
+    Post : `missing_equipment` = union de ce qui manque au viewer pour les recettes du post (chaque entrée porte
+    `recipe_ids`), `missing_equipment_label`, `adapt_recipe_id` (1re recette à adapter, bouton « Adapter pour chez
+    moi »). Recettes lues sur les préchargements du feed : 0 requête par post.
+    """
+
+    missing_equipment = serializers.SerializerMethodField()
+    missing_equipment_label = serializers.SerializerMethodField()
+    adapt_recipe_id = serializers.SerializerMethodField()
+
+    def _post_missing(self, obj):
+        cache = self.__dict__.setdefault('_post_missing_cache', {})
+        if obj.id not in cache:
+            from .services.equipment_service import recipes_missing, viewer_kitchen
+
+            kitchen = viewer_kitchen(self.context)
+            cache[obj.id] = recipes_missing(post_recipes(obj), kitchen) if kitchen is not None else ([], None)
+        return cache[obj.id]
+
+    def get_missing_equipment(self, obj):
+        return self._post_missing(obj)[0]
+
+    def get_missing_equipment_label(self, obj):
+        from .services.equipment_catalog import missing_label
+
+        return missing_label(self._post_missing(obj)[0])
+
+    def get_adapt_recipe_id(self, obj):
+        from .services.equipment_service import adaptation_enabled
+
+        return self._post_missing(obj)[1] if adaptation_enabled() else None
+
+
+def post_recipes(post) -> list:
+    """Recettes d'un post (couverture + repas), sur les préchargements du feed (mêmes accès que `post_dish`)."""
+    recipes, seen = [], set()
+    batch = post.recipe_batch if post.recipe_batch_id else None
+    if batch is not None and batch.recipe_id:
+        recipes.append(batch.recipe)
+        seen.add(batch.recipe_id)
+    meal_plan = post.meal_plan if post.meal_plan_id else None
+    if meal_plan is not None:
+        for mprb in meal_plan.meal_plan_recipe_batches.all():
+            recipe = getattr(getattr(mprb, 'recipe_batch', None), 'recipe', None)
+            if recipe is not None and recipe.id not in seen:
+                seen.add(recipe.id)
+                recipes.append(recipe)
+    return recipes
+
+
 # Helpers
 def compute_meal_plan_servings_with_ratio(meal_plan):
     """
@@ -259,7 +344,7 @@ class StepSerializer(serializers.ModelSerializer):
         fields = ['id', 'order', 'title', 'instruction', 'tip', 'has_timer', 'timer_duration', 'step_ingredients']
 
 
-class RecipeDetailSerializer(serializers.ModelSerializer):
+class RecipeDetailSerializer(RecipeEquipmentFieldsMixin, serializers.ModelSerializer):
     """
     Serializer léger pour retrieve - charge seulement les données essentielles
     Les steps et ingrédients détaillés sont chargés via des endpoints séparés
@@ -277,6 +362,11 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
     sub_recipes = serializers.SerializerMethodField()
     total_time_if_made = serializers.SerializerMethodField()
     difficulty_if_made = serializers.SerializerMethodField()
+    # « Ta cuisine » (equipment_service) : requis, ce qui manque au viewer, version adaptée.
+    required_equipment = serializers.SerializerMethodField()
+    adapted_from = serializers.SerializerMethodField()
+    adapted_for_equipment = serializers.SerializerMethodField()
+    my_adaptation = serializers.SerializerMethodField()
     # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
 
     class Meta:
@@ -309,8 +399,44 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
             'sub_recipes',
             'total_time_if_made',
             'difficulty_if_made',
+            'required_equipment',
+            'missing_equipment',
+            'missing_equipment_label',
+            'can_adapt_equipment',
+            'adapted_from',
+            'adapted_for_equipment',
+            'my_adaptation',
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
+
+    def get_required_equipment(self, obj):
+        from .services.equipment_service import required_payload
+
+        return required_payload(obj)
+
+    def get_adapted_from(self, obj):
+        if not obj.adapted_from_id:
+            return None
+        original = obj.adapted_from
+        return {'id': original.id, 'title': original.title} if original is not None else None
+
+    def get_adapted_for_equipment(self, obj):
+        if not obj.adapted_from_id:
+            return None
+        from .services.equipment_catalog import items_payload
+
+        return items_payload({'keys': obj.adapted_for_equipment or []})
+
+    def get_my_adaptation(self, obj):
+        """Ma version adaptée (pour ma cuisine actuelle), ou null : 1 requête seulement si quelque chose manque."""
+        if not self._missing(obj):
+            return None
+        from .services.equipment_adaptation import existing_adaptation
+        from .services.equipment_service import viewer_kitchen
+
+        request = self.context.get('request')
+        copy = existing_adaptation(obj.id, request.user, viewer_kitchen(self.context))
+        return {'id': copy.id, 'title': copy.title} if copy is not None else None
 
     def _sub_payload(self, obj) -> dict:
         cache = self.__dict__.setdefault('_sub_recipes_cache', {})
@@ -489,7 +615,9 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         user = validated_data.pop('created_by', None) or self.context['request'].user
         validated_data['is_public'] = True
 
-        with transaction.atomic():
+        from .services.equipment_service import deferred_equipment_refresh
+
+        with transaction.atomic(), deferred_equipment_refresh():
             recipe = Recipe.objects.create(created_by=user, **validated_data)
 
             for idx, step_data in enumerate(steps_data):
@@ -519,7 +647,7 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         return recipe
 
 
-class RecipeLightSerializer(serializers.ModelSerializer):
+class RecipeLightSerializer(RecipeEquipmentFieldsMixin, serializers.ModelSerializer):
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
@@ -552,6 +680,9 @@ class RecipeLightSerializer(serializers.ModelSerializer):
             'created_by_username',
             'created_at',
             'is_author',
+            'missing_equipment',
+            'missing_equipment_label',
+            'can_adapt_equipment',
         ]
 
     def get_share_url(self, obj):
@@ -2537,7 +2668,12 @@ class DishFieldMixin(serializers.Serializer):
 
 
 class PostSerializer(
-    DishFieldMixin, MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer
+    PostEquipmentFieldsMixin,
+    DishFieldMixin,
+    MyTurnFieldsMixin,
+    ArdoiseFieldsMixin,
+    RepostFieldsMixin,
+    serializers.ModelSerializer,
 ):
     photos = PostPhotoSerializer(many=True, read_only=True)
     user = UserLightSerializer(read_only=True)
@@ -2564,6 +2700,9 @@ class PostSerializer(
             'label',
             'display_title',
             'dish',
+            'missing_equipment',
+            'missing_equipment_label',
+            'adapt_recipe_id',
             'share_url',
             'cuisine',
             'highlights',
@@ -2805,7 +2944,12 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
 
 
 class PostListSerializer(
-    DishFieldMixin, MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer
+    PostEquipmentFieldsMixin,
+    DishFieldMixin,
+    MyTurnFieldsMixin,
+    ArdoiseFieldsMixin,
+    RepostFieldsMixin,
+    serializers.ModelSerializer,
 ):
     """Serializer minimal pour la liste des posts (feed)."""
 
@@ -2829,6 +2973,9 @@ class PostListSerializer(
             'label',
             'display_title',
             'dish',
+            'missing_equipment',
+            'missing_equipment_label',
+            'adapt_recipe_id',
             'share_url',
             'cuisine',
             'highlights',

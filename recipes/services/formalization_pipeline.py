@@ -10,6 +10,7 @@ from ..models import (
     StepIngredient,
 )
 from .ai_service import verify_quantity_consistency
+from .equipment_service import deferred_equipment_refresh, set_ai_hints
 from .ingredient_categorization import ensure_ingredient_category
 from .ingredient_matcher import get_or_create_ingredient
 from .recipe_search_index import schedule_recipe_search_reindex
@@ -52,7 +53,7 @@ def create_recipe_from_formalized(formalized_recipe, data: dict[str, Any], user)
     if inconsistencies:
         logger.warning(f'Incohérences de quantités détectées: {inconsistencies}')
 
-    with transaction.atomic():
+    with transaction.atomic(), deferred_equipment_refresh():
         # Collecter tous les noms uniques
         all_ingredient_names = set()
         for recipe_ingredient in formalized_recipe.recipe_ingredients:
@@ -147,6 +148,11 @@ def create_recipe_from_formalized(formalized_recipe, data: dict[str, Any], user)
                     unit=step_ingredient_data.unit,
                 )
                 step_added_ingredients.add(ingredient.id)
+
+        # Équipements déclarés par la sortie structurée du LLM (même passe) : unis à l'inférence par mots-clés.
+        hints = getattr(formalized_recipe, 'required_equipment', None)
+        if hints:
+            set_ai_hints(recipe, hints)
 
     schedule_recipe_search_reindex(recipe.id)
     return recipe

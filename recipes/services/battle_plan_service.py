@@ -247,6 +247,25 @@ def _from_recipes(user, recipe_ids: list[int], servings: int | None):
     return recipe_ids, dict.fromkeys(recipe_ids, servings), [], source, {}
 
 
+def kitchen_resources(user) -> bp.KitchenResources:
+    """Ressources du plan d'après « Ta cuisine » (la sienne, sinon celle du foyer) ; inconnue → défaut historique."""
+    from recipes.services.equipment_service import effective_kitchen
+
+    kitchen = effective_kitchen(user)
+    if kitchen is None:
+        return bp.DEFAULT_KITCHEN
+    has_hob = kitchen.has('plaques')
+    return bp.KitchenResources(
+        burners=kitchen.burners if has_hob and kitchen.burners else None,
+        ovens=max(kitchen.ovens, 1),
+        has_oven=kitchen.has('four'),
+        airfryer=kitchen.has('airfryer'),
+        has_hob=has_hob,
+        induction=kitchen.induction,
+        known=True,
+    )
+
+
 MAX_PLAN_RECIPES = bp.MAX_RECIPES * 2  # recettes du repas + sous-recettes faites maison
 
 
@@ -365,6 +384,7 @@ def battle_plan_for_user(
         recipes,
         start_at=_anchor(user, start, default_day),
         ready_at=_anchor(user, ready, default_day),
+        kitchen=kitchen_resources(user),
     )
     plan['source'] = source
     plan['skipped'] = skipped
@@ -372,6 +392,6 @@ def battle_plan_for_user(
     if polish:
         from recipes.services.battle_plan_polish import polish_plan
 
-        key = [(r.recipe_id, r.servings, r.version) for r in recipes]
+        key = [(r.recipe_id, r.servings, r.version) for r in recipes] + [plan['kitchen']]
         plan = polish_plan(plan, recipes_key=key)
     return plan
