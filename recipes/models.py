@@ -64,6 +64,38 @@ class Ingredient(models.Model):
         return self.name
 
 
+class IngredientInfo(models.Model):
+    """
+    Fiche produit d'un ingrédient (« Courses » : toucher un article → ce que c'est, rayon, choisir, conserver).
+    Partagée par tous les utilisateurs : une génération LLM par ingrédient (unicité `ingredient`), éditable en admin
+    (`source=manual`, jamais régénérée). Service : `recipes/services/ingredient_info.py`.
+    """
+
+    SOURCE_LLM = 'llm'
+    SOURCE_MANUAL = 'manual'
+    SOURCE_CHOICES = [(SOURCE_LLM, 'LLM'), (SOURCE_MANUAL, 'Manuel')]
+
+    ingredient = models.OneToOneField(Ingredient, on_delete=models.CASCADE, related_name='info')
+    what = models.TextField(help_text="Ce que c'est (2–3 phrases).")
+    uses = models.TextField(blank=True, help_text='À quoi ça sert en cuisine.')
+    aisle = models.CharField(max_length=120, blank=True, help_text='Rayon en magasin (ex. « Crèmerie »).')
+    choose = models.TextField(blank=True, help_text='Comment le choisir.')
+    keep = models.TextField(blank=True, help_text='Conservation.')
+    substitutes = models.JSONField(default=list, blank=True, help_text='Substitutions possibles (liste de textes).')
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default=SOURCE_LLM)
+    model = models.CharField(max_length=100, blank=True, help_text='Modèle LLM utilisé (vide si manuel).')
+    generated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Fiche produit (ingrédient)'
+        verbose_name_plural = 'Fiches produit (ingrédients)'
+
+    def __str__(self):
+        return f'Fiche {self.ingredient_id}'
+
+
 class DietaryIngredientMatch(models.Model):
     """
     Lie un libellé de préférence utilisateur (allergie ou « je n’aime pas »)

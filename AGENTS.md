@@ -449,6 +449,36 @@ Le front met en file les actions faites en magasin sans réseau et les rejoue. C
   masquées que du `GET /shopping-lists/` (`include_archived=true`) : les actions de détail les atteignent.
 - Tests : `recipes/tests/test_shopping_offline_idempotency_api.py`.
 
+## Fiche produit des courses (`recipes/services/ingredient_info.py`)
+
+« Toucher un article → ce que c'est ». Contrat front : section « Contrat front » de
+`.claude-work/status/*/ITEM-20261110-0010-shp2.md`.
+
+- Modèle `IngredientInfo` (migration recipes 0084, OneToOne `Ingredient.info`, **partagé** par tous) : `what`, `uses`,
+  `aisle` (rayon, termes de supermarché français), `choose`, `keep`, `substitutes` (liste), `source` (llm | manual),
+  `model`, `generated_at`. Admin : toute modification humaine passe la fiche en `manual`.
+- `GET /api/ingredients/<id>/info/` (tout utilisateur validé) et `GET /api/shopping-list-items/<id>/info/` (membre
+  de la liste, sinon 404). En base → 200 `cached: true` (1 lecture). Sinon génération **synchrone** : un appel
+  OpenAI-compatible `INGREDIENT_INFO_MODEL` (défaut `gemini-3.5-flash`) ; nom de modèle refusé par le fournisseur
+  (`openai.NotFoundError`, ou 400 qui cite le modèle) → avertissement en log, refus retenu 1 h en cache, **un**
+  nouvel essai avec `CHAT_AI_MODEL` dans le temps restant. Budget total `INGREDIENT_INFO_LLM_TIMEOUT_SECONDS` (8 s),
+  `max_retries=0`.
+- Validation stricte (`parse_response`) : JSON objet, `what` 20–450 car., `uses` / `aisle` requis, longueurs
+  bornées, ≤ 5 substitutions ; refus de tout propos santé / nutrition / calories / régime minceur / vitamines /
+  protéines…, « bande », Strava (`FORBIDDEN_RE`). Invalide, erreur, délai → **503 `info_unavailable`** +
+  `Retry-After`, rien n'est stocké, pas de nouvel appel pour cet ingrédient pendant
+  `INGREDIENT_INFO_FAILURE_COOLDOWN_SECONDS` (600 s). `INGREDIENT_INFO_LLM_ENABLED=False` : cache seul.
+- Concurrence : verrou consultatif Postgres par ingrédient (`pg_try_advisory_lock`, inter-processus) ; une requête
+  concurrente attend la ligne (≤ budget) au lieu d'appeler le LLM ; unicité `ingredient` + relecture sur
+  `IntegrityError`. Débit par utilisateur (cache, par processus comme les invitations) :
+  `INGREDIENT_INFO_GENERATIONS_PER_USER_HOUR` (30) générations, `INGREDIENT_INFO_READS_PER_USER_HOUR` (300) lectures
+  → 429 `rate_limited`.
+- Pré-génération : `python manage.py pregenerate_ingredient_info --limit 200 [--batch-size 20] [--sync] [--dry-run]`
+  (ingrédients sans fiche les plus utilisés : lignes de recettes + de courses ; lots Celery
+  `generate_ingredient_info_batch_task`, idempotent).
+- Tests : `recipes/tests/test_shopping_ingredient_info_api.py` (mock : `ingredient_info._call_llm`, verrou :
+  `_try_lock` / `_wait_for_info`).
+
 ## Agent IA v2 (app `chat`)
 
 Contrat front : `.claude-work/specs/agent-v2.md`. Modèle : `CHAT_AI_MODEL` (défaut `gemini-2.5-flash`, endpoint

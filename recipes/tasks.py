@@ -361,3 +361,13 @@ def reindex_recipe_search(self, recipe_id: int, force: bool = False):
     except Exception as exc:
         logger.exception('[ReindexRecipeSearch] recipe %s: %s', recipe_id, exc)
         raise self.retry(exc=exc)
+
+
+@shared_task(ignore_result=True)
+def generate_ingredient_info_batch_task(ingredient_ids: list[int]):
+    """Pré-génère les fiches produit manquantes d'un lot (commande `pregenerate_ingredient_info`)."""
+    from .services.ingredient_info import generate_many
+
+    stats = generate_many([int(i) for i in ingredient_ids])
+    logger.info('[ingredient_info] lot de %d : %s', len(ingredient_ids), stats)
+    return stats

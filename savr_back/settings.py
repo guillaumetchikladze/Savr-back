@@ -297,6 +297,15 @@ BATTLE_PLAN_POLISH_CACHE_SECONDS = config('BATTLE_PLAN_POLISH_CACHE_SECONDS', de
 EQUIPMENT_SEARCH_MODE = config('EQUIPMENT_SEARCH_MODE', default='exclude')
 EQUIPMENT_ADAPT_ENABLED = config('EQUIPMENT_ADAPT_ENABLED', default=True, cast=bool)
 EQUIPMENT_ADAPT_LLM_TIMEOUT_SECONDS = config('EQUIPMENT_ADAPT_LLM_TIMEOUT_SECONDS', default=8.0, cast=float)
+# Fiche produit des courses (GET /api/ingredients/<id>/info/) : en base sinon générée une fois (synchrone, budget
+# total ≤ INGREDIENT_INFO_LLM_TIMEOUT_SECONDS) avec INGREDIENT_INFO_MODEL ; nom de modèle refusé par le fournisseur →
+# repli sur CHAT_AI_MODEL (avertissement en log). Échec → 503, rien n'est stocké, pas de nouvel appel avant le délai.
+INGREDIENT_INFO_MODEL = config('INGREDIENT_INFO_MODEL', default='gemini-3.5-flash')
+INGREDIENT_INFO_LLM_ENABLED = config('INGREDIENT_INFO_LLM_ENABLED', default=True, cast=bool)
+INGREDIENT_INFO_LLM_TIMEOUT_SECONDS = config('INGREDIENT_INFO_LLM_TIMEOUT_SECONDS', default=8.0, cast=float)
+INGREDIENT_INFO_FAILURE_COOLDOWN_SECONDS = config('INGREDIENT_INFO_FAILURE_COOLDOWN_SECONDS', default=600, cast=int)
+INGREDIENT_INFO_READS_PER_USER_HOUR = config('INGREDIENT_INFO_READS_PER_USER_HOUR', default=300, cast=int)
+INGREDIENT_INFO_GENERATIONS_PER_USER_HOUR = config('INGREDIENT_INFO_GENERATIONS_PER_USER_HOUR', default=30, cast=int)
 
 # Billing architecture:
 # - contact_email : mailto support (défaut — safe App Store / en attendant IAP ou web)

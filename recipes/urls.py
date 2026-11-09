@@ -14,6 +14,7 @@ from .dietary_views import (
 )
 from .dish_views import dish_classics_view, dish_detail_view, dish_label_view, dish_recipe_view
 from .equipment_views import equipment_catalog_view, equipment_view, recipe_adapt_equipment_view
+from .ingredient_info_views import ingredient_info_view, shopping_list_item_info_view
 from .pending_views import pending_confirmation_dismiss_view, pending_confirmations_view
 from .preference_views import (
     preference_mapping_fork,
@@ -88,6 +89,8 @@ urlpatterns = [
     path('equipment/', equipment_view, name='equipment'),
     path('equipment/catalog/', equipment_catalog_view, name='equipment_catalog'),
     path('recipes/<int:recipe_id>/adapt-equipment/', recipe_adapt_equipment_view, name='recipe_adapt_equipment'),
+    path('ingredients/<int:ingredient_id>/info/', ingredient_info_view, name='ingredient_info'),
+    path('shopping-list-items/<int:item_id>/info/', shopping_list_item_info_view, name='shopping_list_item_info'),
     path(
         'recipe-ingredients/<int:line_id>/sub-recipe/',
         recipe_ingredient_sub_recipe_view,
