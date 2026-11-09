@@ -4677,10 +4677,9 @@ class PostViewSet(viewsets.ModelViewSet):
 
     def _get_feed_author_ids(self, user):
         """Comptes suivis (Follow approuvé en base) + l'utilisateur connecté, hors blocages."""
-        from accounts.blocks import blocked_user_ids_for
-
         following_ids = Follow.objects.filter(follower=user).values_list('following_id', flat=True)
-        blocked_ids = blocked_user_ids_for(user)
+        # `user` = viewer : blocages mis en cache sur la requête (réutilisés par la sérialisation).
+        blocked_ids = request_blocked_user_ids(self.request)
         return (set(following_ids) | {user.id}) - blocked_ids
 
     def _apply_social_feed_filter(self, queryset, user):
@@ -4716,11 +4715,24 @@ class PostViewSet(viewsets.ModelViewSet):
                 'reposts',
                 queryset=PostRepost.objects.select_related('user').order_by('created_at'),
             ),
+            # `recipe_batch.meals` du carnet sans requête par post : liens + repas, tri SQL de MealPlan.Meta
+            # (champs utiles seulement ; `recipe_batch_id` requis pour rattacher chaque lien à son batch).
             Prefetch(
                 'recipe_batch__meal_plan_recipe_batches',
-                queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only(
-                    'meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time'
-                ),
+                queryset=MealPlanRecipeBatch.objects.select_related('meal_plan')
+                .only(
+                    'id',
+                    'recipe_batch_id',
+                    'meal_plan_id',
+                    'order',
+                    'created_at',
+                    'meal_plan__date',
+                    'meal_plan__meal_time',
+                    'meal_plan__custom_label',
+                    'meal_plan__slot_key',
+                )
+                .order_by('-meal_plan__date', 'meal_plan__meal_time', 'meal_plan__slot_key'),
+                to_attr='_feed_meal_links',
             ),
             # display_title (recettes du repas) sans N+1
             Prefetch(
@@ -4855,9 +4867,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 # Co-cuisinés (reposts) : jamais le post d'un auteur bloqué (dans un sens ou l'autre) ou inactif.
                 co_cooked = Q(id__in=reposted_post_ids, user__is_active=True)
                 if viewer.is_authenticated:
-                    from accounts.blocks import blocked_user_ids_for
-
-                    blocked_ids = blocked_user_ids_for(viewer)
+                    blocked_ids = request_blocked_user_ids(self.request)
                     if blocked_ids:
                         co_cooked &= ~Q(user_id__in=blocked_ids)
                 queryset = queryset.filter(Q(user_id=profile_user_id) | co_cooked).distinct()
@@ -4874,7 +4884,6 @@ class PostViewSet(viewsets.ModelViewSet):
         t0 = perf_counter()
         queryset = self.filter_queryset(self.get_queryset())
         t_qs = perf_counter()
-        print(f'[PostViewSet.list] start count={queryset.count()}')
 
         # Utiliser la pagination DRF
         page = self.paginate_queryset(queryset)

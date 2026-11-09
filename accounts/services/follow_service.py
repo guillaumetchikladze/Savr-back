@@ -41,6 +41,44 @@ def get_follow_relation(viewer: User | None, target: User) -> dict:
     }
 
 
+def get_follow_relations(viewer: User | None, target_ids) -> dict[int, dict]:
+    """
+    `get_follow_relation` en lot : {target_id: relation} pour plusieurs comptes, en 2 requêtes au plus
+    (listes de posts : auteurs + co-cuisiniers). Mêmes clés, même ordre, mêmes valeurs.
+    """
+    ids = {int(i) for i in target_ids if i is not None}
+    relations = {
+        i: {
+            'is_following': False,
+            'is_followed_by': False,
+            'follow_request_outgoing': False,
+            'follow_request_incoming': False,
+        }
+        for i in ids
+    }
+    if not viewer or not getattr(viewer, 'is_authenticated', False):
+        return relations
+    others = ids - {viewer.id}
+    if not others:
+        return relations
+    for follower_id, following_id in Follow.objects.filter(
+        Q(follower_id=viewer.id, following_id__in=others) | Q(follower_id__in=others, following_id=viewer.id)
+    ).values_list('follower_id', 'following_id'):
+        if follower_id == viewer.id:
+            relations[following_id]['is_following'] = True
+        else:
+            relations[follower_id]['is_followed_by'] = True
+    for requester_id, target_id in FollowRequest.objects.filter(
+        Q(requester_id=viewer.id, target_id__in=others) | Q(requester_id__in=others, target_id=viewer.id),
+        status='pending',
+    ).values_list('requester_id', 'target_id'):
+        if requester_id == viewer.id:
+            relations[target_id]['follow_request_outgoing'] = True
+        else:
+            relations[requester_id]['follow_request_incoming'] = True
+    return relations
+
+
 def follow_relation_payload(viewer: User | None, target: User) -> dict:
     rel = get_follow_relation(viewer, target)
     return {

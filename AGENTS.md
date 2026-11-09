@@ -225,6 +225,11 @@ Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas d
   `update-content`, photos) : auteur seulement, quels que soient les paramètres. Tests :
   `recipes/tests/test_posts_visibility_api.py`.
 - Feed réutilisable : `PostViewSet.feed_list_queryset(request, qs)` (préchargements + annotations, pas de N+1).
+  État du viewer (relations de suivi auteurs / co-cuisiniers, invitations → `can_repost`, reposts) chargé en lot
+  par page (`recipes/services/post_viewer_context.py`, via `PostPageListSerializer`) : requêtes **constantes**
+  quelle que soit la taille de page (feed 14, profil 16, Suggestions 15, détail 13 quel que soit le nombre de
+  co-cuisiniers). Tests 2 vs 20 posts : `recipes/tests/test_posts_feed_queries_api.py` (`FEED_QUERIES_DEBUG=1 -s`
+  affiche l'origine de chaque requête). Ne jamais appeler `get_follow_relation` / une requête par post dans un serializer de post.
 - Mesure : `python manage.py density_report --days 30 [--json]` (% ≥ 3 amis à J7, miams donnés en semaine 1,
   invités vs autres).
 - Tests : `accounts/tests/test_auth_invites_api.py`, `recipes/tests/test_posts_density_api.py`.

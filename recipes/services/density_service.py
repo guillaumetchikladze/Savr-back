@@ -31,9 +31,11 @@ FIRST_MIAM_POSTS = 3
 FIRST_MIAM_MAX_AGE_DAYS = 30
 
 
-def friend_ids(user: AbstractBaseUser) -> set[int]:
+def friend_ids(user: AbstractBaseUser, blocked: set[int] | None = None) -> set[int]:
+    """`blocked` : blocages déjà calculés (ex. `post_visibility.request_blocked_user_ids`), sinon relus."""
     following = set(Follow.objects.filter(follower_id=user.id).values_list('following_id', flat=True))
-    return following - blocked_user_ids_for(user) - {user.id}
+    blocked = blocked_user_ids_for(user) if blocked is None else blocked
+    return following - blocked - {user.id}
 
 
 def active_friend_ids(user: AbstractBaseUser, friends: set[int] | None = None) -> set[int]:
@@ -52,10 +54,13 @@ def suggestions_active(active_count: int) -> bool:
     return active_count < TARGET_FRIENDS
 
 
-def community_suggestions_queryset(user: AbstractBaseUser, friends: set[int] | None = None) -> QuerySet[Post]:
+def community_suggestions_queryset(
+    user: AbstractBaseUser, friends: set[int] | None = None, blocked: set[int] | None = None
+) -> QuerySet[Post]:
     """Posts récents partagés avec la communauté, hors amis (déjà dans le feed), soi et blocages."""
-    friends = friend_ids(user) if friends is None else friends
-    excluded = friends | {user.id} | blocked_user_ids_for(user)
+    blocked = blocked_user_ids_for(user) if blocked is None else blocked
+    friends = friend_ids(user, blocked) if friends is None else friends
+    excluded = friends | {user.id} | blocked
     since = timezone.now() - timedelta(days=SUGGESTIONS_MAX_AGE_DAYS)
     return Post.objects.filter(
         is_published=True,

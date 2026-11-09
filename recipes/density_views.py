@@ -33,6 +33,7 @@ from .services.density_service import (
     miams_given_count,
     suggestions_active,
 )
+from .services.post_visibility import request_blocked_user_ids
 
 SUGGESTIONS_PAGE_SIZE = 10
 
@@ -45,8 +46,9 @@ def _feed_posts(request, posts) -> list[dict]:
     return PostListSerializer(posts, many=True, context={'request': request}).data
 
 
-def _density_counts(user) -> tuple[set[int], set[int]]:
-    friends = friend_ids(user)
+def _density_counts(request) -> tuple[set[int], set[int]]:
+    user = request.user
+    friends = friend_ids(user, request_blocked_user_ids(request))
     return friends, active_friend_ids(user, friends)
 
 
@@ -73,7 +75,7 @@ def onboarding_social_view(request):
     from .views import PostViewSet
 
     user = request.user
-    friends, active = _density_counts(user)
+    friends, active = _density_counts(request)
     miams = miams_given_count(user)
     people = build_onboarding_people_suggestions(user)
     first_miam = PostViewSet.feed_list_queryset(request, first_miam_posts_queryset(user, friends))
@@ -108,7 +110,7 @@ def feed_suggestions_view(request):
     from .views import PostViewSet
 
     user = request.user
-    friends, active = _density_counts(user)
+    friends, active = _density_counts(request)
     base = {
         'active': suggestions_active(len(active)),
         'friends_count': len(friends),
@@ -118,7 +120,9 @@ def feed_suggestions_view(request):
     if not base['active']:
         return Response({**base, 'count': 0, 'next': None, 'previous': None, 'results': []})
 
-    queryset = PostViewSet.feed_list_queryset(request, community_suggestions_queryset(user, friends))
+    queryset = PostViewSet.feed_list_queryset(
+        request, community_suggestions_queryset(user, friends, request_blocked_user_ids(request))
+    )
     paginator = CustomPageNumberPagination()
     paginator.page_size = SUGGESTIONS_PAGE_SIZE
     paginator.max_page_size = 20

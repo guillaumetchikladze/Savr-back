@@ -2307,7 +2307,9 @@ class RepostFieldsMixin(serializers.Serializer):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
-        return PostRepost.objects.filter(user=request.user, original_post=obj).exists()
+        from .services.post_viewer_context import viewer_state
+
+        return viewer_state(self.context).has_reposted(obj)
 
     def get_can_repost(self, obj):
         if getattr(obj, '_has_reposted_by_me', False):
@@ -2315,9 +2317,10 @@ class RepostFieldsMixin(serializers.Serializer):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
-        from .services.repost_service import user_can_repost_post
+        from .services.post_viewer_context import viewer_state
 
-        return user_can_repost_post(request.user, obj)
+        # Même règle que `repost_service.user_can_repost_post`, invitations / reposts chargés en lot.
+        return viewer_state(self.context).can_repost(obj)
 
     def get_reposts_count(self, obj):
         annotated = getattr(obj, '_reposts_count', None)
@@ -2328,8 +2331,7 @@ class RepostFieldsMixin(serializers.Serializer):
         return PostRepost.objects.filter(original_post=obj).count()
 
     def get_co_cooked_users(self, obj):
-        from accounts.services.follow_service import get_follow_relation
-
+        from .services.post_viewer_context import viewer_state
         from .services.post_visibility import request_blocked_user_ids
         from .services.repost_service import get_co_cooked_users
 
@@ -2340,13 +2342,30 @@ class RepostFieldsMixin(serializers.Serializer):
         data = UserLightSerializer(users, many=True, context=self.context).data
         viewer = getattr(request, 'user', None) if request else None
         if viewer and getattr(viewer, 'is_authenticated', False) and data:
+            # Relations viewer ↔ co-cuisiniers chargées en lot (page entière : `PostPageListSerializer`).
+            state = viewer_state(self.context)
+            state.load_relations(u.id for u in users)
             user_by_id = {u.id: u for u in users}
             for item in data:
                 target = user_by_id.get(item.get('id'))
                 if not target:
                     continue
-                item.update(get_follow_relation(viewer, target))
+                item.update(state.relation(target.id))
         return data
+
+
+class PostPageListSerializer(serializers.ListSerializer):
+    """Liste de posts : état du viewer (suivis, invitations, reposts) préchargé pour toute la page."""
+
+    def to_representation(self, data):
+        from django.db import models as db_models
+
+        from .services.post_viewer_context import prime
+
+        iterable = data.all() if isinstance(data, db_models.manager.BaseManager) else data
+        items = list(iterable)
+        prime(self.context, items)
+        return super().to_representation(items)
 
 
 class ArdoiseFieldsMixin(serializers.Serializer):
@@ -2482,6 +2501,7 @@ class PostSerializer(
             'updated_at',
         ]
         read_only_fields = ['user', 'label', 'is_public', 'created_at', 'updated_at']
+        list_serializer_class = PostPageListSerializer
 
     def get_share_url(self, obj):
         return post_share_url(obj.id) if obj.id else None
@@ -2497,9 +2517,9 @@ class PostSerializer(
             viewer = getattr(request, 'user', None) if request else None
             author = getattr(instance, 'user', None)
             if viewer and getattr(viewer, 'is_authenticated', False) and author:
-                from accounts.services.follow_service import get_follow_relation
+                from .services.post_viewer_context import viewer_state
 
-                nested.update(get_follow_relation(viewer, author))
+                nested.update(viewer_state(self.context).relation(author.id))
         return data
 
     def get_meal_plan(self, obj):
@@ -2744,6 +2764,7 @@ class PostListSerializer(
             'created_at',
         ]
         read_only_fields = ['user', 'label', 'created_at']
+        list_serializer_class = PostPageListSerializer
 
     def get_share_url(self, obj):
         return post_share_url(obj.id) if obj.id else None
@@ -2832,56 +2853,41 @@ class PostListSerializer(
         batch = obj.recipe_batch
         recipe = batch.recipe if batch else None
 
-        # Utiliser les données préchargées si disponibles pour éviter les requêtes N+1
-        meal_plan_ids = []
-        grouped_dates = []
-        meals = []
-
-        # Si les meal_plan_recipe_batches sont préchargés, les utiliser
-        if (
-            hasattr(batch, '_prefetched_objects_cache')
-            and 'meal_plan_recipe_batches' in batch._prefetched_objects_cache
-        ):
-            mprbs = batch._prefetched_objects_cache['meal_plan_recipe_batches']
-            meal_plan_ids = [mprb.meal_plan_id for mprb in mprbs if mprb.meal_plan_id]
-            # Récupérer les meal plans depuis le cache si disponible
-            if meal_plan_ids:
-                from .models import MealPlan
-
-                meal_plans = MealPlan.objects.filter(id__in=meal_plan_ids).only(
-                    'id', 'date', 'meal_time', 'custom_label'
-                )
-                grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
-                meals = [
-                    {
-                        'id': mp.id,
-                        'date': mp.date.isoformat(),
-                        'meal_time': mp.meal_time,
-                        **meal_plan_slot_api_fields(mp),
-                    }
-                    for mp in meal_plans
-                ]
+        # Repas du batch : préchargés par le feed (`_feed_meal_links`, 0 requête), sinon 1 requête.
+        links = getattr(batch, '_feed_meal_links', None)
+        if links is not None:
+            # meal_plan_ids : ordre des liens (order, created_at) ; meals : ordre de MealPlan (tri SQL du préchargement).
+            ordered = sorted(links, key=lambda link: (link.order, link.created_at))
+            meal_plan_ids = [link.meal_plan_id for link in ordered if link.meal_plan_id]
+            meal_plans = [link.meal_plan for link in links if link.meal_plan_id]
         else:
-            # Fallback : faire une requête si les données ne sont pas préchargées
             from .models import MealPlan, MealPlanRecipeBatch
 
-            meal_plan_ids = list(
-                MealPlanRecipeBatch.objects.filter(recipe_batch=batch).values_list('meal_plan_id', flat=True)
-            )
-            if meal_plan_ids:
-                meal_plans = MealPlan.objects.filter(id__in=meal_plan_ids).only(
-                    'id', 'date', 'meal_time', 'custom_label'
+            if (
+                hasattr(batch, '_prefetched_objects_cache')
+                and 'meal_plan_recipe_batches' in batch._prefetched_objects_cache
+            ):
+                mprbs = batch._prefetched_objects_cache['meal_plan_recipe_batches']
+                meal_plan_ids = [mprb.meal_plan_id for mprb in mprbs if mprb.meal_plan_id]
+            else:
+                meal_plan_ids = list(
+                    MealPlanRecipeBatch.objects.filter(recipe_batch=batch).values_list('meal_plan_id', flat=True)
                 )
-                grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
-                meals = [
-                    {
-                        'id': mp.id,
-                        'date': mp.date.isoformat(),
-                        'meal_time': mp.meal_time,
-                        **meal_plan_slot_api_fields(mp),
-                    }
-                    for mp in meal_plans
-                ]
+            meal_plans = (
+                list(MealPlan.objects.filter(id__in=meal_plan_ids).only('id', 'date', 'meal_time', 'custom_label'))
+                if meal_plan_ids
+                else []
+            )
+        grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
+        meals = [
+            {
+                'id': mp.id,
+                'date': mp.date.isoformat(),
+                'meal_time': mp.meal_time,
+                **meal_plan_slot_api_fields(mp),
+            }
+            for mp in meal_plans
+        ]
 
         return {
             'id': batch.id,
