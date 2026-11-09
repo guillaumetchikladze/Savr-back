@@ -284,6 +284,23 @@ def remove_entry(user, entry_id) -> None:
 
 
 @transaction.atomic
+def sever_household(user_a, user_b) -> int:
+    """
+    Blocage : supprime le lien de foyer entre deux comptes (dans les deux sens, en attente ou accepté).
+    Les noms partagés par ce lien (« Jules » ajouté par l'autre) cessent d'office de s'appliquer : le partage
+    découle du lien. Suppression ligne à ligne → signaux `stats` (stats des deux comptes, ardoises).
+    """
+    rows = list(
+        HouseholdMember.objects.filter(
+            Q(owner_id=user_a.id, user_id=user_b.id) | Q(owner_id=user_b.id, user_id=user_a.id)
+        )
+    )
+    for row in rows:
+        row.delete()
+    return len(rows)
+
+
+@transaction.atomic
 def update_named_member(user, entry_id, *, name=None, is_child=None) -> HouseholdMember:
     row = HouseholdMember.objects.filter(id=entry_id, owner=user, user__isnull=True).first()
     if not row:

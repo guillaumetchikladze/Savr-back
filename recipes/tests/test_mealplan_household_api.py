@@ -149,3 +149,24 @@ def test_basket_items_take_week_composition_and_shopping_follows(api, user, make
     assert resp.status_code == 201, resp.data
     item = ShoppingListItem.objects.get(shopping_list_id=resp.data['shopping_list']['id'])
     assert sum(Decimal(str(q.quantity)) for q in item.quantities.all()) == Decimal('1.5')
+
+
+def test_blocking_removes_household_link_and_shared_names(
+    api, user, pauline, make_user, follow, make_meal_plan, household
+):
+    from accounts.services.household_service import household_for
+
+    HouseholdMember.objects.create(owner=pauline, name='Léo', is_child=True)  # partagé via le lien
+    tom = make_user('tom')
+    follow(tom, pauline)
+    HouseholdMember.objects.create(owner=tom, user=pauline, status='pending')  # demande en attente, autre sens
+    assert {e.name for e in household_for(user.id)} == {'Pauline', 'Jules', 'Léo'}
+
+    assert api.as_user(pauline).post(f'/api/auth/users/{user.id}/block/').status_code == 201
+    assert api.as_user(pauline).post(f'/api/auth/users/{tom.id}/block/').status_code == 201
+
+    assert not HouseholdMember.objects.filter(user__isnull=False).exists()
+    assert [e.name for e in household_for(user.id)] == ['Jules']  # Léo (de Pauline) ne s'applique plus
+    assert [e.name for e in household_for(pauline.id)] == ['Léo']
+    mp = make_meal_plan(user)
+    assert api.as_user(user).get(f'/api/meal-plans/{mp.id}/').data['diners']['total'] == 2  # toi + Jules

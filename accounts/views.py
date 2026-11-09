@@ -42,6 +42,7 @@ from .services.follow_service import (
     request_follow,
     unfollow_or_cancel,
 )
+from .services.household_service import sever_household
 
 User = get_user_model()
 
@@ -886,6 +887,7 @@ def block_user_view(request, user_id):
 
     block, created = UserBlock.objects.get_or_create(blocker=request.user, blocked=target)
     _sever_follow_relations(request.user, target)
+    sever_household(request.user, target)
 
     return Response(
         {
