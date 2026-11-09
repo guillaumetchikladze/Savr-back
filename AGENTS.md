@@ -219,6 +219,31 @@ Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, f
 - Copie : jamais le mot « bande » dans un texte visible (test `notifications/tests/test_notifications_copy.py`).
 - Tests : `recipes/tests/test_recipe_public_previews_api.py`.
 
+## Liste de courses hors-ligne : idempotence (`core/idempotency.py`)
+
+Le front met en file les actions faites en magasin sans réseau et les rejoue. Contrat front : section
+« Contrat front » de `.claude-work/status/*/ITEM-20261109-1300-bg03.md`.
+
+- Décorateur réutilisable `@idempotent` (`core.idempotency`, sous `@action` le cas échéant) : avec
+  `X-Idempotency-Key` (ou `Idempotency-Key`, ≤ 255 car.), une réponse **2xx** est mémorisée 48 h
+  (`core.IdempotencyRecord` : user, clé, méthode, chemin, sha256 corps + query, statut, corps JSON) et
+  rejouée telle quelle (en-tête `Idempotent-Replayed: true`) sans ré-appliquer. Même clé + autre
+  méthode / chemin / corps → **409** `idempotency_key_reused`. Exception ou 4xx/5xx : rien n'est mémorisé.
+  Doublons concurrents : insertion d'abord sur la contrainte unique (user, key), le second attend puis rejoue.
+  Purge : beat `core-purge-idempotency-records` (toutes les heures) ; une clé expirée est réutilisable.
+  Sur `update`, ne décorer que `update` (PATCH passe par `update`, sinon double réservation).
+- Appliqué à : `shopping-list-items` `check/`, `uncheck/`, création, suppression, PUT/PATCH,
+  `set_manual_quantity/`, `change_unit/` ; `shopping-lists` PUT/PATCH (nom), `archive/`, `unarchive/`.
+- Idempotent même sans clé : `check/` = « mettre à coché » (ligne déjà cochée non réécrite, le premier
+  `checked_by` reste), `uncheck/` = « mettre à décoché » ; `DELETE /shopping-list-items/{id}/` d'une ligne
+  disparue → **204** (ligne existante d'une liste dont on n'est pas membre → 404) ; création avec `client_id`
+  optionnel (≤ 64 car., unique par liste, `ShoppingListItemClientRef`) → un rejeu renvoie la ligne existante
+  (200) sans ré-additionner la quantité.
+- Archivage : `POST /shopping-lists/{id}/unarchive/` et `archive/` avec `{"is_archived": true}` (idempotents).
+  `archive/` **sans corps = bascule, DÉPRÉCIÉ** (gardé pour l'app 1.0.9). Les listes archivées ne sont
+  masquées que du `GET /shopping-lists/` (`include_archived=true`) : les actions de détail les atteignent.
+- Tests : `recipes/tests/test_shopping_offline_idempotency_api.py`.
+
 ## Agent IA v2 (app `chat`)
 
 Contrat front : `.claude-work/specs/agent-v2.md`. Modèle : `CHAT_AI_MODEL` (défaut `gemini-2.5-flash`, endpoint
