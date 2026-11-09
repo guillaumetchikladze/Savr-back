@@ -20,6 +20,7 @@ from chat.services.rate_limit import (
     release_stream_lock,
 )
 from chat.services.recipe_job_notify import build_recipe_job_ready_system_content
+from chat.services.session_context import build_session_context_prompt
 from chat.services.stream_adapter import BlockStreamAdapter, build_agent_history
 from chat.tasks import generate_conversation_title
 from core.ws_auth import get_user_from_token
@@ -267,7 +268,10 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         history = await database_sync_to_async(build_agent_history)(history_msgs, user)
         close_old_connections()
 
-        agent = create_planning_agent(user)
+        # Contexte du tour (dates + profil culinaire) : requêtes DB → thread sync, une fois par tour.
+        session_context = await database_sync_to_async(build_session_context_prompt)(user)
+        close_old_connections()
+        agent = create_planning_agent(user, session_context=session_context)
         context = AgentContext(user=user, conversation_id=conv.id)
         adapter = BlockStreamAdapter(turn_id=turn_id)
 

@@ -255,6 +255,11 @@ AUTH_USER_MODEL = 'accounts.User'
 # Paywall / entitlements — when True, AI features require plan=premium
 AI_PAYWALL_ENABLED = config('AI_PAYWALL_ENABLED', default=False, cast=bool)
 
+# Modèle du chat agent (endpoint OpenAI-compatible Gemini). Dédié : `AI_MODEL` pilote le pipeline
+# recettes (formalisation, génération) et peut pointer vers un modèle dont le tool calling multi-tour
+# n'est pas compatible avec le bridge Agents SDK (ex. Gemini 3 : thought signatures obligatoires).
+CHAT_AI_MODEL = config('CHAT_AI_MODEL', default='gemini-2.5-flash')
+
 # Billing architecture:
 # - contact_email : mailto support (défaut — safe App Store / en attendant IAP ou web)
 # - web_handoff   : token app → tchikook.fr (Stancer plus tard)

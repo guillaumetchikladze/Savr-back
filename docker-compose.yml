@@ -92,6 +92,7 @@ services:
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
+      - CHAT_AI_MODEL=${CHAT_AI_MODEL:-gemini-2.5-flash}
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-http://embedding:8001}
       - EMBEDDING_API_SECRET=${EMBEDDING_API_SECRET:-}
     depends_on:
@@ -142,6 +143,7 @@ services:
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
+      - CHAT_AI_MODEL=${CHAT_AI_MODEL:-gemini-2.5-flash}
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-http://embedding:8001}
       - EMBEDDING_API_SECRET=${EMBEDDING_API_SECRET:-}
       - MS_GRAPH_TENANT_ID=${MS_GRAPH_TENANT_ID:-}

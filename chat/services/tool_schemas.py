@@ -116,3 +116,79 @@ class AddShoppingListItemResult(BaseModel):
     unit: str = 'piece'
     created: bool = True
     message: str = ''
+
+
+# ---------------------------------------------------------------------------
+# Agent v2 : panier « Cette semaine », « J'ai cuisiné », courses depuis le panier
+# ---------------------------------------------------------------------------
+class UndoHint(BaseModel):
+    """Annulation côté app (carte résultat) : appel REST à rejouer tel quel."""
+
+    method: str
+    path: str
+    label: str = 'Annuler'
+
+
+class BasketAddition(BaseModel):
+    basket_item_id: int
+    display_title: str
+    recipe_id: int | None = None
+    is_free_text: bool = Field(False, description='Plat libre (sans fiche recette).')
+    week_start: str
+    status: str = Field('todo', description='todo (sans date) ou planned (daté)')
+    date: str | None = None
+    meal_time: str | None = None
+    meal_plan_id: int | None = None
+    undo: UndoHint | None = None
+
+
+class SkippedDish(BaseModel):
+    recipe_id: int | None = None
+    label: str = ''
+    reason: str = Field(description='allergy, diet, dislike, recipe_not_found, invalid')
+    detail: str = ''
+
+
+class PlanWeekResult(BaseModel):
+    card_type: str = 'basket_additions'
+    week_start: str
+    added: list[BasketAddition] = Field(default_factory=list)
+    skipped: list[SkippedDish] = Field(default_factory=list)
+    message: str = ''
+
+
+class LogCookedResult(BaseModel):
+    card_type: str = 'cooked_log'
+    post_id: int
+    meal_plan_id: int | None = None
+    created: bool = True
+    is_published: bool = False
+    display_title: str = ''
+    date: str
+    meal_time: str = ''
+    basket_item_id: int | None = None
+    cuisine: dict[str, Any] | None = None
+    highlights: list[dict[str, Any]] = Field(default_factory=list, description="Puces de L'ardoise (≤ 3)")
+    new_badges: list[dict[str, Any]] = Field(default_factory=list)
+    undo: UndoHint | None = None
+    message: str = ''
+
+
+class BasketShoppingResult(BaseModel):
+    card_type: str = 'basket_shopping_list'
+    shopping_list_id: int
+    shopping_list_name: str = ''
+    created_list: bool = False
+    added_basket_item_ids: list[int] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    message: str = ''
+
+
+class BasketRemovalResult(BaseModel):
+    removed_basket_item_ids: list[int] = Field(default_factory=list)
+    message: str = ''
+
+
+class UndoCookedResult(BaseModel):
+    post_id: int
+    message: str = ''

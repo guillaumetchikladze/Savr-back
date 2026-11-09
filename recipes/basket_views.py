@@ -254,25 +254,7 @@ class BasketViewSet(viewsets.ViewSet):
     def shopping_list(self, request):
         data = request.data
         user = request.user
-        item_ids = data.get('item_ids')
-        if item_ids is not None:
-            if not isinstance(item_ids, list) or not item_ids:
-                raise BasketError('item_ids must be a non-empty list')
-            try:
-                ids = [int(i) for i in item_ids]
-            except (TypeError, ValueError) as exc:
-                raise BasketError('item_ids must contain integers') from exc
-            items = list(basket.basket_queryset(user).filter(id__in=ids).order_by('week_start', 'position', 'id'))
-            if len(items) != len(set(ids)):
-                raise BasketError('Basket item not found', 404, 'basket_item_not_found')
-        else:
-            week = basket.parse_week(data.get('week'), user)
-            week_now = basket.current_week_start(user)
-            items = [
-                i
-                for i in basket.week_items(user, week)
-                if basket.item_status(i, week_now) in basket.OPEN_STATUSES and i.recipe_id
-            ]
+        items = basket.items_for_shopping(user, item_ids=data.get('item_ids'), week=data.get('week'))
         result = basket.add_to_shopping_list(
             user, items, shopping_list_id=data.get('shopping_list_id'), name=data.get('name')
         )

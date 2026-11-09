@@ -486,6 +486,30 @@ def conflict_reasons_by_recipe_id(recipe_ids, user, viewer=None):
     return {rid: d['reasons'] for rid, d in conflict_details_by_recipe_id(recipe_ids, user, viewer).items()}
 
 
+def text_conflict_hits(text, user, viewer=None, kinds=PREFERENCE_KINDS):
+    """
+    Conflits d'un texte libre (nom de plat, idée) avec les préférences de ``user`` — même matching
+    en mots entiers et mêmes exceptions que pour les ingrédients. Sert aux plats libres (sans
+    recette) proposés par l'agent : « Curry à la coriandre » pour qui n'aime pas la coriandre.
+
+    Retour : ``[{'reason', 'label', 'keyword'}]`` (au plus un par raison, ordre UX).
+    """
+    text = (text or '').strip()
+    rules = _preference_rules(user, kinds=kinds)
+    if not text or not rules:
+        return []
+    exceptions = _load_exceptions(user, viewer or user)
+    hits = {}
+    for kind, label, keywords in rules:
+        if kind in hits:
+            continue
+        for kw in keywords:
+            if name_matches(text, kw) and not _is_excepted(exceptions, kind, label, kw, None, text):
+                hits[kind] = {'reason': kind, 'label': label, 'keyword': kw}
+                break
+    return [hits[k] for k in sorted(hits, key=KIND_ORDER.get)]
+
+
 def strict_excluded_recipe_ids_for_user(user):
     """
     Mode strict (suggestions) : recettes exclues pour allergies + régimes, jamais les goûts.

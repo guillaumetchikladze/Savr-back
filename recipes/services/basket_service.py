@@ -615,6 +615,27 @@ class ShoppingResult:
     skipped: list[dict] = field(default_factory=list)
 
 
+def items_for_shopping(user: AbstractBaseUser, *, item_ids=None, week=None) -> list[BasketItem]:
+    """
+    Envies à mettre dans la liste : `item_ids` explicites (toutes doivent exister), sinon les envies
+    ouvertes avec recette de la semaine `week` (défaut : courante).
+    """
+    if item_ids is not None:
+        if not isinstance(item_ids, list) or not item_ids:
+            raise BasketError('item_ids must be a non-empty list')
+        try:
+            ids = [int(i) for i in item_ids]
+        except (TypeError, ValueError) as exc:
+            raise BasketError('item_ids must contain integers') from exc
+        items = list(basket_queryset(user).filter(id__in=ids).order_by('week_start', 'position', 'id'))
+        if len(items) != len(set(ids)):
+            raise BasketError('Basket item not found', 404, 'basket_item_not_found')
+        return items
+    target_week = parse_week(week, user)
+    week_now = current_week_start(user)
+    return [i for i in week_items(user, target_week) if item_status(i, week_now) in OPEN_STATUSES and i.recipe_id]
+
+
 def add_to_shopping_list(
     user: AbstractBaseUser,
     items: list[BasketItem],

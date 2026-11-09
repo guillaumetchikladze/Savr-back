@@ -4,16 +4,22 @@ from agents import RunContextWrapper, function_tool
 from channels.db import database_sync_to_async
 from django.db import close_old_connections
 
+from chat.services import kitchen_tools
 from chat.services.agent_context import AgentContext
 from chat.services.tool_schemas import (
     AddRecipeResult,
     AddShoppingListItemResult,
+    BasketRemovalResult,
+    BasketShoppingResult,
     CreateMealPlanSlotResult,
     GetMealPlansResult,
     GetShoppingListItemsResult,
     ImportJobStarted,
+    LogCookedResult,
     MutationProposal,
+    PlanWeekResult,
     SearchRecipesResult,
+    UndoCookedResult,
 )
 from recipes.services.invitation_service import (
     _normalize_meal_plan_ids,
@@ -219,6 +225,125 @@ async def generate_recipe_from_idea(
     """Génère une recette à partir d'une idée ou d'un concept (asynchrone)."""
     user = ctx.context.user
     return await _run_sync(_start_generate_from_idea, user, idea, servings, ctx.context.conversation_id)
+
+
+@function_tool(strict_mode=False)
+async def plan_week(
+    ctx: RunContextWrapper[AgentContext],
+    recipe_ids: list[int] | None = None,
+    labels: list[str] | None = None,
+    week: str | None = None,
+    date: str | None = None,
+    meal_time: str | None = None,
+    servings: int | None = None,
+    allow_conflicts: bool = False,
+) -> PlanWeekResult:
+    """Ajoute des plats au panier « Cette semaine » (sans date par défaut ; exécution immédiate, annulable).
+
+    Args:
+        recipe_ids: recettes existantes (ids issus de search_recipes ou d'une génération terminée).
+        labels: plats libres sans fiche recette (ex. « Soupe de potiron »).
+        week: n'importe quel jour (YYYY-MM-DD) de la semaine visée ; défaut : semaine en cours.
+        date: YYYY-MM-DD seulement si l'utilisateur donne un jour précis : les plats sont alors datés.
+        meal_time: avec date : breakfast, lunch ou dinner (défaut dinner).
+        servings: portions voulues (défaut : convives du foyer).
+        allow_conflicts: true seulement si l'utilisateur insiste pour un plat en conflit avec ses préférences.
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        kitchen_tools.plan_week_for_user,
+        user,
+        recipe_ids=recipe_ids,
+        labels=labels,
+        week=week,
+        date=date,
+        meal_time=meal_time,
+        servings=servings,
+        allow_conflicts=allow_conflicts,
+    )
+
+
+@function_tool(strict_mode=False)
+async def remove_from_basket(
+    ctx: RunContextWrapper[AgentContext],
+    basket_item_ids: list[int],
+) -> BasketRemovalResult:
+    """Retire des envies du panier de la semaine (annule un plan_week ; ids basket_item_id)."""
+    user = ctx.context.user
+    return await _run_sync(kitchen_tools.remove_basket_items, user, basket_item_ids)
+
+
+@function_tool(strict_mode=False)
+async def log_cooked(
+    ctx: RunContextWrapper[AgentContext],
+    recipe_id: int | None = None,
+    label: str | None = None,
+    basket_item_id: int | None = None,
+    date: str | None = None,
+    meal_time: str | None = None,
+    comment: str | None = None,
+    publish: bool | None = None,
+) -> LogCookedResult:
+    """Note « J'ai cuisiné X » (exécution immédiate, annulable) et renvoie l'ardoise et les nouveaux badges.
+
+    Args:
+        recipe_id: recette cuisinée si connue (sinon label).
+        label: nom du plat libre (« pâtes au pesto »).
+        basket_item_id: envie du panier cuisinée, si elle y figure (#id du contexte).
+        date: YYYY-MM-DD ou « hier » ; défaut aujourd'hui. Jamais dans le futur.
+        meal_time: breakfast, lunch (« ce midi ») ou dinner (« hier soir ») ; défaut selon l'heure.
+        comment: commentaire de l'utilisateur, seulement s'il en donne un.
+        publish: laisser vide (réglage de l'utilisateur) sauf demande explicite de publier ou de garder privé.
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        kitchen_tools.log_cooked_for_user,
+        user,
+        recipe_id=recipe_id,
+        label=label,
+        basket_item_id=basket_item_id,
+        date=date,
+        meal_time=meal_time,
+        comment=comment,
+        publish=publish,
+    )
+
+
+@function_tool(strict_mode=False)
+async def undo_log_cooked(
+    ctx: RunContextWrapper[AgentContext],
+    post_id: int | None = None,
+) -> UndoCookedResult:
+    """Annule un « J'ai cuisiné » noté par erreur (post_id de log_cooked ou du profil ; vide = le dernier log)."""
+    user = ctx.context.user
+    return await _run_sync(kitchen_tools.undo_cooked_for_user, user, post_id)
+
+
+@function_tool(strict_mode=False)
+async def add_to_shopping_list_from_basket(
+    ctx: RunContextWrapper[AgentContext],
+    basket_item_ids: list[int] | None = None,
+    week: str | None = None,
+    shopping_list_id: int | None = None,
+    name: str | None = None,
+) -> BasketShoppingResult:
+    """Met les ingrédients des envies du panier (avec recette) dans une liste de courses (exécution immédiate).
+
+    Args:
+        basket_item_ids: envies précises ; défaut : toutes les envies ouvertes avec recette de la semaine.
+        week: n'importe quel jour (YYYY-MM-DD) de la semaine ; défaut : semaine en cours.
+        shopping_list_id: liste existante ; défaut : nouvelle liste « Courses de la semaine ».
+        name: nom de la nouvelle liste, si l'utilisateur en donne un.
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        kitchen_tools.basket_to_shopping_list,
+        user,
+        basket_item_ids=basket_item_ids,
+        week=week,
+        shopping_list_id=shopping_list_id,
+        name=name,
+    )
 
 
 def _chat_payload(conversation_id: int | None, base: dict) -> dict:
