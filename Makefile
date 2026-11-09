@@ -3,7 +3,7 @@
 #   make test-db            # Postgres+pgvector éphémère (docker, port 55432)
 #   make test               # suite rapide (exclut @slow) ; N=auto pour paralléliser (xdist)
 #   make test-all           # tout, y compris @slow
-#   make test-domain d=shopping   # un domaine : auth mealplan posts shopping dietary chat imports recipes appversion
+#   make test-domain d=shopping   # un domaine : auth mealplan posts shopping dietary chat imports recipes appversion stats
 #   make test-changed       # tests liés aux fichiers modifiés (git diff vs BASE, défaut origin/main)
 #   make lint / make fmt
 #
@@ -37,7 +37,7 @@ test-all:
 	$(PYTEST) -q -m "" $(ARGS)
 
 test-domain:
-	@test -n "$(d)" || (echo "usage: make test-domain d=<auth|mealplan|posts|shopping|dietary|chat|imports|recipes|appversion>" && exit 2)
+	@test -n "$(d)" || (echo "usage: make test-domain d=<auth|mealplan|posts|shopping|dietary|chat|imports|recipes|appversion|stats>" && exit 2)
 	$(PYTEST) -q -m "$(d) and not slow" $(ARGS)
 
 # Tests liés aux fichiers modifiés vs $(BASE) + working tree (best effort, cf. scripts/changed_tests.sh).

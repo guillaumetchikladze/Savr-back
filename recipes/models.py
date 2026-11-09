@@ -281,6 +281,13 @@ class Recipe(models.Model):
         help_text='Embedding sémantique pour la recherche (nomic 512d)',
     )
     search_context_tags = models.JSONField(null=True, blank=True)
+    cuisine = models.CharField(
+        max_length=32,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Cuisine normalisée (liste fermée stats.cuisines.CUISINES) ; null = pas encore normalisée.',
+    )
     search_index_text = models.TextField(blank=True, default='')
     search_index_hash = models.CharField(max_length=64, blank=True, default='')
     search_indexed_at = models.DateTimeField(null=True, blank=True)

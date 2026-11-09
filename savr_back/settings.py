@@ -110,6 +110,15 @@ SEARCH_TRIGRAM_MIN_SCORE = config('SEARCH_TRIGRAM_MIN_SCORE', default=0.08, cast
 SEARCH_HYBRID_MIN_SCORE = config('SEARCH_HYBRID_MIN_SCORE', default=0.18, cast=float)
 SEARCH_CONTEXT_GEMINI_ENABLED = config('SEARCH_CONTEXT_GEMINI_ENABLED', default=True, cast=bool)
 
+# Stats / badges / Récap (app `stats`)
+# Récap annuel visible à partir du MM-DD de l'année demandée (staff : toujours ; RECAP_FORCE_AVAILABLE : tous).
+RECAP_AVAILABLE_FROM = config('RECAP_AVAILABLE_FROM', default='12-01')
+RECAP_FORCE_AVAILABLE = config('RECAP_FORCE_AVAILABLE', default=False, cast=bool)
+# Push « Nouveau badge : Aubergine 🍆 » (désactivé par défaut).
+BADGE_PUSH_ENABLED = config('BADGE_PUSH_ENABLED', default=False, cast=bool)
+# Classification LLM différée des nouveaux ingrédients (Celery, par lots débouncés).
+STATS_AUTO_CLASSIFY_INGREDIENTS = config('STATS_AUTO_CLASSIFY_INGREDIENTS', default=True, cast=bool)
+
 
 # Application definition
 
@@ -129,6 +138,7 @@ INSTALLED_APPS = [
     'emails',
     'chat',
     'appversion',
+    'stats',
 ]
 
 MIDDLEWARE = [

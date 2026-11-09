@@ -121,7 +121,16 @@ def index_recipe(recipe_id: int, *, force: bool = False) -> bool:
         return False
 
     now = timezone.now()
+    extra = {}
+    if ctx:
+        from stats.cuisines import normalize_cuisine_styles
+
+        # Cuisine normalisée (synonymes, sans réseau) ; les cas ambigus passent par `normalize_cuisines`.
+        cuisine = normalize_cuisine_styles(ctx.cuisine_style)
+        if cuisine:
+            extra['cuisine'] = cuisine
     Recipe.objects.filter(pk=recipe_id).update(
+        **extra,
         search_context_tags=tags_payload,
         search_index_text=index_text,
         search_index_hash=content_hash,

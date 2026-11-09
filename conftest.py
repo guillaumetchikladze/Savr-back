@@ -41,6 +41,7 @@ _DOMAIN_BY_FILE = {
     'test_recipe': 'recipes',
     'test_collections': 'recipes',
     'test_appversion': 'appversion',
+    'test_stats': 'stats',
 }
 
 

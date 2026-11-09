@@ -45,3 +45,13 @@ AWS_USE_PATH_STYLE_ENDPOINT=true
 # APP_STORE_URL_ANDROID=https://play.google.com/store/apps/details?id=com.tchikook.app
 # Blocage HTTP 426 sur toute l'API si X-App-Version < version minimale (défaut : False)
 # APP_VERSION_ENFORCEMENT=False
+
+# --- Stats / badges / Récap (app `stats`) ---
+# Récap annuel visible à partir du MM-DD de l'année (staff : toujours)
+# RECAP_AVAILABLE_FROM=12-01
+# Forcer le Récap pour tous (recette / tests)
+# RECAP_FORCE_AVAILABLE=False
+# Push « Nouveau badge : Aubergine 🍆 »
+# BADGE_PUSH_ENABLED=False
+# Classification LLM différée des nouveaux ingrédients (Celery)
+# STATS_AUTO_CLASSIFY_INGREDIENTS=True
