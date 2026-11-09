@@ -42,6 +42,7 @@ _DOMAIN_BY_FILE = {
     'test_collections': 'recipes',
     'test_appversion': 'appversion',
     'test_stats': 'stats',
+    'test_notifications': 'notifications',
 }
 
 

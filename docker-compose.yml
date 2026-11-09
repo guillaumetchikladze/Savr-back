@@ -120,7 +120,8 @@ services:
       dockerfile: docker/Dockerfile.celery
     container_name: savr-celery-worker
     restart: unless-stopped
-    command: celery -A savr_back worker -l info -Q savr_default,emails_urgent,emails_high,emails_normal,emails_low
+    # -B : beat embarqué (un seul conteneur worker) pour CELERY_BEAT_SCHEDULE (notifications de rétention).
+    command: celery -A savr_back worker -B -s /tmp/celerybeat-schedule -l info -Q savr_default,emails_urgent,emails_high,emails_normal,emails_low
     environment:
       - DB_NAME=${DB_NAME:-savr_db}
       - DB_USER=${DB_USER:-postgres}

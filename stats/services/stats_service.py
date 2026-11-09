@@ -257,6 +257,19 @@ def _dish_days(meals: list[Meal]) -> list[Meal]:
     return kept
 
 
+def week_cooking_summary(user, start: date, end: date) -> dict:
+    """
+    Récap hebdo (push du dimanche) : plats cuisinés sur [start, end] (plafond doux par jour) et
+    plats « nouveaux » (jamais cuisinés avant `start` ; un plat sans recette ni libellé ne compte pas).
+    """
+    meals = _cap_per_day(_load_meals(user, start, end))
+    if not meals:
+        return {'cooked': 0, 'new_dishes': 0}
+    week_keys = {m.dish_key for m in meals if m.dish_key[0] != 'm'}
+    before = {m.dish_key for m in _load_meals(user, None, start - timedelta(days=1))} if week_keys else set()
+    return {'cooked': len(meals), 'new_dishes': len(week_keys - before)}
+
+
 def _cooking_minutes(user, meals: list[Meal]) -> int:
     batch_ids = {bid for m in meals if not any(p['cooking_time_minutes'] for p in m.posts) for bid in m.batch_ids}
     progress = {}

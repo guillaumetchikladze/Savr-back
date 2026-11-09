@@ -180,7 +180,7 @@ class Follow(models.Model):
 
 
 class Notification(models.Model):
-    """Notifications pour les utilisateurs"""
+    """Notification in-app. Textes et types : registre unique `notifications/registry.py` (via `notify()`)."""
 
     NOTIFICATION_TYPES = [
         ('follow', 'Nouvel ami'),
@@ -196,6 +196,8 @@ class Notification(models.Model):
         ('post_comment', 'Commentaire sur votre post'),
         ('post_comment_mention', 'Vous êtes mentionné dans un commentaire'),
         ('post_repost', 'Repost de votre post'),
+        ('shopping_list_invitation', 'Liste de courses partagée'),
+        ('a_mon_tour', 'À mon tour'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', verbose_name='Utilisateur')

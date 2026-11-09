@@ -42,7 +42,7 @@ ignore = [
 "recipes/services/ai_service.py" = ["W291"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["accounts", "appversion", "chat", "core", "emails", "recipes", "savr_back", "stats"]
+known-first-party = ["accounts", "appversion", "chat", "core", "emails", "notifications", "recipes", "savr_back", "stats"]
 
 # ---------------------------------------------------------------------------
 # Pytest — voir Makefile (`make test`, `make test-all`, `make test-domain d=...`)
@@ -50,7 +50,7 @@ known-first-party = ["accounts", "appversion", "chat", "core", "emails", "recipe
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "savr_back.settings_test"
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
-testpaths = ["accounts", "appversion", "chat", "recipes", "emails", "core", "stats"]
+testpaths = ["accounts", "appversion", "chat", "recipes", "emails", "core", "stats", "notifications"]
 # Les commandes de gestion `test_*.py` ne sont pas des tests.
 norecursedirs = [".git", ".venv", "venv", "management", "migrations", "embedding", "node_modules"]
 addopts = [
@@ -71,6 +71,7 @@ markers = [
     "recipes: recettes, collections, recherche",
     "appversion: contrôle de version de l'app (version-check, blocage 426)",
     "stats: stats cuisiné, badges, Récap, classification ingrédients/cuisines",
+    "notifications: registre, plafond, heures calmes, digest, préférences, suivi d'ouverture",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

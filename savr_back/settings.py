@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import boto3
+from celery.schedules import crontab
 from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -114,8 +115,19 @@ SEARCH_CONTEXT_GEMINI_ENABLED = config('SEARCH_CONTEXT_GEMINI_ENABLED', default=
 # Récap annuel visible à partir du MM-DD de l'année demandée (staff : toujours ; RECAP_FORCE_AVAILABLE : tous).
 RECAP_AVAILABLE_FROM = config('RECAP_AVAILABLE_FROM', default='12-01')
 RECAP_FORCE_AVAILABLE = config('RECAP_FORCE_AVAILABLE', default=False, cast=bool)
-# Push « Nouveau badge : Aubergine 🍆 » (désactivé par défaut).
-BADGE_PUSH_ENABLED = config('BADGE_PUSH_ENABLED', default=False, cast=bool)
+# Push « Nouveau badge : Aubergine 🍆 » (catégorie `rewards`, plafond quotidien). Interrupteur global.
+BADGE_PUSH_ENABLED = config('BADGE_PUSH_ENABLED', default=True, cast=bool)
+
+# Notifications (app `notifications`, registre unique : notifications/registry.py)
+# Plafond de push non transactionnelles par utilisateur et par jour (local) ; heures calmes par défaut 22:00–08:00.
+NOTIFICATIONS_DAILY_CAP = config('NOTIFICATIONS_DAILY_CAP', default=2, cast=int)
+# Heure locale (fuseau de l'utilisateur, défaut TIME_ZONE) du digest « Du nouveau chez tes amis ».
+NOTIFICATIONS_DIGEST_HOUR = config('NOTIFICATIONS_DIGEST_HOUR', default=18, cast=int)
+# Récap hebdo « Ta semaine à table » : jour (0 = lundi, 6 = dimanche) et heure locale.
+NOTIFICATIONS_WEEKLY_RECAP_WEEKDAY = config('NOTIFICATIONS_WEEKLY_RECAP_WEEKDAY', default=6, cast=int)
+NOTIFICATIONS_WEEKLY_RECAP_HOUR = config('NOTIFICATIONS_WEEKLY_RECAP_HOUR', default=19, cast=int)
+# Schéma des liens profonds envoyés dans `data.url` (tchikook://post/12).
+NOTIFICATIONS_DEEP_LINK_SCHEME = config('NOTIFICATIONS_DEEP_LINK_SCHEME', default='tchikook')
 # Classification LLM différée des nouveaux ingrédients (Celery, par lots débouncés).
 STATS_AUTO_CLASSIFY_INGREDIENTS = config('STATS_AUTO_CLASSIFY_INGREDIENTS', default=True, cast=bool)
 
@@ -139,6 +151,7 @@ INSTALLED_APPS = [
     'chat',
     'appversion',
     'stats',
+    'notifications',
 ]
 
 MIDDLEWARE = [
@@ -355,6 +368,18 @@ CELERY_RESULT_SERIALIZER = 'json'
 _default_celery_pool = 'solo' if sys.platform == 'darwin' else 'prefork'
 CELERY_WORKER_POOL = config('CELERY_WORKER_POOL', default=_default_celery_pool)
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Celery beat (process dédié : `celery -A savr_back beat -l info`). Les tâches filtrent elles-mêmes
+# l'heure locale de chaque utilisateur et sont idempotentes (dedupe_key) : un passage par heure suffit.
+CELERY_BEAT_SCHEDULE = {
+    'notifications-friends-digest': {
+        'task': 'notifications.tasks.send_friends_digests_task',
+        'schedule': crontab(minute=0),
+    },
+    'notifications-weekly-recap': {
+        'task': 'notifications.tasks.send_weekly_recaps_task',
+        'schedule': crontab(minute=5),
+    },
+}
 
 # Email queues (priority routing)
 # Rappel push « photo à table » après complete_cooking (secondes). Ex. 10800 = 3 h ; 90 pour tests.
