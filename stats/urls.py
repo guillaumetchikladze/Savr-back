@@ -1,0 +1,8 @@
+from django.urls import path
+
+from .views import stats_me_view, stats_user_view
+
+urlpatterns = [
+    path('stats/me/', stats_me_view, name='stats_me'),
+    path('stats/users/<int:user_id>/', stats_user_view, name='stats_user'),
+]
