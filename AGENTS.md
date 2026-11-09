@@ -299,6 +299,39 @@ Repas à ≥ 2 recettes ou batch cooking du panier : dans quel ordre faire les �
 - Tests : `recipes/tests/test_mealplan_battle_plan_api.py` (mock LLM : `battle_plan_polish._call_llm`),
   `chat/tests/test_chat_agent_v2.py`.
 
+## Sous-recettes « simplifié / compliqué » (`recipes/services/sub_recipe_service.py`)
+
+Une ligne d'ingrédient (« pâte brisée » d'une quiche) peut pointer vers une recette : on l'achète (comportement
+historique) ou on la fait maison. La bibliothèque devient un graphe. Contrat front : `.claude-work/specs/sub-recipes.md`.
+
+- Modèle (migration additive 0082) : `RecipeIngredient.sub_recipe` (FK nullable, `SET_NULL`), `default_mode`
+  (`buy` | `make`, défaut `buy`), `sub_recipe_ratio` (fournées de la sous-recette à ses portions de base pour la
+  parente à ses portions de base ; 1 par défaut, 0.5 = moitié). Choix par préparation : `RecipeBatch.sub_recipe_modes`
+  `{"<recipe_ingredient_id>": "make" | "buy"}` (lignes imbriquées comprises), absent → `default_mode`.
+- Garde-fous (`validate_link`) : pas de A→A ni de boucle A→B→A (400 `cycle`), au plus `MAX_DEPTH` = 3 niveaux en
+  comptant ceux au-dessus de la parente (400 `too_deep`). Expansion toujours bornée (chemin + profondeur).
+- API : `PUT|PATCH|DELETE /api/recipe-ingredients/{id}/sub-recipe/` (auteur de la recette ; recette invisible → 404,
+  d'un autre → 403 ; sous-recette publique ou à soi, sinon 404) ; `GET …/sub-recipe-suggestions/` (titres proches :
+  trigrammes + titre normalisé, sans LLM, hors boucles) ; `GET|POST|PUT /api/recipe-batches/{id}/sub-recipe-modes/`
+  (batch à soi / de ses repas / de ses envies ; PUT remplace) ; `GET|POST /api/basket/{id}/sub-recipe-modes/` (batch
+  créé à la demande). Le panier expose `sub_recipe_modes`, `RecipeBatchLightSerializer` aussi.
+- Courses : `add_batch_ingredients_to_list` passe par `expand_ingredients` (« faire maison » → ingrédients de la
+  sous-recette × ratio du repas × `sub_recipe_ratio`, récursif, fusion habituelle par ingrédient + groupe d'unités).
+  Changer un choix recalcule le batch dans sa liste (`resync_batch_shopping`, coches gardées, plafonnées).
+- Plan de bataille : sous-recettes faites maison ajoutées avant leur parente (`with_sub_recipes`, ≤ 16 recettes) ;
+  dépendance fin → début vers l'étape de la parente qui cite la ligne (sinon sa 1re étape), respectée par
+  `_align_to_finish`. Payload additif : `recipes[].role|parent_recipe_id|line_id`, `steps[].waits_for_recipe_ids`.
+  `POST /api/battle-plan/` accepte `sub_recipe_modes` (surcharge). `has_battle_plan` inchangé (≥ 2 recettes du repas).
+  Mode cuisine (`/recipes/{id}/steps/`, `CookingProgress`) inchangé : le front passe par le plan de bataille.
+- Lecture : détail `GET /api/recipes/{id}/` → `sub_recipes` (ligne, résumé, `default_mode`, `extra_time_min`,
+  `extra_time_label` « + 25 min si tu la fais »), `total_time_if_made`, `difficulty_if_made` (tout fait maison).
+  Lignes d'ingrédients : `sub_recipe` (résumé ou null), `default_mode`, `sub_recipe_ratio`. Chat : `search_recipes`
+  renvoie `sub_recipes` (indice « tu peux l'acheter ou la faire maison »).
+- Édition (`PUT /recipes/{id}/edit/`, révision) : `replace_recipe_ingredients` garde en place (id, lien, choix) les
+  lignes liées dont l'ingrédient reste. Génération IA : ne remplit pas encore les liens (piste : après création,
+  `suggest_sub_recipes` sur chaque ligne et lien si titre identique).
+- Tests : `recipes/tests/test_recipe_sub_recipes_api.py`.
+
 ## Liens qui ouvrent l'app : aperçus publics et `share_url` (`recipes/views_public.py`)
 
 Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, fonctions Vercel) rend `/i/<code>`,
