@@ -112,3 +112,22 @@ python manage.py backfill_badges                       # badges déjà mérités
 ```
 
 Tests : `make test-domain d=stats` (LLM mocké via `stats.services.classification._call_llm`).
+
+## Notifications (app `notifications`)
+
+Registre unique : `notifications/registry.py` (un type = catégorie, modèles de titre/corps en français,
+champs `data`, lien profond, regroupement, transactionnel ou non). **Aucune chaîne de notification
+ailleurs** : passer par `notifications.services.notify(type, user, actor=…, post=…)` (in-app + push)
+ou `push(type, user, …)` (push seule). Spec et contrat front : `.claude-work/specs/notifications.md`.
+
+- Ton : tutoiement, phrases courtes, au plus un emoji, pas de « ! », jamais de culpabilisation
+  (« tu vas perdre ta série », « ça fait longtemps » : interdit).
+- Règles d'envoi : préférences par catégorie (`GET/PATCH /api/notifications/preferences/`), heures calmes
+  (22:00–08:00 locale par défaut), plafond `NOTIFICATIONS_DAILY_CAP` (défaut 2) pour les non transactionnelles,
+  idempotence via `dedupe_key`. L'in-app est toujours créée ; les réglages ne coupent que la push.
+- Suivi : chaque push = une `NotificationDelivery` (`data.notification_id`) ; `POST /api/notifications/opened/`
+  pose `opened_at`. Taux d'ouverture : `python manage.py notification_open_rates --days 30`.
+- Rétention (Celery beat, toutes les heures, `CELERY_BEAT_SCHEDULE`) : digest des posts des amis (≤ 1/jour,
+  18:00 locale) et récap du dimanche (19:00). Le worker Docker lance le beat embarqué (`-B`) ; en local :
+  `celery -A savr_back beat -l info`.
+- Tests : `make test-domain d=notifications` (mocker `notifications.services.send_expo_push_notifications`).
