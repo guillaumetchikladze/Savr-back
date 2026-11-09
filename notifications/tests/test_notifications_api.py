@@ -12,7 +12,7 @@ def test_preferences_defaults_and_patch(api, user):
     client = api.as_user(user)
     body = client.get(PREFS).json()
     keys = [c['key'] for c in body['categories']]
-    assert keys == ['social', 'friends_activity', 'weekly_recap', 'rewards', 'cooking_reminders', 'planning']
+    assert keys == ['social', 'friends_activity', 'weekly_recap', 'rewards', 'cooking_reminders', 'planning', 'tables']
     assert all(c['enabled'] for c in body['categories'])
     assert body['quiet_hours'] == {'start': '22:00', 'end': '08:00'}
     assert body['timezone'] == 'Europe/Paris' and body['daily_cap'] == 2

@@ -163,6 +163,7 @@ INSTALLED_APPS = [
     'appversion',
     'stats',
     'notifications',
+    'tables',
 ]
 
 MIDDLEWARE = [
@@ -394,6 +395,13 @@ CELERY_RESULT_SERIALIZER = 'json'
 _default_celery_pool = 'solo' if sys.platform == 'darwin' else 'prefork'
 CELERY_WORKER_POOL = config('CELERY_WORKER_POOL', default=_default_celery_pool)
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# « Les tablées » (.claude-work/specs/tables.md) : 2 à 8 membres (invitations comprises), 5 tablées max par personne.
+TABLE_MIN_MEMBERS = config('TABLE_MIN_MEMBERS', default=2, cast=int)
+TABLE_MAX_MEMBERS = config('TABLE_MAX_MEMBERS', default=8, cast=int)
+TABLES_MAX_PER_USER = config('TABLES_MAX_PER_USER', default=5, cast=int)
+# Push du dimanche des tablées (même beat que le récap hebdo, même jour).
+NOTIFICATIONS_TABLES_WEEKLY_HOUR = config('NOTIFICATIONS_TABLES_WEEKLY_HOUR', default=19, cast=int)
+
 # Celery beat (process dédié : `celery -A savr_back beat -l info`). Les tâches filtrent elles-mêmes
 # l'heure locale de chaque utilisateur et sont idempotentes (dedupe_key) : un passage par heure suffit.
 CELERY_BEAT_SCHEDULE = {

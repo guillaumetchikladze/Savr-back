@@ -28,6 +28,9 @@ SAMPLE_CONTEXT = {
     'author_count': 2,
     'cooked': 4,
     'new_dishes': 2,
+    'table': 'Les colocs',
+    'cooked_members': 3,
+    'member_count': 5,
 }
 
 

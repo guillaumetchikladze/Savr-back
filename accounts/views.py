@@ -21,6 +21,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
 from recipes.serializers import RecipeSerializer
 from savr_back.settings import build_s3_client, build_s3_url
+from tables.services import cancel_invitations_between
 
 from .blocks import are_blocked_either_way, blocked_user_ids_for, exclude_blocked_from_user_qs
 from .feed_suggestions import build_feed_user_suggestions
@@ -906,6 +907,7 @@ def block_user_view(request, user_id):
     block, created = UserBlock.objects.get_or_create(blocker=request.user, blocked=target)
     _sever_follow_relations(request.user, target)
     sever_household(request.user, target)
+    cancel_invitations_between(request.user, target)  # tablées : l'appartenance reste, contenus masqués
 
     return Response(
         {

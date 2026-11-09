@@ -48,6 +48,7 @@ CATEGORIES: dict[str, Category] = {
         Category('rewards', 'Badges', 'Quand tu débloques un badge.'),
         Category('cooking_reminders', 'Rappels cuisine', '« Tu as cuisiné… ? » après ton repas.'),
         Category('planning', 'Repas et courses partagés', 'Invitations à table et listes de courses partagées.'),
+        Category('tables', 'Tes tablées', 'Invitations et, le dimanche soir, ce que ta tablée a cuisiné.'),
         # Non réglable : minuteurs lancés par l'utilisateur, tests techniques.
         Category('essential', 'Minuteurs', 'Fin de minuteur pendant que tu cuisines.', user_configurable=False),
     )
@@ -207,6 +208,32 @@ def _render_cooked_prompt(ctx: dict) -> tuple[str, str]:
     dish = (ctx.get('dish_title') or '').strip()
     question = f'Tu as cuisiné {dish} ?' if dish else 'Tu as cuisiné ?'
     return 'À table', f'{question} Partage-le en 1 tap.'
+
+
+def _table(ctx: dict) -> str:
+    return quoted(ctx.get('table'), 'ta tablée')
+
+
+def _render_table_invitation(ctx: dict) -> tuple[str, str]:
+    name = (ctx.get('table') or '').strip()
+    where = f'la tablée {quoted(name)}' if name else 'sa tablée'
+    return 'Invitation à une tablée', f'{ctx["actor"] or "Un ami"} t’invite à {where}.'
+
+
+def _render_table_joined(ctx: dict) -> tuple[str, str]:
+    return 'Ta tablée s’agrandit', f'{ctx["actor"] or "Quelqu’un"} a rejoint {_table(ctx)}.'
+
+
+def _render_table_weekly(ctx: dict) -> tuple[str, str]:
+    """Dimanche soir, positif seulement (jamais envoyé quand personne n'a cuisiné)."""
+    cooked = max(int(ctx.get('cooked_members') or 1), 1)
+    total = max(int(ctx.get('member_count') or cooked), cooked)
+    if total >= 2 and cooked >= total:
+        body = f'Cette semaine, tout le monde a cuisiné dans {_table(ctx)}.'
+    else:
+        verb = 'a' if cooked == 1 else 'ont'
+        body = f'Cette semaine, {cooked} sur {total} {verb} cuisiné dans {_table(ctx)}.'
+    return 'Ta tablée', body
 
 
 def _render_new_badge(ctx: dict) -> tuple[str, str]:
@@ -511,6 +538,36 @@ _TYPES = (
         data_fields=('household_link_id', 'user_id'),
         url='household',
         group_key='household:{household_link_id}',
+    ),
+    # --- Les tablées (petits groupes privés) ----------------------------------------------
+    NotificationType(
+        'table_invitation',
+        'tables',
+        renderer=_render_table_invitation,
+        transactional=True,
+        quiet_hours=QUIET_SKIP,
+        inbox_type='table_invitation',
+        data_fields=('table_id', 'user_id'),
+        url='tables/{table_id}',
+        group_key='table:{table_id}',
+    ),
+    NotificationType(
+        'table_joined',
+        'tables',
+        renderer=_render_table_joined,
+        inbox_type='table_joined',
+        data_fields=('table_id', 'user_id'),
+        url='tables/{table_id}',
+        group_key='table:{table_id}',
+    ),
+    # Dimanche soir (même beat que le récap) : positif seulement, jamais à 0 ; 1 par semaine au plus.
+    NotificationType(
+        'table_weekly',
+        'tables',
+        renderer=_render_table_weekly,
+        data_fields=('table_id', 'week_start', 'cooked_members', 'member_count'),
+        url='tables/{table_id}',
+        group_key='table_weekly',
     ),
     # --- Technique ---------------------------------------------------------------------
     NotificationType(

@@ -5,6 +5,8 @@ Notifications de rétention planifiées (Celery beat, toutes les heures, idempot
   nouveau post publié par une personne suivie depuis le dernier digest envoyé, vers 18:00 locale ;
 - récap hebdo « Ta semaine à table » : le dimanche vers 19:00 locale, seulement si l'utilisateur
   a cuisiné au moins un plat ou si ses amis en ont partagé ;
+- tablées « Cette semaine, 3 sur 5 ont cuisiné dans « Les colocs » » : même beat que le récap (dimanche,
+  `NOTIFICATIONS_TABLES_WEEKLY_HOUR`), 1 par semaine au plus, jamais quand personne n'a cuisiné ;
 - jamais de message de manque ou de perte (« tu vas perdre ta série », « ça fait longtemps »).
 
 Le plafond quotidien et les heures calmes sont appliqués par `services.push()`.
@@ -176,6 +178,61 @@ def send_weekly_recaps(now: datetime | None = None) -> dict:
             status = weekly_recap_for_user(user, now=now).status
         except Exception:
             logger.exception('[notify] récap hebdo en échec user=%s', user.id)
+            status = 'error'
+        report[status] = report.get(status, 0) + 1
+    return report
+
+
+def send_weekly_recaps_and_tables(now: datetime | None = None) -> dict:
+    """Beat du dimanche : récap hebdo puis push des tablées (même tâche, même créneau horaire par défaut)."""
+    now = now or timezone.now()
+    report = {f'recap_{k}': v for k, v in send_weekly_recaps(now).items()}
+    report.update({f'tables_{k}': v for k, v in send_tables_weekly(now).items()})
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Tablées : « Cette semaine, 3 sur 5 ont cuisiné dans « Les colocs » »
+# ---------------------------------------------------------------------------
+def tables_weekly_for_user(user, *, now: datetime | None = None) -> PushResult:
+    from tables.services import best_table_week
+
+    now = now or timezone.now()
+    prefs = get_preferences(user)
+    if not category_enabled(prefs, get_type('table_weekly').category):
+        return PushResult('muted')
+    local = local_now(prefs, now)
+    week_start = local.date() - timedelta(days=local.weekday())
+    best = best_table_week(user, week_start, week_start + timedelta(days=6))
+    if best is None:
+        return PushResult('nothing_to_say')  # aucune tablée, ou personne n'a cuisiné : jamais de « 0 sur 5 »
+    data = {
+        'table_id': best['table_id'],
+        'week_start': week_start.isoformat(),
+        'cooked_members': best['cooked'],
+        'member_count': best['total'],
+    }
+    iso = week_start.isocalendar()
+    return push(
+        'table_weekly',
+        user,
+        context={**data, 'table': best['table']},
+        data=data,
+        dedupe_key=f'table_weekly:{iso.year}-W{iso.week:02d}',
+        now=now,
+    )
+
+
+def send_tables_weekly(now: datetime | None = None) -> dict:
+    now = now or timezone.now()
+    hour = int(getattr(settings, 'NOTIFICATIONS_TABLES_WEEKLY_HOUR', 19))
+    weekday = int(getattr(settings, 'NOTIFICATIONS_WEEKLY_RECAP_WEEKDAY', 6))
+    report: dict[str, int] = {}
+    for user, _prefs in _candidates(now, hour=hour, weekday=weekday):
+        try:
+            status = tables_weekly_for_user(user, now=now).status
+        except Exception:
+            logger.exception('[notify] tablées hebdo en échec user=%s', user.id)
             status = 'error'
         report[status] = report.get(status, 0) + 1
     return report

@@ -43,6 +43,7 @@ _DOMAIN_BY_FILE = {
     'test_appversion': 'appversion',
     'test_stats': 'stats',
     'test_notifications': 'notifications',
+    'test_tables': 'tables',
 }
 
 

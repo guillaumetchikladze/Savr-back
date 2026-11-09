@@ -201,6 +201,8 @@ class Notification(models.Model):
         ('a_mon_tour_cooked', 'À mon tour : plat refait'),
         ('household_request', 'Demande de foyer'),
         ('household_accepted', 'Foyer : demande acceptée'),
+        ('table_invitation', 'Invitation à une tablée'),
+        ('table_joined', 'Tablée : nouveau membre'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', verbose_name='Utilisateur')

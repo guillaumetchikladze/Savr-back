@@ -68,9 +68,10 @@ def send_friends_digests_task() -> dict:
 
 @shared_task(ignore_result=True)
 def send_weekly_recaps_task() -> dict:
-    from .retention import send_weekly_recaps
+    """Beat du dimanche : récap hebdo + push des tablées (« 3 sur 5 ont cuisiné dans « Les colocs » »)."""
+    from .retention import send_weekly_recaps_and_tables
 
-    report = send_weekly_recaps()
+    report = send_weekly_recaps_and_tables()
     if report:
-        logger.info('[notify] récap hebdo : %s', report)
+        logger.info('[notify] récap hebdo + tablées : %s', report)
     return report
