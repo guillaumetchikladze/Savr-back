@@ -62,7 +62,20 @@ def cooked_meal_plans(
     end: date_type | None = None,
 ) -> QuerySet[MealPlan]:
     """Repas cuisinés par `user` (source unique pour stats / badges / Récap). Bornes incluses."""
-    qs = MealPlan.objects.filter(user=user, confirmed=True)
+    return _cooked_filter(MealPlan.objects.filter(user=user), start, end)
+
+
+def cooked_meal_plans_of_users(
+    user_ids,
+    start: date_type | None = None,
+    end: date_type | None = None,
+) -> QuerySet[MealPlan]:
+    """Même définition que `cooked_meal_plans`, pour plusieurs utilisateurs en une requête (feed)."""
+    return _cooked_filter(MealPlan.objects.filter(user_id__in=list(user_ids)), start, end)
+
+
+def _cooked_filter(qs: QuerySet[MealPlan], start, end) -> QuerySet[MealPlan]:
+    qs = qs.filter(confirmed=True)
     if start:
         qs = qs.filter(date__gte=start)
     if end:

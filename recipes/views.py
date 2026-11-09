@@ -4825,6 +4825,10 @@ class PostViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(queryset)
         t_paginate = perf_counter()
         if page is not None:
+            # « L'ardoise » : instantanés manquants calculés en lot (requêtes constantes, pas de N+1).
+            from stats.services.highlights import ensure_post_highlights
+
+            ensure_post_highlights(page)
             serializer = self.get_serializer(page, many=True)
             t_ser = perf_counter()
             print(
@@ -4945,6 +4949,19 @@ class PostViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK,
         )
+
+    @action(detail=False, methods=['post'], url_path='cooked/preview')
+    def cooked_preview(self, request):
+        """
+        Aperçu « Ça donnera ça » de l'ardoise (feuille « J'ai cuisiné ») : même corps que
+        POST /posts/cooked/, rien n'est créé. Réponse : {display_title, cuisine, highlights}.
+        """
+        from stats.services.highlights import preview_cooked
+
+        try:
+            return Response(preview_cooked(request.user, request.data))
+        except CookedError as exc:
+            return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
 
     @action(detail=True, methods=['post'], url_path='photos')
     def add_photos(self, request, pk=None):

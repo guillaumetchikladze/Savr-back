@@ -867,6 +867,12 @@ class Post(models.Model):
         help_text='Temps de cuisine saisi ou dérivé de la recette (minutes)',
     )
     is_published = models.BooleanField(default=False, help_text='Le post est publié')
+    highlights = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Instantané « L'ardoise » ({v, cuisine, items}) calculé à la date du repas "
+        '(stats.services.highlights) ; null = à (re)calculer à la prochaine lecture.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -2340,7 +2340,24 @@ class RepostFieldsMixin(serializers.Serializer):
         return data
 
 
-class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
+class ArdoiseFieldsMixin(serializers.Serializer):
+    """« L'ardoise » : `cuisine` et `highlights` (≤ 3 puces) calculés à la date du post (instantané en base)."""
+
+    cuisine = serializers.SerializerMethodField()
+    highlights = serializers.SerializerMethodField()
+
+    def get_cuisine(self, obj):
+        from stats.services.highlights import post_ardoise
+
+        return post_ardoise(obj)['cuisine']
+
+    def get_highlights(self, obj):
+        from stats.services.highlights import post_ardoise
+
+        return post_ardoise(obj)['highlights']
+
+
+class PostSerializer(ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
     photos = PostPhotoSerializer(many=True, read_only=True)
     user = UserLightSerializer(read_only=True)
     recipe_batch = RecipeBatchLightSerializer(read_only=True)
@@ -2364,6 +2381,8 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'meal_plan',
             'label',
             'display_title',
+            'cuisine',
+            'highlights',
             'comment',
             'cooking_time_minutes',
             'is_published',
@@ -2593,7 +2612,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
+class PostListSerializer(ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
     """Serializer minimal pour la liste des posts (feed)."""
 
     user = UserLightSerializer(read_only=True)
@@ -2614,6 +2633,8 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'user',
             'label',
             'display_title',
+            'cuisine',
+            'highlights',
             'comment',
             'cooking_time_minutes',
             'is_published',
