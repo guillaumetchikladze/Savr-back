@@ -50,6 +50,7 @@ def test_signup_with_invite_skips_waitlist_befriends_and_notifies_inviter(api, u
     assert resp.status_code == 201, resp.data
     assert resp.data['user']['is_validated'] is True
     assert resp.data['invite']['status'] == 'redeemed' and resp.data['invite']['bypassed_waitlist'] is True
+    assert resp.data['invite']['inviter']['display_name'] == 'alice'  # sans prénom : pseudo
     bob_id = resp.data['user']['id']
     assert AllowedEmail.objects.filter(email='bob@example.test').exists()
     assert _mutual(user, get_user_model().objects.get(id=bob_id))
@@ -74,10 +75,13 @@ def test_invalid_own_exhausted_rotated_and_rate_limited_codes(api, user, make_us
 
     # Compte existant en attente + réglage « pas de passe-droit » : amis, mais toujours en attente.
     settings.INVITE_BYPASSES_WAITLIST = False
+    user.first_name = 'Alice'
+    user.save(update_fields=['first_name'])
     waiting = make_user('waiting', validated=False)
     resp = api.as_user(waiting).post('/api/invites/redeem/', {'code': f'https://tchikook.fr/i/{code}'}, format='json')
     assert resp.status_code == 201 and resp.data['user']['is_validated'] is False
     assert _mutual(user, waiting) and resp.data['invite']['bypassed_waitlist'] is False
+    assert resp.data['invite']['inviter']['display_name'] == 'Alice'  # prénom d'abord
     again = api.post('/api/invites/redeem/', {'code': code}, format='json')
     assert again.status_code == 200 and again.data['invite']['status'] == 'already_redeemed'
 

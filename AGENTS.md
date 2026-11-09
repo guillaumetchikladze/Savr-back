@@ -243,7 +243,8 @@ Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, f
   404 ; `dishes_count` = repas cuisinés (`cooked_meal_plans`). Jamais d'email ni de préférences.
 - `share_url` (recettes, posts, profil `UserSerializer`) et `url` : `core/public_links.py`, base
   `PUBLIC_WEB_BASE_URL` (vide → `INVITE_BASE_URL`, défaut `https://tchikook.fr`) ; `app_url` = `tchikook://recipe|post|user/<id>`.
-  L'aperçu d'invitation expose aussi `inviter.display_name` (prénom sinon pseudo).
+  L'aperçu d'invitation expose aussi `inviter.display_name` (prénom sinon pseudo), comme le bloc `invite.inviter`
+  des réponses de `POST /api/invites/redeem/` et `POST /api/auth/register/` (`public_display_name`).
 - Copie : jamais le mot « bande » dans un texte visible (test `notifications/tests/test_notifications_copy.py`).
 - Tests : `recipes/tests/test_recipe_public_previews_api.py`.
 

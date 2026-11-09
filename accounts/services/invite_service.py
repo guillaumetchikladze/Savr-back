@@ -20,6 +20,7 @@ from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from core.public_links import public_display_name
 from notifications.services import notify
 
 from ..blocks import are_blocked_either_way
@@ -205,7 +206,12 @@ def redemption_payload(result: RedeemResult | None, error: InviteError | None = 
     r = result.redemption
     return {
         'status': 'redeemed' if result.created else 'already_redeemed',
-        'inviter': {'id': r.inviter_id, 'username': r.inviter.username},
+        # display_name : prénom sinon pseudo (même règle que l'aperçu public) → « Tu es maintenant ami avec Léa ».
+        'inviter': {
+            'id': r.inviter_id,
+            'username': r.inviter.username,
+            'display_name': public_display_name(r.inviter),
+        },
         'bypassed_waitlist': r.bypassed_waitlist,
         'is_acquisition': r.is_acquisition,
     }
