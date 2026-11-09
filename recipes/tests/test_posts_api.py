@@ -66,7 +66,6 @@ def test_publish_meal_plan_post_with_recipe_links_batch(api, user, make_meal_pla
 @pytest.mark.parametrize(
     ('payload', 'expected'),
     [
-        ({'photo_ids': [], 'custom_label': 'Resto'}, 400),  # au moins une photo
         ({'photo_ids': 'nope', 'custom_label': 'Resto'}, 400),
         ({'photo_ids': ['__PHOTO__']}, 400),  # custom_label requis sans recette
         ({'photo_ids': ['__PHOTO__'], 'recipe_id': 999999}, 404),

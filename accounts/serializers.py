@@ -61,6 +61,8 @@ class UserSerializer(serializers.ModelSerializer):
             'validated_at',
             'is_validated',
             'plan',
+            'auto_publish_cooked',
+            'auto_publish_cooked_set_at',
         )
         read_only_fields = (
             'id',
@@ -72,7 +74,25 @@ class UserSerializer(serializers.ModelSerializer):
             'validated_at',
             'is_validated',
             'plan',
+            'auto_publish_cooked_set_at',
         )
+
+    # Préférences privées : uniquement dans le profil de l'utilisateur lui-même.
+    SELF_ONLY_FIELDS = ('auto_publish_cooked', 'auto_publish_cooked_set_at')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        viewer = getattr(request, 'user', None) if request else None
+        if viewer is not None and getattr(viewer, 'id', None) != instance.id:
+            for field in self.SELF_ONLY_FIELDS:
+                data.pop(field, None)
+        return data
+
+    def update(self, instance, validated_data):
+        if 'auto_publish_cooked' in validated_data:
+            instance.auto_publish_cooked_set_at = timezone.now()
+        return super().update(instance, validated_data)
 
     def validate_food_dislikes(self, value):
         return self._validate_string_list(value, max_items=40, max_len=80)

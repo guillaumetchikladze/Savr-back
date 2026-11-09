@@ -81,10 +81,14 @@ def send_timer_almost_finished_push(self, timer_id: int) -> None:
 @shared_task(bind=True, max_retries=1, default_retry_delay=120)
 def send_meal_time_photo_reminder_push(self, user_id: int, meal_plan_id: int) -> None:
     """
-    Push Expo vers tous les appareils actifs de l'utilisateur : rappel photo « à table ».
+    Push Expo vers tous les appareils actifs de l'utilisateur : « Tu as cuisiné X ? » (1 tap).
+
+    Le payload `data` porte de quoi logguer en 1 tap via POST /posts/cooked/ {meal_plan_id}
+    (`meal_plan_id`, `title`, `recipe_ids`, `date`, `meal_time`, `action='cooked_prompt'`) ;
+    `source`/`kind` inchangés pour les clients ≤ 1.0.8 (ouverture du flux photo du repas).
 
     Règles produit (nouveau workflow = 1 notif par meal plan):
-    - Ne rien envoyer si un post publié existe déjà pour ce meal plan
+    - Ne rien envoyer si un post (publié ou log privé « J'ai cuisiné ») existe déjà pour ce meal plan
     - Ne rien envoyer si un des batches du meal plan est partagé avec un autre meal plan
     - Ne rien envoyer si un post publié existe déjà sur un des batches du meal plan (legacy)
     """
@@ -115,9 +119,9 @@ def send_meal_time_photo_reminder_push(self, user_id: int, meal_plan_id: int) ->
             logger.info('[MealPhotoReminder] no push devices for user=%s', user_id)
             return
 
-        # Ne pas notifier si un post "du repas" existe déjà
-        if Post.objects.filter(meal_plan_id=meal_plan_id, is_published=True).exists():
-            logger.info('[MealPhotoReminder] meal_plan %s already has published post, skip', meal_plan_id)
+        # Ne pas notifier si un post "du repas" existe déjà (publié ou log « J'ai cuisiné » privé)
+        if Post.objects.filter(meal_plan_id=meal_plan_id).exists():
+            logger.info('[MealPhotoReminder] meal_plan %s already has a post, skip', meal_plan_id)
             return
 
         mprbs = list(getattr(meal_plan, 'meal_plan_recipe_batches', []).all())
@@ -147,22 +151,29 @@ def send_meal_time_photo_reminder_push(self, user_id: int, meal_plan_id: int) ->
             logger.info('[MealPhotoReminder] meal_plan %s has legacy published batch post, skip', meal_plan_id)
             return
 
-        # Wording concis
-        title = 'Photo du repas'
-        if len(mprbs) == 1:
-            recipe_title = (
-                getattr(getattr(mprbs[0], 'recipe_batch', None), 'recipe', None)
-                and getattr(mprbs[0].recipe_batch.recipe, 'title', None)
-            ) or ''
-            recipe_title = str(recipe_title or '').strip()
-            body = f'À table ! Pense à prendre une photo{f" de « {recipe_title} »" if recipe_title else ""}.'
-        else:
-            body = 'À table ! Pense à prendre une photo de tes plats.'
+        from recipes.services.cooked_service import meal_plan_display_title
 
+        dish_title = meal_plan_display_title(meal_plan) or ''
+        title = 'À table !'
+        if dish_title:
+            body = f'Tu as cuisiné {dish_title} ? Partage-le en 1 tap'
+        else:
+            body = 'Tu as cuisiné ? Partage-le en 1 tap'
+
+        recipe_ids = [
+            mprb.recipe_batch.recipe_id for mprb in mprbs if mprb.recipe_batch_id and mprb.recipe_batch.recipe_id
+        ]
         data = {
             'source': 'cooking',
             'kind': 'meal_time_photo_reminder',
             'meal_plan_id': meal_plan_id,
+            # Additif : 1 tap « Oui, je l'ai cuisiné » → POST /posts/cooked/ {meal_plan_id}
+            'action': 'cooked_prompt',
+            'title': dish_title,
+            'recipe_ids': recipe_ids,
+            'recipe_id': recipe_ids[0] if recipe_ids else None,
+            'date': meal_plan.date.isoformat() if meal_plan.date else None,
+            'meal_time': meal_plan.meal_time,
         }
 
         messages = []
@@ -174,6 +185,9 @@ def send_meal_time_photo_reminder_push(self, user_id: int, meal_plan_id: int) ->
                 'data': data,
                 'sound': 'default',
                 'channelId': 'meal_photos',
+                # Catégorie iOS/Android à boutons (« Oui, je l'ai cuisiné » / « + photo ») ;
+                # ignorée tant que l'app ne l'a pas enregistrée.
+                'categoryId': 'cooked_prompt',
             }
             messages.append(msg)
 

@@ -32,6 +32,14 @@ class User(AbstractUser):
         help_text='Régime végétarien (repérage viande/poisson côté recettes, en complément des listes).',
     )
     onboarding_completed = models.BooleanField(default=False)
+    # « J'ai cuisiné » : l'app publie directement (sans confirmation) quand True. Le backend ne fait
+    # que stocker la préférence (aucune publication silencieuse côté serveur).
+    auto_publish_cooked = models.BooleanField(default=False)
+    auto_publish_cooked_set_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Date du dernier choix explicite (null = jamais demandé).',
+    )
 
     # Waitlist / access gate — null = en attente de validation admin
     validated_at = models.DateTimeField(

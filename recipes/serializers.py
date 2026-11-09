@@ -34,6 +34,13 @@ from .models import (
 from .utils import get_accessible_meal_plan_filter, meal_plan_slot_api_fields
 
 
+def post_display_title(post):
+    # Import local : cooked_service → meal_plan_service → chat (évite un import circulaire).
+    from .services.cooked_service import post_display_title as _post_display_title
+
+    return _post_display_title(post)
+
+
 # Helpers
 def compute_meal_plan_servings_with_ratio(meal_plan):
     """
@@ -2346,6 +2353,7 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     cookies_count = serializers.SerializerMethodField()
     has_cookie_from_user = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
+    display_title = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -2354,6 +2362,8 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'user',
             'recipe_batch',
             'meal_plan',
+            'label',
+            'display_title',
             'comment',
             'cooking_time_minutes',
             'is_published',
@@ -2373,7 +2383,10 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['user', 'created_at', 'updated_at']
+        read_only_fields = ['user', 'label', 'created_at', 'updated_at']
+
+    def get_display_title(self, obj):
+        return post_display_title(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -2592,12 +2605,15 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     has_cookie_from_user = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     author_is_following = serializers.SerializerMethodField()
+    display_title = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
         fields = [
             'id',
             'user',
+            'label',
+            'display_title',
             'comment',
             'cooking_time_minutes',
             'is_published',
@@ -2615,7 +2631,11 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'co_cooked_users',
             'created_at',
         ]
-        read_only_fields = ['user', 'created_at']
+        read_only_fields = ['user', 'label', 'created_at']
+
+    def get_display_title(self, obj):
+        """Plat pour « X a cuisiné {display_title} » (label libre, recettes du repas ou libellé)."""
+        return post_display_title(obj)
 
     def get_meal_plan(self, obj):
         mp = obj.meal_plan

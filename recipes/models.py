@@ -843,6 +843,17 @@ class Post(models.Model):
         help_text='Repas associé (nouveau workflow : post du repas).',
     )
     comment = models.TextField(blank=True, help_text='Commentaire du post')
+    label = models.CharField(
+        max_length=120,
+        blank=True,
+        default='',
+        help_text="Nom libre du plat (« J'ai cuisiné » sans recette, ou libellé plus précis que la recette).",
+    )
+    cooked_undo = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="État avant le log « J'ai cuisiné » (POST /posts/cooked/), pour l'annulation. Null = autre flux.",
+    )
     cooking_time_minutes = models.IntegerField(
         null=True,
         blank=True,

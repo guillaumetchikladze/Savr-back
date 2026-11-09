@@ -103,3 +103,20 @@ def test_ai_feature_paywall(settings, api, make_user, celery_delay, paywall, pla
         assert celery_delay.calls == []
     else:
         assert [c[0] for c in celery_delay.calls] == ['recipes.tasks.process_recipe_generate_from_idea']
+
+
+def test_auto_publish_cooked_preference_round_trip(api, make_user):
+    me, other = make_user(), make_user()
+    client = api.as_user(me)
+
+    initial = client.get('/api/auth/profile/').data
+    assert initial['auto_publish_cooked'] is False and initial['auto_publish_cooked_set_at'] is None
+
+    resp = client.patch('/api/auth/profile/', {'auto_publish_cooked': True}, format='json')
+    assert resp.status_code == 200
+    assert resp.data['auto_publish_cooked'] is True and resp.data['auto_publish_cooked_set_at']
+    assert client.get('/api/auth/profile/').data['auto_publish_cooked'] is True
+
+    # Préférence privée : absente du profil vu par un autre utilisateur.
+    seen = api.as_user(other).get(f'/api/auth/users/{me.id}/')
+    assert seen.status_code == 200 and 'auto_publish_cooked' not in seen.data
