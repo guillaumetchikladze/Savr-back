@@ -99,7 +99,7 @@ Endpoints : `GET /api/stats/me/?period=week|month|year|all&year=2026`, `GET /api
   (empreinte DB du « cuisiné » + version invalidée par miam/invitations, TTL 10 min).
 - Plafonds doux : 4 cuisinés comptés par jour ; un même plat compte une fois par jour pour plat star,
   collections et badges ; 12 invités anonymes max par repas. Ingrédients « de base » exclus de la diversité.
-- « Régalés » : `household_member_ids()` est le point d'exclusion du futur foyer.
+- « Régalés » / « Hôte » / « invité N fois » : le foyer (`household_member_ids()`) n'est jamais un convive.
 - Données : `IngredientProfile` (groupe, végétal, de base) et `Recipe.cuisine` (liste fermée `stats/cuisines.py`).
   Sans profil, les stats retombent sur le seed déterministe (`stats/food_groups.py`).
 
@@ -144,6 +144,22 @@ séparé de `MealPlan` (dont `date`/`meal_time` restent obligatoires, app 1.0.9 
   (1 par ami et par post, agrégée). Posts : `my_turn_count`, `has_my_turn` (annotations du `PostViewSet`, 0 requête
   par post), `inspired_by`. Envie cuisinée → `Post.inspired_by_post` + notif `a_mon_tour_cooked` à l'auteur.
 - Tests : `recipes/tests/test_mealplan_basket_api.py`, `recipes/tests/test_posts_my_turn_api.py`.
+
+## Foyer + invités (`accounts/services/household_service.py`, `recipes/services/diners_service.py`)
+
+Le foyer est réglé une fois et inclus par défaut dans chaque repas / envie, sans invitation. Contrat front :
+`.claude-work/specs/household.md`.
+
+- `HouseholdMember` : entrée **compte** (ami, consentie `pending` → `accepted`, puis réciproque) ou **nominative**
+  (« Jules », `is_child`, partagée avec le foyer). API `/api/household/` (GET/PUT déclaratif, `members/`,
+  `requests/{id}/accept|decline/`) ; notifs `household_request` / `household_accepted`.
+- Convives = 1 + foyer non exclu (`excluded_household_ids` sur `MealPlan` / `BasketItem`) + `guest_count`
+  + invitations acceptées / en attente (dédupliquées avec le foyer). **Source unique** :
+  `diners_service` via `recipes.utils.get_meal_plan_people_count` (portions qui suivent, `total_servings`,
+  courses) ; ne jamais recalculer `1 + participants + guest_count` ailleurs. Payloads : `diners`, `servings_suggested`.
+- Envie non datée : `servings` vide = ses convives ; `POST /api/basket/diners/` = en-tête « Pour N » de la semaine.
+- Foyer jamais compté comme convive (stats, badge « Hôte », ardoise) ; lien modifié → signaux `stats`.
+- Tests : `recipes/tests/test_mealplan_household_api.py`, `stats/tests/test_stats_*` (foyer).
 
 ## Notifications (app `notifications`)
 
