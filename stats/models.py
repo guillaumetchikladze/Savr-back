@@ -71,3 +71,24 @@ class BadgeRarity(models.Model):
 
     def __str__(self):
         return f'{self.code} · {self.percent:.1f} % ({self.tier})'
+
+
+class WeatherDay(models.Model):
+    """
+    Météo d'un jour en un lieu (Open-Meteo, badges météo) : cache partagé par tous les cuisiniers d'une même
+    ville. `location` = « lat,lon » arrondis à 0,01° (~1 km). Jamais lu ni écrit dans une requête HTTP.
+    """
+
+    location = models.CharField(max_length=32)
+    date = models.DateField()
+    temperature_max = models.FloatField(null=True, blank=True, help_text='°C, maximum du jour.')
+    precipitation_mm = models.FloatField(null=True, blank=True, help_text='Cumul de pluie du jour (mm).')
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Météo du jour'
+        verbose_name_plural = 'Météo des jours'
+        constraints = [models.UniqueConstraint(fields=['location', 'date'], name='weatherday_location_date_uniq')]
+
+    def __str__(self):
+        return f'{self.location} {self.date} {self.temperature_max} °C'

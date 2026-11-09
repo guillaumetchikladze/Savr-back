@@ -7,7 +7,7 @@ from django.core.management import call_command
 
 from recipes.models import MealInvitation
 from stats.models import UserBadge
-from stats.services.badges import BADGES, evaluate_badges
+from stats.services.badges import BADGES, enabled_badges, evaluate_badges
 
 pytestmark = pytest.mark.django_db
 
@@ -88,6 +88,6 @@ def test_badges_me_lists_earned_and_progress(api, user, make_recipe, make_meal_p
 
     assert resp.status_code == 200
     assert [b['code'] for b in resp.data['earned'] if b['code'] in HISTORIC] == ['first_cooked']  # rattrapé
-    assert resp.data['total_count'] == len(BADGES)
+    assert resp.data['total_count'] == len(enabled_badges())  # météo masquée sans WEATHER_BADGES_ENABLED
     nxt = {b['code']: b['progress'] for b in resp.data['next']}
     assert nxt['cuisines_5'] == {'current': 1, 'target': 5, 'ratio': 0.2}

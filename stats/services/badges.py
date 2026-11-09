@@ -219,18 +219,26 @@ def is_fresh(payload: dict, today: date | None = None) -> bool:
         return True
 
 
-def evaluate_badges(user, *, stats: StatsResult | None = None, notify: bool = True, push: bool = True) -> list[dict]:
+def evaluate_badges(
+    user,
+    *,
+    stats: StatsResult | None = None,
+    notify: bool = True,
+    push: bool = True,
+    include_async: bool = False,
+) -> list[dict]:
     """
     Persiste les badges atteints et pas encore obtenus ; renvoie les nouveaux (payloads).
     `notify` : notification in-app « Nouveau badge » ; `push` : aussi en push (inutile quand l'app
     affiche déjà les nouveaux badges dans la réponse, ex. POST /posts/cooked/ ou GET /badges/me/).
     Seuls les badges « frais » (`is_fresh`) sont notifiés : un rattrapage historique reste silencieux.
+    `include_async` : évalue aussi les badges `async_only` (météo) — tâche Celery seulement.
     """
     stats = stats or lifetime_stats(user)
     owned = set(UserBadge.objects.filter(user=user).values_list('code', flat=True))
     to_create = []
     for badge in enabled_badges():
-        if badge.code in owned:
+        if badge.code in owned or (badge.async_only and not include_async):
             continue
         current, achieved_on, extra = _measure(badge, stats)
         if current >= badge.target:
@@ -323,8 +331,7 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
             if next_limit is None:
                 secrets.append(secret_placeholder(badge, rmap))
             continue
-        current, _, _ = _measure(badge, stats)
-        current = min(current, badge.target)
+        current = 0 if badge.async_only else min(_measure(badge, stats)[0], badge.target)  # météo : tâche seule
         upcoming.append(
             {
                 **badge_public(badge, rmap),

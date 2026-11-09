@@ -56,6 +56,7 @@ class BadgeDef:
     hint: str = ''  # indice vague d'un badge secret (« ??? »)
     rarity_guess: str = TIER_COMMUN  # palier tant que la rareté calculée n'existe pas
     feature_flag: str = ''  # réglage Django qui doit valoir True pour évaluer / afficher ce badge
+    async_only: bool = False  # évalué seulement en tâche Celery (météo : données réseau), jamais dans la requête
 
     @property
     def family_code(self) -> str:

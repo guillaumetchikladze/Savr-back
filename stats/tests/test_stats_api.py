@@ -120,12 +120,12 @@ def test_other_user_stats_expose_earned_badges_and_top_dishes(
 
 
 def test_badges_me_all_returns_every_locked_badge(api, user):
-    from stats.services.badges import BADGES
+    from stats.services.badges import enabled_badges
 
     client = api.as_user(user)
     assert len(client.get('/api/badges/me/').data['next']) == 5
     locked = client.get('/api/badges/me/', {'all': '1'}).data['next']
-    assert len(locked) == len(BADGES)
+    assert len(locked) == len(enabled_badges())  # secrets compris (« ??? »), météo masquée par défaut
     assert all({'current', 'target', 'ratio'} == set(b['progress']) for b in locked)
 
 

@@ -50,6 +50,14 @@ class User(AbstractUser):
     kitchen_equipment_set_at = models.DateTimeField(
         null=True, blank=True, help_text='Dernier enregistrement de « Ta cuisine » (null = jamais renseigné).'
     )
+    # Badges météo (opt-in « Ta ville », jamais de GPS) : ville déclarée, géocodée une fois (Open-Meteo, tâche Celery).
+    city = models.CharField(max_length=120, blank=True, default='', help_text='Ville déclarée (badges météo).')
+    city_label = models.CharField(
+        max_length=160, blank=True, default='', help_text='Ville géocodée (« Lyon, France »).'
+    )
+    city_latitude = models.FloatField(null=True, blank=True)
+    city_longitude = models.FloatField(null=True, blank=True)
+    city_geocoded_at = models.DateTimeField(null=True, blank=True)
 
     # Waitlist / access gate — null = en attente de validation admin
     validated_at = models.DateTimeField(

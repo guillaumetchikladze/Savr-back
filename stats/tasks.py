@@ -52,13 +52,33 @@ def classify_new_ingredients(limit: int = CLASSIFY_MAX_PER_RUN) -> dict:
 
 @shared_task(ignore_result=True)
 def evaluate_user_badges(user_id: int) -> int:
-    from .services.badges import evaluate_badges
+    """
+    Évaluation différée (après un « cuisiné ») ; avec `WEATHER_BADGES_ENABLED` et une ville déclarée, complète
+    d'abord le cache météo des jours cuisinés (réseau : ici seulement) puis évalue aussi les badges météo.
+    """
+    from .services import weather
+    from .services.badges import evaluate_badges, lifetime_stats
 
     cache.delete(f'stats:badges:pending:{user_id}')
     user = get_user_model().objects.filter(pk=user_id).first()
     if not user:
         return 0
-    return len(evaluate_badges(user))
+    stats = lifetime_stats(user)
+    with_weather = weather.enabled() and bool(user.city)
+    if with_weather:
+        weather.refresh_user_weather(user, {m.date for m in stats.meals})
+    return len(evaluate_badges(user, stats=stats, include_async=with_weather))
+
+
+@shared_task(ignore_result=True)
+def geocode_user_city_task(user_id: int) -> int:
+    """Ville déclarée → coordonnées (une fois), puis badges météo sur tout l'historique (sans rattrapage notifié)."""
+    from .services import weather
+
+    user = get_user_model().objects.filter(pk=user_id).first()
+    if user is None or not weather.enabled() or not user.city:
+        return 0
+    return evaluate_user_badges.run(user_id)
 
 
 @shared_task(ignore_result=True)

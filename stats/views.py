@@ -5,6 +5,7 @@ GET /api/stats/me/?period=week|month|year|all&year=2026
 GET /api/stats/users/{id}/?period=…  (sous-ensemble public + badges obtenus, mêmes règles que le profil)
 GET /api/badges/me/[?all=1]  (all=1 : tous les badges verrouillés avec progression dans `next`, secrets en « ??? »)
 GET /api/badges/<code>/share/ (carte à partager d'un badge obtenu : badge, rareté, nom, lien d'invitation perso)
+GET|PUT|DELETE /api/weather/city/ (badges météo : ville déclarée, opt-in, géocodée en tâche)
 GET /api/recap/{year}/        (mis en cache, cf. recap.get_recap)
 GET /api/recap/{year}/status/ (disponibilité seule, sans construire le Récap)
 """
@@ -74,6 +75,23 @@ def badge_share_view(request, code: str):
     if payload is None:  # inconnu, pas obtenu, ou secret pas encore débloqué : même réponse
         return Response({'error': 'Badge non obtenu.', 'code': 'badge_not_earned'}, status=status.HTTP_404_NOT_FOUND)
     return Response(payload)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsValidated])
+def weather_city_view(request):
+    from .services.weather import CITY_MAX_LENGTH, city_payload, set_city
+
+    if request.method == 'GET':
+        return Response(city_payload(request.user))
+    if request.method == 'DELETE':
+        return Response(set_city(request.user, ''))
+    city = request.data.get('city') if isinstance(request.data, dict) else None
+    if not isinstance(city, str) or not (2 <= len(city.strip()) <= CITY_MAX_LENGTH):
+        return Response(
+            {'error': 'Indique le nom de ta ville.', 'code': 'invalid_city'}, status=status.HTTP_400_BAD_REQUEST
+        )
+    return Response(set_city(request.user, city))
 
 
 def _invalid_year(year: int, today):

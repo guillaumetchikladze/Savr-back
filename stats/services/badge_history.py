@@ -170,6 +170,13 @@ class BadgeHistory:
         return [{'members': m, 'cooked': cooked} for m in members.values()]
 
     @cached_property
+    def weather(self) -> dict:
+        """Météo (cache en base, lecture seule) à la ville déclarée, pour les jours cuisinés (1 requête)."""
+        from .weather import user_location, weather_by_date
+
+        return weather_by_date(user_location(self.user), {m.date for m in self.stats.meals})
+
+    @cached_property
     def kitchen(self):
         from recipes.services.equipment_service import effective_kitchen
 
