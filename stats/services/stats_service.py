@@ -26,7 +26,7 @@ from django.utils import timezone
 from recipes.models import CookingProgress, MealInvitation, MealPlan, MealPlanRecipeBatch, Post, RecipeIngredient
 from recipes.services.cooked_service import cooked_meal_plans, join_titles_fr
 
-from ..cuisines import NON_COLLECTIBLE, cuisine_payload
+from ..cuisines import CUISINES_BY_CODE, NON_COLLECTIBLE, cuisine_payload
 from ..food_groups import FOOD_GROUPS, seed_classify
 from ..text import fold
 
@@ -35,6 +35,7 @@ MAX_ANON_GUESTS_PER_MEAL = 12
 MAX_MINUTES_PER_MEAL = 360
 PERIODS = ('week', 'month', 'year', 'all')
 CACHE_TTL_SECONDS = 600
+TOP_DISHES_MAX = 5
 MONTHS_FR = (
     'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
     'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
@@ -369,7 +370,10 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
     cuisine_counts: Counter = Counter()
     cuisine_first: dict[str, date] = {}
     for meal in dish_days:
-        for code in {r['cuisine'] for r in meal.recipes if r['cuisine']}:
+        # Code hors liste fermée (ancien texte libre) = « autre » : affiché comme tel, jamais compté comme exploré.
+        for code in {
+            r['cuisine'] if r['cuisine'] in CUISINES_BY_CODE else 'autre' for r in meal.recipes if r['cuisine']
+        }:
             cuisine_counts[code] += 1
             cuisine_first.setdefault(code, meal.date)
     explored = [c for c in cuisine_counts if c not in NON_COLLECTIBLE]
@@ -408,6 +412,8 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
             'count': n,
             'image_url': image,
         }
+
+    top_dishes = _top_dishes(dish_days, dish_count, dish_last)
 
     # --- Miam ---
     posts = [p for m in meals for p in m.posts]
@@ -505,6 +511,7 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
             else None
         ),
         'star_dish': star,
+        'top_dishes': top_dishes,
         'top_miam_post': top_miam,
         'miam_received': miam_total,
         'hosted': {
@@ -533,6 +540,52 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
         result.months = [month_counts.get((period.year or today.year, m), 0) for m in range(1, 13)]
         result.biggest_fan = _biggest_fan(user, [p['id'] for p in published])
     return result
+
+
+def _top_dishes(dish_days: list[Meal], dish_count: Counter, dish_last: dict[tuple, Meal]) -> list[dict]:
+    """
+    Plats les plus cuisinés (plats-jours, ≤ TOP_DISHES_MAX) : nombre, dernière date, photo (dernier post avec
+    photo, sinon image de la recette). Plats sans recette ni libellé exclus. Une requête au plus (photos).
+    """
+    from recipes.models import PostPhoto
+
+    ranked = sorted(
+        (key for key in dish_count if key[0] != 'm'),
+        key=lambda key: (-dish_count[key], -dish_last[key].date.toordinal(), str(key)),
+    )[:TOP_DISHES_MAX]
+    if not ranked:
+        return []
+    wanted = set(ranked)
+    photo_post: dict[tuple, int] = {}
+    for meal in reversed(dish_days):
+        if meal.dish_key in wanted and meal.dish_key not in photo_post:
+            post = next((p for p in meal.posts if p['n_photos']), None)
+            if post:
+                photo_post[meal.dish_key] = post['id']
+    photo_urls: dict[int, str] = {}
+    if photo_post:
+        for photo in PostPhoto.objects.filter(post_id__in=photo_post.values()).order_by(
+            'post_id', 'order', 'created_at'
+        ):
+            photo_urls.setdefault(photo.post_id, photo.image_url)
+    dishes = []
+    for key in ranked:
+        meal = dish_last[key]
+        recipe_ids = list(meal.recipe_ids)
+        image = photo_urls.get(photo_post.get(key))
+        if not image and meal.recipes:
+            image = _recipe_image_url(meal.recipes[0]['image_path'])
+        dishes.append(
+            {
+                'label': meal.label or 'Plat maison',
+                'recipe_id': recipe_ids[0] if len(recipe_ids) == 1 else None,
+                'recipe_ids': recipe_ids,
+                'count': dish_count[key],
+                'last_cooked_on': meal.date.isoformat(),
+                'image_url': image,
+            }
+        )
+    return dishes
 
 
 def _biggest_fan(user, post_ids: list[int]) -> dict | None:
@@ -571,6 +624,11 @@ def public_subset(payload: dict) -> dict:
     data = {k: payload[k] for k in PUBLIC_KEYS}
     star = payload.get('star_dish')
     data['star_dish'] = {'label': star['label'], 'count': star['count']} if star else None
+    # Pas de photo ni de recette (posts privés possibles) : libellé, nombre, dernière date.
+    data['top_dishes'] = [
+        {'label': d['label'], 'count': d['count'], 'last_cooked_on': d['last_cooked_on']}
+        for d in payload.get('top_dishes') or ()
+    ]
     return data
 
 
@@ -614,21 +672,25 @@ def _fingerprint(user_id: int) -> tuple:
     return tuple(v.timestamp() if hasattr(v, 'timestamp') else v for v in (row or ()))
 
 
+def stats_cache_token(user_id: int) -> str:
+    """Jeton de fraîcheur du cache stats : version (miam, invitations…) + empreinte DB du « cuisiné »."""
+    try:
+        version = cache.get(_version_key(user_id), 0)
+    except Exception:
+        version = 0
+    return '%s:%s' % (version, '-'.join(str(v) for v in _fingerprint(user_id)))
+
+
 def get_stats_payload(user, period: Period, *, public: bool = False, today: date | None = None) -> dict:
     """Payload stats (mis en cache par utilisateur, période et empreinte des données)."""
     today = today or timezone.localdate()
-    try:
-        version = cache.get(_version_key(user.id), 0)
-    except Exception:
-        version = 0
-    key = 'stats:v1:%s:%s:%s:%s:%s:%s:%s' % (
+    key = 'stats:v2:%s:%s:%s:%s:%s:%s' % (
         user.id,
         period.kind,
         period.start,
         period.end,
         today.isoformat(),
-        version,
-        '-'.join(str(v) for v in _fingerprint(user.id)),
+        stats_cache_token(user.id),
     )
     payload = cache.get(key)
     if payload is None:

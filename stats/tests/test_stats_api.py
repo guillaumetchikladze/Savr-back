@@ -90,3 +90,61 @@ def test_recap_full_slides_for_staff_preview(api, make_user, make_meal_plan, mak
     assert data['persona']['code'] == 'fidele'
     for slide in data['slides']:
         assert {'id', 'title', 'big_number', 'unit', 'subtitle', 'data'} <= set(slide)
+
+
+def test_other_user_stats_expose_earned_badges_and_top_dishes(
+    api, user, make_user, make_meal_plan, make_recipe, follow
+):
+    from accounts.models import UserBlock
+    from stats.models import UserBadge
+
+    bob = make_user('bob')
+    _cook_n(bob, make_meal_plan, make_recipe, 2)
+    UserBadge.objects.create(user=bob, code='first_cooked', context={'value': 1})
+    UserBadge.objects.create(user=bob, code='retired_badge')  # code inconnu du registre : ignoré
+    follow(user, bob)
+    client = api.as_user(user)
+
+    resp = client.get(f'/api/stats/users/{bob.id}/', {'period': 'all'})
+
+    assert resp.status_code == 200
+    assert resp.data['badges_count'] == 1
+    badge = resp.data['badges'][0]
+    assert badge['code'] == 'first_cooked' and badge['label'] == 'Premier plat' and badge['earned_at']
+    assert 'context' not in badge
+    assert resp.data['top_dishes'] == [{'label': 'Curry', 'count': 2, 'last_cooked_on': '2026-04-10'}]
+
+    # Blocage (dans un sens ou l'autre) : profil fermé, badges compris.
+    UserBlock.objects.create(blocker=bob, blocked=user)
+    assert client.get(f'/api/stats/users/{bob.id}/').status_code == 403
+
+
+def test_badges_me_all_returns_every_locked_badge(api, user):
+    from stats.services.badges import BADGES
+
+    client = api.as_user(user)
+    assert len(client.get('/api/badges/me/').data['next']) == 5
+    locked = client.get('/api/badges/me/', {'all': '1'}).data['next']
+    assert len(locked) == len(BADGES)
+    assert all({'current', 'target', 'ratio'} == set(b['progress']) for b in locked)
+
+
+def test_recap_status_is_light_and_full_recap_is_cached(api, make_user, settings, make_meal_plan, make_recipe):
+    settings.RECAP_AVAILABLE_FROM = '12-01'
+    staff, regular = make_user('chef', is_staff=True), make_user('reg')
+    _cook_n(staff, make_meal_plan, make_recipe, 3)
+
+    with mock.patch('stats.services.recap.build_recap', side_effect=AssertionError('no build')):
+        resp = api.as_user(regular).get('/api/recap/2026/status/')
+    assert resp.data == {'year': 2026, 'available': False, 'available_from': '2026-12-01'}
+    assert api.as_user(regular).get('/api/recap/2019/status/').status_code == 400
+
+    client = api.as_user(staff)
+    assert client.get('/api/recap/2026/status/').data['available'] is True
+    first = client.get('/api/recap/2026/').data
+    with mock.patch('stats.services.recap.build_recap', side_effect=AssertionError('cache miss')):
+        assert client.get('/api/recap/2026/').data == first
+
+    # Nouveau « cuisiné » : le cache est invalidé.
+    make_meal_plan(staff, day=date(2026, 11, 2), recipes=[make_recipe(staff, 'Tajine')], confirmed=True)
+    assert client.get('/api/recap/2026/').data['cooked_count'] == 4

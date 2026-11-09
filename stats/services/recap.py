@@ -11,11 +11,13 @@ from __future__ import annotations
 from datetime import date
 
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 
-from .stats_service import MONTHS_FR, compute_stats, resolve_period
+from .stats_service import MONTHS_FR, compute_stats, resolve_period, stats_cache_token
 
 MIN_COOKED_FOR_RECAP = 3
+RECAP_CACHE_TTL_SECONDS = 3600
 
 PERSONAS = {
     'hote': ('Hôte', '🍽️', 'Ta cuisine, c’est fait pour être partagé : tu as régalé ton monde.'),
@@ -38,6 +40,35 @@ def is_recap_available(year: int, user=None, today: date | None = None) -> bool:
     if user is not None and getattr(user, 'is_staff', False):
         return True
     return today >= recap_available_from(year)
+
+
+def recap_status(year: int, user=None, today: date | None = None) -> dict:
+    """Disponibilité du Récap sans le construire (GET /api/recap/{year}/status/)."""
+    return {
+        'year': year,
+        'available': is_recap_available(year, user, today=today),
+        'available_from': recap_available_from(year).isoformat(),
+    }
+
+
+def get_recap(user, year: int, *, today: date | None = None) -> dict:
+    """
+    `build_recap` mis en cache (RECAP_CACHE_TTL_SECONDS) par utilisateur, année et jour ; la clé porte le jeton
+    de fraîcheur des stats (empreinte du « cuisiné » + version miam / invitations) : un nouveau log invalide.
+    """
+    today = today or timezone.localdate()
+    key = 'recap:v1:%s:%s:%s:%s' % (user.id, year, today.isoformat(), stats_cache_token(user.id))
+    try:
+        data = cache.get(key)
+    except Exception:
+        data = None
+    if data is None:
+        data = build_recap(user, year, today=today)
+        try:
+            cache.set(key, data, RECAP_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+    return data
 
 
 def pick_persona(p: dict) -> dict:

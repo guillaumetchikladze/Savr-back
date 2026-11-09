@@ -146,3 +146,38 @@ def test_cache_is_invalidated_by_new_cooked(user, history, cook):
     cook(user, date(2026, 11, 5), history['ramen'])
 
     assert get_stats_payload(user, period, today=TODAY)['cooked_count'] == first['cooked_count'] + 1
+
+
+def test_cuisines_count_ignores_autre_fusion_and_unknown_codes(user, make_recipe, cook):
+    dishes = [('Pad thaï', 'thai'), ('Poke', 'fusion'), ('Gratin', 'autre'), ('Vieux tag', 'mediterraneenne')]
+    for i, (title, cuisine) in enumerate(dishes):
+        cook(user, date(2026, 5, 1 + i), make_recipe(user, title, cuisine=cuisine))
+
+    payload = compute_stats(user, resolve_period('year', 2026, today=TODAY), today=TODAY).payload
+
+    assert payload['cuisines_count'] == 1  # seule la thaïe est une « vraie » cuisine explorée
+    # Code hors liste fermée regroupé avec « autre » (une seule entrée, jamais comptée).
+    assert {c['code']: c['count'] for c in payload['cuisines']} == {'thai': 1, 'fusion': 1, 'autre': 2}
+
+
+def test_top_dishes_ranked_with_counts_last_date_and_photo(user, history, cook):
+    from recipes.models import PostPhoto
+
+    for day in (date(2026, 2, 2), date(2026, 9, 1)):
+        cook(user, day, custom_label='Crêpes')
+    cook(user, date(2026, 9, 2))  # plat anonyme (ni recette ni libellé) : exclu
+    last_dal = cook(user, date(2026, 11, 4), history['dal'])
+    post = Post.objects.create(user=user, meal_plan=last_dal, is_published=False)
+    PostPhoto.objects.create(post=post, photo_type='at_meal_time', image_path='https://img.test/dal.jpg')
+
+    top = compute_stats(user, resolve_period('all', today=TODAY), today=TODAY).payload['top_dishes']
+
+    assert [(d['label'], d['count'], d['last_cooked_on']) for d in top] == [
+        ('Dal', 4, '2026-11-04'),
+        ('Crêpes', 2, '2026-09-01'),
+        ('Ramen', 1, '2026-01-06'),
+        ('Ratatouille', 1, '2025-12-23'),
+    ]
+    assert top[0]['image_url'] == 'https://img.test/dal.jpg'
+    assert top[0]['recipe_id'] == history['dal'].id and top[1]['recipe_id'] is None
+    assert len(top) <= stats_service.TOP_DISHES_MAX

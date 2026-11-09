@@ -92,11 +92,17 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
 ## Stats, badges et Récap (app `stats`)
 
 Endpoints : `GET /api/stats/me/?period=week|month|year|all&year=2026`, `GET /api/stats/users/{id}/`
-(sous-ensemble public, profil visible requis), `GET /api/badges/me/`, `GET /api/recap/{year}/`
-(à partir de `RECAP_AVAILABLE_FROM`, défaut `12-01` ; staff toujours). `POST /posts/cooked/` renvoie `new_badges`.
+(sous-ensemble public + badges obtenus `badges`, profil visible requis : suivi approuvé, sans blocage),
+`GET /api/badges/me/[?all=1]` (`all=1` : tous les verrouillés avec progression), `GET /api/recap/{year}/`
+(à partir de `RECAP_AVAILABLE_FROM`, défaut `12-01` ; staff toujours), `GET /api/recap/{year}/status/`
+(`{year, available, available_from}`, sans calcul). `POST /posts/cooked/` renvoie `new_badges`.
+Contrat front : `.claude-work/specs/gamification.md` (« API additions »).
 
 - Calcul à la volée depuis `cooked_meal_plans()` (nombre de requêtes constant), cache par utilisateur
-  (empreinte DB du « cuisiné » + version invalidée par miam/invitations, TTL 10 min).
+  (`stats_cache_token` = empreinte DB du « cuisiné » + version invalidée par miam/invitations, TTL 10 min).
+  Récap : `recap.get_recap` met `build_recap` en cache 1 h (clé utilisateur / année / jour / même jeton).
+- `top_dishes` (≤ 5 plats-jours, nombre + dernière date ; plats anonymes exclus) ; `cuisines_count` exclut
+  « fusion », « autre » et les codes hors liste fermée (comptés dans `autre`).
 - Plafonds doux : 4 cuisinés comptés par jour ; un même plat compte une fois par jour pour plat star,
   collections et badges ; 12 invités anonymes max par repas. Ingrédients « de base » exclus de la diversité.
 - « Régalés » / « Hôte » / « invité N fois » : le foyer (`household_member_ids()`) n'est jamais un convive.

@@ -221,8 +221,19 @@ def _schedule_notification(user_id: int, codes: list[str], *, push: bool) -> Non
         logger.warning('[badges] notification non planifiée pour user=%s', user_id, exc_info=True)
 
 
-def badges_overview(user, *, next_limit: int = 5) -> dict:
-    """GET /badges/me/ : badges obtenus + prochains à portée (progression)."""
+def earned_badges_public(user) -> list[dict]:
+    """Badges obtenus par `user`, pour son profil vu par un autre (sans réévaluation ni contexte)."""
+    rows = UserBadge.objects.filter(user=user).order_by('-earned_at', 'code').values('code', 'earned_at')
+    return [
+        {**BADGES_BY_CODE[row['code']].public(), 'label': BADGES_BY_CODE[row['code']].title,
+         'earned_at': row['earned_at'].isoformat()}
+        for row in rows
+        if row['code'] in BADGES_BY_CODE
+    ]  # fmt: skip
+
+
+def badges_overview(user, *, next_limit: int | None = 5) -> dict:
+    """GET /badges/me/ : badges obtenus + prochains à portée (progression) ; `next_limit=None` = tous les verrouillés."""
     stats = lifetime_stats(user)
     evaluate_badges(user, stats=stats, push=False)  # rattrape les « cuisiné » loggés hors POST /posts/cooked/
     owned = {ub.code: ub for ub in UserBadge.objects.filter(user=user)}
@@ -245,7 +256,7 @@ def badges_overview(user, *, next_limit: int = 5) -> dict:
     upcoming.sort(key=lambda b: (-b['progress']['ratio'], b['progress']['target'] == 1))
     return {
         'earned': earned,
-        'next': upcoming[:next_limit],
+        'next': upcoming if next_limit is None else upcoming[:next_limit],
         'earned_count': len(earned),
         'total_count': len(BADGES),
     }
