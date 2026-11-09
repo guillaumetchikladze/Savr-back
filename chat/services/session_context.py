@@ -1,6 +1,6 @@
 """
 Contexte dynamique injecté à chaque tour agent : dates + « Profil culinaire » (saison, préférences,
-foyer, panier de la semaine, cuisinés récents, nouveautés du mois).
+foyer, cuisine, tablées, panier de la semaine, cuisinés récents, nouveautés du mois).
 
 Calculé une fois par tour (consumer → `database_sync_to_async`), jamais par appel LLM. Budget
 compact : chaque section est plafonnée (≈ 2 000 caractères au pire, ~600 tokens) et une section en
@@ -172,6 +172,20 @@ def _equipment_lines(user) -> list[str]:
     return lines
 
 
+def _table_lines(user) -> list[str]:
+    """Ses tablées (invite_to_table) : nom + #id, plafonnées comme le réglage TABLES_MAX_PER_USER."""
+    from tables.models import TableMember
+
+    rows = list(
+        TableMember.objects.filter(user=user, status=TableMember.STATUS_ACCEPTED)
+        .select_related('table')
+        .order_by('table__name', 'table_id')[:5]
+    )
+    if not rows:
+        return []
+    return ['- Tablées : ' + ' ; '.join(f'{_short(m.table.name, 30)} [#{m.table_id}]' for m in rows) + '.']
+
+
 def _basket_lines(user) -> list[str]:
     from recipes.services import basket_service as basket
 
@@ -262,6 +276,7 @@ def build_profile_context(user: AbstractBaseUser, today=None) -> str:
     lines += _safe(_preference_lines, user)
     lines += _safe(_household_lines, user)
     lines += _safe(_equipment_lines, user)
+    lines += _safe(_table_lines, user)
     lines += _safe(_basket_lines, user)
     lines += _safe(_recent_cook_lines, user, today)
     lines += _safe(_novelty_lines, user, today)

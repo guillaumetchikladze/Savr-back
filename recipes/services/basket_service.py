@@ -558,6 +558,18 @@ def unschedule_item(item: BasketItem) -> BasketItem:
     return item
 
 
+def follow_meal_plan_week(meal_plan: MealPlan) -> int:
+    """Envies datées sur ce repas : elles suivent sa semaine quand le repas change de date (déplacement)."""
+    new_week = monday_of(meal_plan.date)
+    moved = 0
+    for item in BasketItem.objects.filter(meal_plan=meal_plan).exclude(week_start=new_week).select_related('user'):
+        item.week_start = new_week
+        item.position = _next_position(item.user, new_week)
+        item.save(update_fields=['week_start', 'position', 'updated_at'])
+        moved += 1
+    return moved
+
+
 # ---------------------------------------------------------------------------
 # Report sur la semaine suivante (à la demande, jamais automatique)
 # ---------------------------------------------------------------------------

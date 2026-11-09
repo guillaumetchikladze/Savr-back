@@ -18,7 +18,7 @@ def build_recipe_job_ready_system_content(event: dict) -> str:
         f'- Titre : {recipe_title}\n'
         f'- recipe_id : {recipe_id}\n'
         "L'utilisateur attend la suite : propose une action concrète "
-        '(planifier avec add_recipe_to_meal_plan si pertinent, ou inviter à consulter la fiche). '
+        "(l'ajouter à sa semaine avec plan_week et ce recipe_id, ou l'inviter à consulter la fiche). "
         'Ne relance pas generate_recipe_from_idea ni import_recipe_from_url pour cette recette.'
     )
 

@@ -4,7 +4,7 @@ from agents import RunContextWrapper, function_tool
 from channels.db import database_sync_to_async
 from django.db import close_old_connections
 
-from chat.services import kitchen_tools
+from chat.services import kitchen_tools, planning_tools
 from chat.services.agent_context import AgentContext
 from chat.services.tool_schemas import (
     AddRecipeResult,
@@ -18,9 +18,12 @@ from chat.services.tool_schemas import (
     GetShoppingListItemsResult,
     ImportJobStarted,
     LogCookedResult,
+    MealChangeResult,
     MutationProposal,
     PlanWeekResult,
+    RecipeImportResult,
     SearchRecipesResult,
+    TableInvitationResult,
     UndoCookedResult,
 )
 from recipes.services.invitation_service import (
@@ -176,8 +179,13 @@ async def add_recipe_to_meal_plan(
 async def import_recipe_from_url(
     ctx: RunContextWrapper[AgentContext],
     url: str,
-) -> ImportJobStarted:
-    """Lance l'import asynchrone d'une recette depuis une URL externe."""
+) -> RecipeImportResult:
+    """Importe une recette depuis un lien collé (Marmiton, blog, Instagram, TikTok…) : exécution immédiate,
+    sans demander. Renvoie une carte (import en cours, ou recette déjà importée avec son recipe_id).
+
+    Args:
+        url: le lien tel que collé par l'utilisateur.
+    """
     user = ctx.context.user
     return await _run_sync(_start_import_from_url, user, url, ctx.context.conversation_id)
 
@@ -403,56 +411,16 @@ async def adapt_recipe_equipment(
     return await _run_sync(kitchen_tools.adapt_recipe_equipment_for_chat, user, recipe_id=recipe_id)
 
 
-def _chat_payload(conversation_id: int | None, base: dict) -> dict:
-    if conversation_id:
-        base['chat_context'] = {'conversation_id': conversation_id}
-    return base
+_chat_payload = planning_tools._chat_payload
 
 
 def _start_import_from_url(
     user,
     url: str,
     conversation_id: int | None = None,
-) -> ImportJobStarted:
-    from django.db.models import Q
-
-    from recipes.models import Recipe, RecipeImportRequest
-    from recipes.tasks import process_recipe_import_from_url
-    from recipes.utils import canonicalize_import_url
-
-    url = (url or '').strip()
-    if not url:
-        raise ValueError('URL requise.')
-
-    canonical_url = canonicalize_import_url(url)
-    candidate_urls = {canonical_url, url}
-    if canonical_url.endswith('/'):
-        candidate_urls.add(canonical_url.rstrip('/'))
-    else:
-        candidate_urls.add(canonical_url + '/')
-
-    existing = (
-        Recipe.objects.filter(Q(is_public=True) | Q(created_by=user))
-        .filter(import_source_url__in=list(candidate_urls))
-        .order_by('-created_at')
-        .first()
-    )
-    if existing:
-        raise ValueError(f'Cette recette est déjà importée (id={existing.id}, titre="{existing.title}").')
-
-    import_request = RecipeImportRequest.objects.create(
-        user=user,
-        payload=_chat_payload(
-            conversation_id,
-            {'url': url, 'source_type': 'imported', 'job_type': 'import'},
-        ),
-        status=RecipeImportRequest.STATUS_PENDING,
-    )
-    task = process_recipe_import_from_url.delay(str(import_request.id))
-    import_request.task_id = task.id
-    import_request.save(update_fields=['task_id'])
-
-    return ImportJobStarted(request_id=str(import_request.id), url=url, job_type='import')
+) -> RecipeImportResult:
+    """Compat : l'import vit dans `planning_tools.start_recipe_import` (carte `recipe_import`)."""
+    return planning_tools.start_recipe_import(user, url, conversation_id)
 
 
 def _start_generate_from_idea(
@@ -492,11 +460,148 @@ def _start_generate_from_idea(
     )
 
 
+# ---------------------------------------------------------------------------
+# « Tout actionnable » (ag03) : dater / déplacer / retirer un repas, inviter
+# ---------------------------------------------------------------------------
+@function_tool(strict_mode=False)
+async def schedule_basket_item(
+    ctx: RunContextWrapper[AgentContext],
+    basket_item_id: int,
+    date: str,
+    meal_time: str | None = None,
+) -> MealChangeResult:
+    """Date une envie du panier (« mets le risotto jeudi soir ») : elle devient un repas planifié.
+    Exécution immédiate, annulable. Aussi pour changer le jour d'une envie déjà datée.
+
+    Args:
+        basket_item_id: #id de l'envie (panier du profil ou plan_week).
+        date: YYYY-MM-DD (ou « demain ») ; jamais dans le passé.
+        meal_time: breakfast, lunch ou dinner (défaut dinner).
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        planning_tools.schedule_basket_item_for_user,
+        user,
+        basket_item_id=basket_item_id,
+        date=date,
+        meal_time=meal_time,
+    )
+
+
+@function_tool(strict_mode=False)
+async def move_meal(
+    ctx: RunContextWrapper[AgentContext],
+    date: str,
+    meal_plan_id: int | None = None,
+    basket_item_id: int | None = None,
+    meal_time: str | None = None,
+) -> MealChangeResult:
+    """Déplace un repas planifié vers un autre jour ou créneau (« décale le dîner de jeudi à vendredi »).
+    Exécution immédiate, annulable. Le repas garde ses plats, convives et invitations.
+
+    Args:
+        date: nouveau jour YYYY-MM-DD (ou « demain »).
+        meal_plan_id: le repas entier (id de get_meal_plans).
+        basket_item_id: seulement ce plat du panier (#id), s'il ne faut pas bouger tout le repas.
+        meal_time: nouveau créneau breakfast, lunch ou dinner (défaut : inchangé).
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        planning_tools.move_meal_for_user,
+        user,
+        meal_plan_id=meal_plan_id,
+        basket_item_id=basket_item_id,
+        date=date,
+        meal_time=meal_time,
+    )
+
+
+@function_tool(strict_mode=False)
+async def remove_meal(
+    ctx: RunContextWrapper[AgentContext],
+    meal_plan_id: int | None = None,
+    basket_item_id: int | None = None,
+) -> MealChangeResult:
+    """Retire un repas du planning (« enlève le dîner de jeudi, on mange dehors ») : ses plats redeviennent des
+    envies sans date du panier, rien n'est perdu. Exécution immédiate, annulable (schedule_basket_item).
+
+    Args:
+        meal_plan_id: le repas entier (id de get_meal_plans).
+        basket_item_id: seulement ce plat daté du panier (#id).
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        planning_tools.remove_meal_for_user, user, meal_plan_id=meal_plan_id, basket_item_id=basket_item_id
+    )
+
+
+@function_tool(strict_mode=False)
+async def invite_to_meal(
+    ctx: RunContextWrapper[AgentContext],
+    invitee_names: list[str] | None = None,
+    invitee_ids: list[int] | None = None,
+    meal_plan_id: int | None = None,
+    basket_item_id: int | None = None,
+    date: str | None = None,
+    meal_time: str | None = None,
+) -> MutationProposal:
+    """Invite des ami·es à un repas planifié : affiche une carte de confirmation (rien n'est envoyé avant
+    « Envoyer »). Ami·es seulement.
+
+    Args:
+        invitee_names: prénoms ou pseudos des ami·es (« Léa »).
+        invitee_ids: ids des ami·es attaché·es via @.
+        meal_plan_id: le repas (id de get_meal_plans), sinon basket_item_id (envie datée) ou date + meal_time.
+        basket_item_id: envie datée du panier (#id).
+        date: YYYY-MM-DD du repas, si pas d'id.
+        meal_time: breakfast, lunch ou dinner, avec date.
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        planning_tools.propose_invite_to_meal,
+        user,
+        meal_plan_id=meal_plan_id,
+        basket_item_id=basket_item_id,
+        date=date,
+        meal_time=meal_time,
+        invitee_ids=invitee_ids,
+        invitee_names=invitee_names,
+    )
+
+
+@function_tool(strict_mode=False)
+async def invite_to_table(
+    ctx: RunContextWrapper[AgentContext],
+    invitee_names: list[str] | None = None,
+    invitee_ids: list[int] | None = None,
+    table_id: int | None = None,
+    table_name: str | None = None,
+) -> TableInvitationResult:
+    """Invite des ami·es à une de ses tablées (ils acceptent ou refusent dans l'app). Exécution immédiate.
+
+    Args:
+        invitee_names: prénoms ou pseudos des ami·es.
+        invitee_ids: ids des ami·es attaché·es via @.
+        table_id: id de la tablée (profil) ; défaut : sa seule tablée.
+        table_name: nom de la tablée si pas d'id (« Famille »).
+    """
+    user = ctx.context.user
+    return await _run_sync(
+        planning_tools.invite_to_table_for_user,
+        user,
+        table_id=table_id,
+        table_name=table_name,
+        invitee_ids=invitee_ids,
+        invitee_names=invitee_names,
+    )
+
+
 # Tools de mutation — identifiés par le consumer pour arrêter le stream
 MUTATION_TOOL_NAMES = frozenset(
     {
         'propose_meal_deletion',
         'send_invitation_proposal',
         'propose_recipe_revision',
+        'invite_to_meal',
     }
 )

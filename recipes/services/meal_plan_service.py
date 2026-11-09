@@ -661,6 +661,10 @@ def update_composer_slot(
         update_fields.append('guest_count')
 
     meal_plan.save(update_fields=update_fields)
+    # Repas d'une envie datée du panier : l'envie suit la semaine du repas.
+    from recipes.services.basket_service import follow_meal_plan_week
+
+    follow_meal_plan_week(meal_plan)
 
     return CreateMealPlanSlotResult(
         meal_plan_id=meal_plan.id,

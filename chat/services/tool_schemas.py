@@ -140,11 +140,12 @@ class AddShoppingListItemResult(BaseModel):
 # Agent v2 : panier « Cette semaine », « J'ai cuisiné », courses depuis le panier
 # ---------------------------------------------------------------------------
 class UndoHint(BaseModel):
-    """Annulation côté app (carte résultat) : appel REST à rejouer tel quel."""
+    """Annulation côté app (carte résultat) : appel REST à rejouer tel quel (`body` JSON si présent)."""
 
     method: str
     path: str
     label: str = 'Annuler'
+    body: dict[str, Any] | None = None
 
 
 class BasketAddition(BaseModel):
@@ -249,4 +250,85 @@ class BattlePlanResult(BaseModel):
     skipped: list[dict[str, Any]] = Field(default_factory=list)
     source: dict[str, Any] = Field(default_factory=dict)
     polished: bool = False
+    message: str = ''
+
+
+# ---------------------------------------------------------------------------
+# Agent v2 « tout actionnable » (ag03) : import par lien, dater / déplacer / retirer un repas, inviter
+# ---------------------------------------------------------------------------
+class CardAction(BaseModel):
+    """Bouton d'une carte résultat. `kind` stable côté app ; appel REST (`method` + `path` + `body`) si présent."""
+
+    kind: str = Field(description='open_recipe, add_to_week, open_week, open_meal, open_table')
+    label: str
+    method: str | None = None
+    path: str | None = None
+    body: dict[str, Any] | None = None
+    recipe_id: int | None = None
+    meal_plan_id: int | None = None
+    table_id: int | None = None
+
+
+class RecipeImportResult(ImportJobStarted):
+    """Import d'une recette depuis un lien collé dans le chat (même job Celery que POST /recipes/import_from_url/).
+
+    Sous-classe de `ImportJobStarted` : l'app 1.0.9 reçoit toujours `import_job_started` (polling du job).
+    `request_id` vide = rien à suivre (recette déjà importée).
+    """
+
+    card_type: str = 'recipe_import'
+    status: str = Field('pending', description='pending, processing, success ou error (statut du job)')
+    already_imported: bool = False
+    recipe_id: int | None = None
+    title: str | None = None
+    image_url: str | None = None
+    status_path: str | None = Field(None, description='GET à interroger pour suivre le job (pending → success)')
+    actions: list[CardAction] = Field(default_factory=list)
+    message: str = ''
+
+
+class MealChangeDish(BaseModel):
+    """Plat touché par schedule / move / remove (envie du panier), avec son annulation."""
+
+    basket_item_id: int | None = None
+    display_title: str
+    recipe_id: int | None = None
+    undo: UndoHint | None = None
+
+
+class MealChangeResult(BaseModel):
+    """`schedule_basket_item` (meal_scheduled), `move_meal` (meal_moved), `remove_meal` (meal_removed)."""
+
+    card_type: str
+    meal_plan_id: int | None = Field(None, description='Repas après le changement (None : retiré du planning)')
+    basket_item_id: int | None = None
+    display_title: str = ''
+    date: str | None = None
+    meal_time: str | None = None
+    previous_date: str | None = None
+    previous_meal_time: str | None = None
+    dishes: list[MealChangeDish] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    undo: UndoHint | None = None
+    message: str = ''
+
+
+class TableInvitee(BaseModel):
+    user_id: int
+    username: str
+    status: str = Field(description='invited, already_member ou already_invited')
+    undo: UndoHint | None = None
+
+
+class TableInvitationResult(BaseModel):
+    """`invite_to_table` : invitations envoyées (l'ami·e accepte ou refuse dans l'app)."""
+
+    card_type: str = 'table_invitation'
+    table_id: int
+    table_name: str = ''
+    table_emoji: str = ''
+    invitees: list[TableInvitee] = Field(default_factory=list)
+    not_found: list[str] = Field(default_factory=list, description='Noms sans ami·e correspondant')
+    actions: list[CardAction] = Field(default_factory=list)
+    undo: UndoHint | None = None
     message: str = ''

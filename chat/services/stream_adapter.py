@@ -197,7 +197,12 @@ class BlockStreamAdapter:
                                 )
                                 break
 
-                            if current_tool in RECIPE_JOB_TOOL_NAMES and isinstance(output, ImportJobStarted):
+                            # request_id vide = recette déjà importée : rien à suivre (pas d'import_job_started).
+                            if (
+                                current_tool in RECIPE_JOB_TOOL_NAMES
+                                and isinstance(output, ImportJobStarted)
+                                and output.request_id
+                            ):
                                 self._import_job = output
 
                             await emit(

@@ -500,11 +500,28 @@ OpenAI-compatible `GEMINI_OPENAI_BASE_URL`), indépendant de `AI_MODEL` (pipelin
   (→ `basket_service.items_for_shopping` + `add_to_shopping_list`), `remove_from_basket`, `undo_log_cooked`,
   `battle_plan` (→ `battle_plan_service`, « je fais X et Y ce soir, dans quel ordre ? »).
   Les 11 tools v1 restent exposés (app 1.0.9). Résultats : `card_type` + `message` + `undo` (`tool_schemas.py`).
+- « Tout actionnable » (ag03, `chat/services/planning_tools.py`, sync et testables ; wrappers dans `async_tools.py`) :
+  `import_recipe_from_url` (lien collé → job `process_recipe_import_from_url`, carte `recipe_import` : `status`,
+  `status_path` = `GET /api/recipes/formalize/status/{request_id}/` à interroger, actions « Voir la recette » /
+  « Ajouter à ma semaine » ; déjà importée → `success` + `recipe_id` sans job, `request_id` vide ; même lien en
+  cours (15 min) → même job), `schedule_basket_item` (→ `basket_service.schedule_item`, carte `meal_scheduled`,
+  undo `DELETE|POST /api/basket/{id}/schedule/`), `move_meal` (repas entier → `update_composer_slot`, l'envie
+  liée suit la semaine via `basket_service.follow_meal_plan_week` ; un seul plat → `schedule_item` ; carte
+  `meal_moved`, undo `PATCH /api/meal-plans/{id}/update-composer-slot/`), `remove_meal` (les plats redeviennent
+  des envies sans date, repas vide supprimé ; refusé si invité·es, cuisiné ou photos ; carte `meal_removed`,
+  undo par plat `POST /api/basket/{id}/schedule/`), `invite_to_meal` (ami·es seulement, nom ou prénom →
+  `propose_meal_invitation` : seule action avec confirmation, carte `meal_invitation` + PendingAction comme
+  `send_invitation_proposal`), `invite_to_table` (ami·es seulement → `tables.services.invite`, carte
+  `table_invitation`, undo `DELETE /api/tables/{id}/members/{user_id}/` si créateur·rice). Toujours en
+  vérifiant l'appartenance (envie / repas / tablée de l'utilisateur). `UndoHint.body` (nouveau, optionnel) :
+  corps JSON à rejouer. Le profil liste les tablées (`#id`). Prompt : lien de recette collé → import direct ;
+  réversible = sans confirmation. Cartes : `.claude-work/specs/agent-v2.md` § « Tout actionnable ».
 - Tracing SDK Agents : désactivé par défaut (`chat/services/tracing.py`, appelé au démarrage et à l'import de
   `agent_factory`) ; opt-in via `AGENT_TRACING_ENABLED=true` (les traces contiennent des données utilisateur).
-- Tests : `chat/tests/test_chat_agent_v2.py` (aller-retour tool calling avec `chat.completions.create` mocké,
-  sans réseau). Ne pas utiliser `django_db(transaction=True)` : il vide les données seedées par migration
-  de la base réutilisée (`make test-fresh` pour réparer).
+- Tests : `chat/tests/test_chat_agent_v2.py`, `chat/tests/test_chat_agent_actions.py` (aller-retour tool
+  calling avec `chat.completions.create` mocké, sans réseau ; undo rejoués via l'API). Ne pas utiliser
+  `django_db(transaction=True)` : il vide les données seedées par migration de la base réutilisée
+  (`make test-fresh` pour réparer).
 
 ## Historique du chat : « Tes conversations » (`chat/services/history.py`, `conversation_title.py`)
 
