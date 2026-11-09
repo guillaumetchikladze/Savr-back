@@ -237,6 +237,36 @@ Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas d
   invités vs autres).
 - Tests : `accounts/tests/test_auth_invites_api.py`, `recipes/tests/test_posts_density_api.py`.
 
+## « Les tablées » (app `tables`) et « Je l'ai déjà » (`recipes/services/pending_confirmations.py`)
+
+Contrat front : `.claude-work/specs/tables.md`. Jamais de classement ni de compteur individuel.
+
+- Modèles `Table` (nom, emoji, couleur) / `TableMember` (`owner|member`, `invited|accepted`, `share_basket`
+  défaut False). `TABLE_MAX_MEMBERS` 8 (invitations en attente comprises), `TABLE_MIN_MEMBERS` 2 (push),
+  `TABLES_MAX_PER_USER` 5 (création + acceptation). Invitation = ami·e de l'inviteur (suivi dans un sens ou
+  l'autre, sans blocage), consentie (`accept`/`decline`, refus = ligne supprimée) ; owner renomme / retire /
+  supprime, tout le monde part (rôle transmis au plus ancien, dernier départ = suppression). Lien d'invitation
+  portant une tablée : non fait (V1).
+- API `/api/tables/` (liste + invitations), `{id}/` (GET semaine `?week=`, PATCH, DELETE), `invite/`, `accept/`,
+  `decline/`, `leave/`, `members/{user_id}/` (DELETE), `me/` (`share_basket`). Non membre → 404.
+- Semaine (`tables.services.table_detail_payload`) : `cooked_members` / `member_count` / `headline`
+  (`cooked_meal_plans_of_users`), plats (`dish_key`) et cuisines distincts **collectifs**, `latest_post` par
+  membre = dernier post **visible par le viewer** (`post_visibility.visible_posts`, DISTINCT ON), rituel
+  « Qui cuisine quoi cette semaine ? » = envies non datées des membres `share_basket`.
+- Blocage : appartenance inchangée ; les deux membres ne se voient plus dans la tablée (membres, posts, panier),
+  comptés dans le collectif ; invitations en attente entre eux annulées (`cancel_invitations_between`).
+- Notifs (catégorie `tables`) : `table_invitation`, `table_joined`, `table_weekly` (dimanche, tâche du récap
+  `send_weekly_recaps_task` → `retention.send_weekly_recaps_and_tables`, 1/semaine, jamais à 0, plafonnée).
+- « Je l'ai déjà » : `GET /api/cooked/pending-confirmations/[?preview=1]` (≤ 3 repas d'aujourd'hui / hier, non
+  confirmés, sans post, créneau passé : `scheduled_time` + `COOKED_PENDING_GRACE_MINUTES`, sinon 10:00 / 14:00 /
+  21:00, fuseau des préférences), `cooked_payload` prêt pour `POST /posts/cooked/` ; « Pas fait » =
+  `POST|DELETE …/{meal_plan|basket_item}/{id}/dismiss/` (`CookedConfirmationDismissal`, l'envie reste au panier).
+  Push `cooked_pending` (beat horaire `send_cooked_pending_reminders_task`, 21:00 locale, 1/soir, payload
+  compatible `cooked_prompt` pour l'app 1.0.9, clé `cooked_prompt:{meal_plan_id}` partagée avec la push de fin
+  de cuisson, qui ignore aussi les « Pas fait »).
+- Tests : `tables/tests/test_tables_api.py`, `recipes/tests/test_posts_pending_confirmations_api.py`,
+  `notifications/tests/test_notifications_tables_pending.py`.
+
 ## Liens qui ouvrent l'app : aperçus publics et `share_url` (`recipes/views_public.py`)
 
 Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, fonctions Vercel) rend `/i/<code>`,
@@ -320,7 +350,7 @@ ou `push(type, user, …)` (push seule). Spec et contrat front : `.claude-work/s
 - Suivi : chaque push = une `NotificationDelivery` (`data.notification_id`) ; `POST /api/notifications/opened/`
   pose `opened_at`. Taux d'ouverture : `python manage.py notification_open_rates --days 30`.
 - Rétention (Celery beat, toutes les heures, `CELERY_BEAT_SCHEDULE`) : digest des posts des amis (≤ 1/jour,
-  18:00 locale) et récap du dimanche (19:00). Le beat tourne comme service Docker dédié `celery-beat` (jamais `worker -B`, jamais plus d'une instance) ; en local :
+  18:00 locale), récap du dimanche (19:00) suivi de la push des tablées, rappel « Je l'ai déjà » (21:00). Le beat tourne comme service Docker dédié `celery-beat` (jamais `worker -B`, jamais plus d'une instance) ; en local :
   `celery -A savr_back beat -l info`.
 - Tests : `make test-domain d=notifications` (mocker `notifications.services.send_expo_push_notifications`).
 
