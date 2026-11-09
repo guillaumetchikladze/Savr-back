@@ -272,6 +272,12 @@ AI_PAYWALL_ENABLED = config('AI_PAYWALL_ENABLED', default=False, cast=bool)
 # n'est pas compatible avec le bridge Agents SDK (ex. Gemini 3 : thought signatures obligatoires).
 CHAT_AI_MODEL = config('CHAT_AI_MODEL', default='gemini-2.5-flash')
 
+# « Plan de bataille » (POST /api/battle-plan/) : le plan est déterministe ; la reformulation LLM (même endpoint
+# OpenAI-compatible et même modèle que le chat) est optionnelle, avec délai court et repli sur le texte déterministe.
+BATTLE_PLAN_LLM_ENABLED = config('BATTLE_PLAN_LLM_ENABLED', default=False, cast=bool)
+BATTLE_PLAN_LLM_TIMEOUT_SECONDS = config('BATTLE_PLAN_LLM_TIMEOUT_SECONDS', default=6.0, cast=float)
+BATTLE_PLAN_POLISH_CACHE_SECONDS = config('BATTLE_PLAN_POLISH_CACHE_SECONDS', default=7 * 24 * 3600, cast=int)
+
 # Billing architecture:
 # - contact_email : mailto support (défaut — safe App Store / en attendant IAP ou web)
 # - web_handoff   : token app → tchikook.fr (Stancer plus tard)

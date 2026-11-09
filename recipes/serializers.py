@@ -36,6 +36,14 @@ from .models import (
 from .utils import get_accessible_meal_plan_filter, meal_plan_slot_api_fields
 
 
+def meal_plan_has_battle_plan(meal_plan) -> bool:
+    """« Plan de bataille » proposé : ≥ 2 recettes (cache de prefetch de `meal_plan_recipe_batches`)."""
+    try:
+        return len(meal_plan.meal_plan_recipe_batches.all()) >= 2
+    except Exception:  # objet non sauvegardé, relation absente
+        return False
+
+
 def post_display_title(post):
     # Import local : cooked_service → meal_plan_service → chat (évite un import circulaire).
     from .services.cooked_service import post_display_title as _post_display_title
@@ -744,6 +752,8 @@ class MealPlanDetailSerializer(MealPlanDinersMixin, serializers.ModelSerializer)
     diners = serializers.SerializerMethodField()
     servings_suggested = serializers.SerializerMethodField()
 
+    has_battle_plan = serializers.SerializerMethodField()
+
     class Meta:
         model = MealPlan
         fields = [
@@ -772,8 +782,13 @@ class MealPlanDetailSerializer(MealPlanDinersMixin, serializers.ModelSerializer)
             'servings_suggested',
             'created_at',
             'updated_at',
+            'has_battle_plan',
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at']
+
+    def get_has_battle_plan(self, obj: MealPlan) -> bool:
+        """≥ 2 recettes : « Plan de bataille » proposé (cache de prefetch, aucune requête en plus)."""
+        return meal_plan_has_battle_plan(obj)
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
@@ -1252,6 +1267,8 @@ class MealPlanListSerializer(serializers.ModelSerializer):
             return obj.custom_label
         return obj.get_meal_time_display()
 
+    has_battle_plan = serializers.SerializerMethodField()
+
     class Meta:
         model = MealPlan
         fields = [
@@ -1270,7 +1287,12 @@ class MealPlanListSerializer(serializers.ModelSerializer):
             'recipes',
             'groupedDates',
             'is_guest',
+            'has_battle_plan',
         ]
+
+    def get_has_battle_plan(self, obj: MealPlan) -> bool:
+        """≥ 2 recettes : « Plan de bataille » proposé (cache de prefetch, aucune requête en plus)."""
+        return meal_plan_has_battle_plan(obj)
 
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
@@ -1401,6 +1423,8 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
     people_count = serializers.SerializerMethodField()
     people_preview = serializers.SerializerMethodField()
 
+    has_battle_plan = serializers.SerializerMethodField()
+
     class Meta:
         model = MealPlan
         fields = [
@@ -1421,7 +1445,12 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             'recipes_count',
             'people_count',
             'people_preview',
+            'has_battle_plan',
         ]
+
+    def get_has_battle_plan(self, obj: MealPlan) -> bool:
+        """≥ 2 recettes : « Plan de bataille » proposé (cache de prefetch, aucune requête en plus)."""
+        return meal_plan_has_battle_plan(obj)
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
@@ -1696,6 +1725,8 @@ class MealPlanRangeListSerializer(MealPlanDinersMixin, serializers.ModelSerializ
             return (obj.custom_label or '').strip() or obj.get_meal_time_display()
         return obj.get_meal_time_display()
 
+    has_battle_plan = serializers.SerializerMethodField()
+
     class Meta:
         model = MealPlan
         fields = [
@@ -1718,7 +1749,12 @@ class MealPlanRangeListSerializer(MealPlanDinersMixin, serializers.ModelSerializ
             'total_servings',
             'groupedDates',
             'is_guest',
+            'has_battle_plan',
         ]
+
+    def get_has_battle_plan(self, obj: MealPlan) -> bool:
+        """≥ 2 recettes : « Plan de bataille » proposé (cache de prefetch, aucune requête en plus)."""
+        return meal_plan_has_battle_plan(obj)
 
     def get_participants(self, obj):
         """
@@ -1873,6 +1909,8 @@ class MealPlanByDateSerializer(MealPlanDinersMixin, serializers.ModelSerializer)
     is_guest = serializers.SerializerMethodField()
     inviter_name = serializers.SerializerMethodField()
 
+    has_battle_plan = serializers.SerializerMethodField()
+
     class Meta:
         model = MealPlan
         fields = [
@@ -1896,7 +1934,12 @@ class MealPlanByDateSerializer(MealPlanDinersMixin, serializers.ModelSerializer)
             'groupedDates',
             'is_guest',
             'inviter_name',
+            'has_battle_plan',
         ]
+
+    def get_has_battle_plan(self, obj: MealPlan) -> bool:
+        """≥ 2 recettes : « Plan de bataille » proposé (cache de prefetch, aucune requête en plus)."""
+        return meal_plan_has_battle_plan(obj)
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):

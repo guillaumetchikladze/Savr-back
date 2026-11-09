@@ -4,6 +4,7 @@ from rest_framework.routers import APIRootView, DefaultRouter
 from accounts.permissions import IsValidated as IsAuthenticated
 
 from .basket_views import BasketViewSet
+from .battle_plan_views import battle_plan_view
 from .density_views import feed_suggestions_view, onboarding_social_view
 from .dietary_views import (
     dietary_conflict_dismiss_view,
@@ -77,6 +78,7 @@ urlpatterns = [
         pending_confirmation_dismiss_view,
         name='cooked_pending_confirmation_dismiss',
     ),
+    path('battle-plan/', battle_plan_view, name='battle_plan'),
     path('dishes/classics/', dish_classics_view, name='dish_classics'),
     path('dishes/recipe/<int:recipe_id>/', dish_recipe_view, name='dish_recipe'),
     path('dishes/label/<str:slug>/', dish_label_view, name='dish_label'),

@@ -38,6 +38,7 @@ os.environ.setdefault('SECRET_KEY', 'test-secret-key-not-for-production-01234567
 os.environ['DEBUG'] = 'False'
 os.environ['AI_PAYWALL_ENABLED'] = 'False'
 os.environ['SEARCH_CONTEXT_GEMINI_ENABLED'] = 'False'
+os.environ['BATTLE_PLAN_LLM_ENABLED'] = 'False'
 # Clé Fernet factice (cartes de fidélité chiffrées).
 os.environ.setdefault('LOYALTY_CARD_SECRET_KEY', 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDEyMzQ=')
 
