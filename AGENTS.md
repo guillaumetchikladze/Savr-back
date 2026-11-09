@@ -75,3 +75,16 @@ Règles de la suite :
 - fixtures partagées (`conftest.py`) : `make_user` (validé par défaut), `user`, `api.as_user(u)`, `make_recipe`, `make_meal_plan`, `make_shopping_list`, `follow`.
 - un fichier par domaine (`test_<domaine>_*.py`) → marqueur de domaine appliqué automatiquement.
 - tests API orientés règles métier et permissions, pas de CRUD trivial.
+
+## « J'ai cuisiné » et définition de « cuisiné » (stats)
+
+Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user, start, end)`.
+
+- **Cuisiné = `MealPlan` possédé par l'utilisateur avec `confirmed=True`** ; date = `MealPlan.date`,
+  contenu = recettes liées (`meal_plan_recipe_batches`) et/ou plat libre (`Post.label` / `custom_label`).
+  Le `Post` est optionnel (log privé possible, `is_published=False`). Les invités ne « cuisinent » pas le repas de l'hôte.
+- Chemins qui posent `confirmed=True` : `POST /posts/cooked/` (canonique, 1 tap, photo optionnelle),
+  `POST /meal-plans/{id}/publish-post/`, `POST /recipe-batches/{id}/publish-post/`, `POST /posts/{id}/publish/`,
+  fin du mode cuisine (`complete_cooking`, `cooking-progress/{id}/complete/`), `POST /meal-plans/{id}/confirm/`.
+  `unmark_cooking` et `DELETE /posts/{id}/?undo_cooked=true` défont la trace.
+- Ne jamais copier `confirmed` lors d'une duplication de repas (planifier ≠ cuisiner).
