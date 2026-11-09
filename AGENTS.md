@@ -161,6 +161,32 @@ Le foyer est réglé une fois et inclus par défaut dans chaque repas / envie, s
 - Foyer jamais compté comme convive (stats, badge « Hôte », ardoise) ; lien modifié → signaux `stats`.
 - Tests : `recipes/tests/test_mealplan_household_api.py`, `stats/tests/test_stats_*` (foyer).
 
+## Densité : « Ta bande avant ton premier plat » (invitations, onboarding social, Suggestions)
+
+Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas de géolocalisation.
+
+- Liens d'invitation (`accounts/services/invite_service.py`, `/api/invites/`) : `me/` (code actif créé à la
+  demande, `url` = `INVITE_BASE_URL/i/<code>`, défaut `https://tchikook.fr`), `me/rotate/`, `redeem/`,
+  `<code>/` (aperçu public, débit limité par IP). `POST /api/auth/register/` accepte `invite_code` (un code invalide
+  ne bloque jamais l'inscription ; bloc `invite` dans la réponse). Codes 10 car. sans ambiguïté (≈ 50 bits),
+  plafond `INVITE_CODE_MAX_USES` (50) par code, limites de débit en cache.
+- Utiliser un code : amitié **mutuelle** (`follow_service.make_mutual_friends`), sortie de la liste d'attente
+  + `AllowedEmail` si `INVITE_BYPASSES_WAITLIST` (défaut True), notif `invite_joined` (in-app `follow`, lue par
+  l'app 1.0.9), trace `InviteRedemption` (1 par paire, `is_acquisition` = arrivée grâce au lien).
+- Ami = suivi approuvé (hors blocages) ; ami actif = a cuisiné (`cooked_meal_plans_of_users`) sur 14 jours ;
+  cible 3 (`recipes/services/density_service.py`).
+- `GET /api/onboarding/social/` : compteurs, `has_given_miam`, `invite`, `invited_by`, `suggested_people`
+  (`accounts/feed_suggestions.build_onboarding_people_suggestions` : invitations > te suit > amis d'amis,
+  complété par les suggestions existantes du feed), `first_miam_posts` (≤ 3 posts d'amis sans ton miam).
+- `GET /api/feed/suggestions/` : endpoint **séparé** (feed principal inchangé pour l'app 1.0.9), posts publiés
+  **et** `Post.is_public` (partage communauté opt-in par post, défaut False, via `POST /posts/cooked/` ou
+  `PATCH /posts/{id}/update-content/`), hors amis / soi / blocages, `suggested: true` ; vide (`active: false`)
+  dès 3 amis actifs. Un post `is_public` s'ouvre (`retrieve`) et accepte « À mon tour » hors amis (sauf blocage).
+- Feed réutilisable : `PostViewSet.feed_list_queryset(request, qs)` (préchargements + annotations, pas de N+1).
+- Mesure : `python manage.py density_report --days 30 [--json]` (% ≥ 3 amis à J7, miams donnés en semaine 1,
+  invités vs autres).
+- Tests : `accounts/tests/test_auth_invites_api.py`, `recipes/tests/test_posts_density_api.py`.
+
 ## Agent IA v2 (app `chat`)
 
 Contrat front : `.claude-work/specs/agent-v2.md`. Modèle : `CHAT_AI_MODEL` (défaut `gemini-2.5-flash`, endpoint
