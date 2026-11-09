@@ -2357,7 +2357,50 @@ class ArdoiseFieldsMixin(serializers.Serializer):
         return post_ardoise(obj)['highlights']
 
 
-class PostSerializer(ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
+class MyTurnFieldsMixin(serializers.Serializer):
+    """
+    « À mon tour » : `my_turn_count` (amis distincts qui ont mis le plat dans leur panier),
+    `has_my_turn` (le viewer l'a dans son panier, pas encore cuisiné) et `inspired_by`
+    (post « J'ai cuisiné » refait d'après un ami : {post_id, user}). Annotations du PostViewSet
+    (`_my_turn_count`, `_has_my_turn`) dans le feed : pas de requête par post.
+    """
+
+    my_turn_count = serializers.SerializerMethodField()
+    has_my_turn = serializers.SerializerMethodField()
+    inspired_by = serializers.SerializerMethodField()
+
+    def get_my_turn_count(self, obj):
+        annotated = getattr(obj, '_my_turn_count', None)
+        if annotated is not None:
+            return annotated
+        from .services.basket_service import my_turn_count
+
+        return my_turn_count(obj)
+
+    def get_has_my_turn(self, obj):
+        annotated = getattr(obj, '_has_my_turn', None)
+        if annotated is not None:
+            return bool(annotated)
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        from .services.basket_service import has_my_turn
+
+        return has_my_turn(request.user, obj)
+
+    def get_inspired_by(self, obj):
+        if not obj.inspired_by_post_id:
+            return None
+        original = obj.inspired_by_post
+        if original is None:
+            return None
+        return {
+            'post_id': original.id,
+            'user': UserLightSerializer(original.user, context=self.context).data if original.user_id else None,
+        }
+
+
+class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
     photos = PostPhotoSerializer(many=True, read_only=True)
     user = UserLightSerializer(read_only=True)
     recipe_batch = RecipeBatchLightSerializer(read_only=True)
@@ -2394,6 +2437,9 @@ class PostSerializer(ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSer
             'has_all_photos',
             'cookies_count',
             'has_cookie_from_user',
+            'my_turn_count',
+            'has_my_turn',
+            'inspired_by',
             'comments_count',
             'has_reposted_by_me',
             'can_repost',
@@ -2612,7 +2658,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class PostListSerializer(ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
+class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, serializers.ModelSerializer):
     """Serializer minimal pour la liste des posts (feed)."""
 
     user = UserLightSerializer(read_only=True)
@@ -2641,6 +2687,9 @@ class PostListSerializer(ArdoiseFieldsMixin, RepostFieldsMixin, serializers.Mode
             'photos',
             'cookies_count',
             'has_cookie_from_user',
+            'my_turn_count',
+            'has_my_turn',
+            'inspired_by',
             'comments_count',
             'recipe',
             'recipe_batch',

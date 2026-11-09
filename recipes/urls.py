@@ -3,6 +3,7 @@ from rest_framework.routers import APIRootView, DefaultRouter
 
 from accounts.permissions import IsValidated as IsAuthenticated
 
+from .basket_views import BasketViewSet
 from .dietary_views import (
     dietary_conflict_dismiss_view,
     dietary_conflicts_view,
@@ -62,6 +63,7 @@ router.register(r'collections', CollectionViewSet, basename='collection')
 router.register(r'shopping-lists', ShoppingListViewSet, basename='shoppinglist')
 router.register(r'shopping-list-items', ShoppingListItemViewSet, basename='shoppinglistitem')
 router.register(r'shopping-list-invitations', ShoppingListInvitationViewSet, basename='shoppinglistinvitation')
+router.register(r'basket', BasketViewSet, basename='basket')
 
 urlpatterns = [
     path('dietary-conflicts/', dietary_conflicts_view, name='dietary_conflicts'),

@@ -873,6 +873,14 @@ class Post(models.Model):
         help_text="Instantané « L'ardoise » ({v, cuisine, items}) calculé à la date du repas "
         '(stats.services.highlights) ; null = à (re)calculer à la prochaine lecture.',
     )
+    inspired_by_post = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='inspired_posts',
+        help_text="« À mon tour » : post d'un ami qui a donné envie de cuisiner ce plat (« d'après Léa »).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -902,6 +910,88 @@ class Post(models.Model):
         photo_types = set(self.photos.values_list('photo_type', flat=True))
         required_types = {'during_cooking', 'after_cooking', 'at_meal_time'}
         return required_types.issubset(photo_types)
+
+
+class BasketItem(models.Model):
+    """
+    Panier « Cette semaine » : une envie de plat **sans date** (recette ou plat libre) pour la semaine
+    `week_start` (lundi, fuseau de l'utilisateur).
+
+    Ce n'est pas un repas : le « cuisiné » reste défini par `MealPlan.confirmed`
+    (`recipes.services.cooked_service.cooked_meal_plans`). Dater l'envie (`schedule`) ou la cuisiner
+    (`POST /posts/cooked/` avec `basket_item_id`) la rattache à un vrai `MealPlan` (`meal_plan`).
+    Statut dérivé (cf. `basket_service.item_status`) : todo → planned (repas non confirmé) → cooked
+    (repas confirmé) ; carried_over (reporté sur une autre semaine) ; not_done (semaine passée).
+    Jamais supprimé automatiquement (historique « Pas fait »).
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='basket_items')
+    week_start = models.DateField(help_text='Lundi de la semaine du panier (fuseau de l’utilisateur).')
+    recipe = models.ForeignKey(Recipe, on_delete=models.SET_NULL, null=True, blank=True, related_name='basket_items')
+    label = models.CharField(
+        max_length=120,
+        blank=True,
+        default='',
+        help_text='Plat libre (sans recette) ; titre de la recette au moment de l’ajout sinon.',
+    )
+    servings = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text='Portions voulues (None = portions de la recette / du repas).'
+    )
+    position = models.IntegerField(default=0, help_text='Ordre dans le panier de la semaine.')
+    recipe_batch = models.ForeignKey(
+        RecipeBatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='basket_items',
+        help_text='Batch de la recette (liste de courses, puis repas daté) ; créé à la demande.',
+    )
+    meal_plan = models.ForeignKey(
+        MealPlan,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='basket_items',
+        help_text='Repas daté (planifié ou cuisiné) issu de cette envie.',
+    )
+    owns_meal_plan = models.BooleanField(
+        default=False, help_text='Le repas a été créé pour cette envie (supprimé si on la « dé-date »).'
+    )
+    inspired_by_post = models.ForeignKey(
+        Post,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='my_turn_items',
+        db_index=False,  # couvert par basketitem_post_user_idx
+        help_text='« À mon tour » : post qui a donné envie.',
+    )
+    carried_over_to = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='carried_over_from',
+        help_text='Envie reportée : copie dans une semaine suivante.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['week_start', 'position', 'id']
+        indexes = [
+            models.Index(fields=['user', 'week_start'], name='basketitem_user_week_idx'),
+            models.Index(fields=['inspired_by_post', 'user'], name='basketitem_post_user_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id} - {self.week_start} - {self.display_title}'
+
+    @property
+    def display_title(self) -> str:
+        if self.recipe_id and self.recipe:
+            return self.recipe.title
+        return self.label
 
 
 class PostPhoto(models.Model):

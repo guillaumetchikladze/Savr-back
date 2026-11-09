@@ -16,6 +16,11 @@ Tous les chemins qui signifient « j'ai cuisiné » posent `confirmed=True` :
     - fin du mode cuisine : POST /recipe-batches/{id}/complete_cooking/ et
       POST /cooking-progress/{id}/complete/ (repas choisi par `pick_meal_plan_for_batch`) ;
     - POST /meal-plans/{id}/confirm/.
+
+Panier « Cette semaine » (`basket_service`) : une envie n'est pas un repas. `POST /posts/cooked/` avec
+`basket_item_id` (ou un plat qui correspond à une envie non datée de la semaine) passe par ce même
+flux ; l'envie est ensuite rattachée au repas confirmé et le post porte `inspired_by_post`
+(« À mon tour »).
 """
 
 from __future__ import annotations
@@ -350,6 +355,7 @@ def log_cooked(
     photo_ids=None,
     cooking_time_minutes=None,
     publish: bool = True,
+    basket_item_id=None,
 ) -> CookedResult:
     """
     « J'ai cuisiné X » en 1 appel : repas (réutilisé ou créé, confirmé), recette liée et batches
@@ -377,6 +383,15 @@ def log_cooked(
             # Invité : on ne modifie pas le repas de l'hôte ; l'app logue sans meal_plan_id.
             raise CookedError('Only the meal plan owner can log it as cooked', 403, 'not_meal_plan_owner')
 
+    basket_item = None
+    if basket_item_id not in (None, ''):
+        basket_item = _basket_item_or_error(user, basket_item_id)
+        if meal_plan is None and basket_item.meal_plan_id:
+            meal_plan = basket_item.meal_plan  # envie déjà datée : on cuisine son repas
+        elif meal_plan is None and recipe is None and not label:
+            recipe = basket_item.recipe
+            label = '' if recipe else basket_item.label[:LABEL_MAX_LENGTH]
+
     if not (recipe or label or meal_plan):
         raise CookedError('recipe_id, label or meal_plan_id is required', 400, 'missing_dish')
 
@@ -395,10 +410,16 @@ def log_cooked(
     if cooking_time is not None:
         cooking_time = max(0, cooking_time)
 
+    if basket_item is None:
+        basket_item = _basket_item_or_error(
+            user, None, meal_plan=meal_plan, cooked_on=local_dt.date(), recipe=recipe, label=label
+        )
+
     # ---- Idempotence ----
     if meal_plan:
         existing = Post.objects.filter(meal_plan=meal_plan).order_by('-is_published', 'id').first()
         if existing:
+            _link_basket_item_to_existing(basket_item, existing)
             return CookedResult(_publish_if_requested(existing, publish), False)
         has_dish = bool(recipe or label or meal_plan.custom_label.strip())
         if not has_dish and not MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).exists():
@@ -406,6 +427,7 @@ def log_cooked(
     else:
         existing = _find_same_day_cooked_post(user, local_dt.date(), recipe, label)
         if existing:
+            _link_basket_item_to_existing(basket_item, existing)
             return CookedResult(_publish_if_requested(existing, publish), False)
 
     # ---- Écritures ----
@@ -425,9 +447,15 @@ def log_cooked(
             'uncooked_batch_ids': [],
         }
 
+        if recipe and basket_item and basket_item.recipe_id == recipe.id:
+            # Envie du panier : sa recette entre dans le repas avec son batch (liste de courses conservée).
+            from recipes.services.basket_service import attach_batch_to_meal_plan
+
+            if attach_batch_to_meal_plan(basket_item, meal_plan):
+                undo['added_recipe_ids'].append(recipe.id)
         if recipe:
             result = add_recipes_to_meal_plan(user, meal_plan.id, [recipe.id])
-            undo['added_recipe_ids'] = list(result.added_recipe_ids)
+            undo['added_recipe_ids'] += list(result.added_recipe_ids)
 
         batches = _meal_plan_batches(meal_plan)
         undo['uncooked_batch_ids'] = [b.id for b in batches if not b.is_cooked]
@@ -445,6 +473,13 @@ def log_cooked(
             update_fields.append('custom_label')
         meal_plan.save(update_fields=update_fields)
 
+        inspired_by = None
+        if basket_item is not None:
+            from recipes.services.basket_service import mark_item_cooked
+
+            undo['basket_item'] = mark_item_cooked(basket_item, meal_plan, meal_plan_created=meal_plan_created)
+            inspired_by = basket_item.inspired_by_post if basket_item.inspired_by_post_id else None
+
         cover = next((b for b in batches if recipe and b.recipe_id == recipe.id), batches[0] if batches else None)
         post = Post.objects.create(
             user=user,
@@ -455,10 +490,37 @@ def log_cooked(
             cooking_time_minutes=cooking_time,
             is_published=bool(publish),
             cooked_undo=undo,
+            inspired_by_post=inspired_by,
         )
         attach_photos(post, photos)
 
+    if inspired_by is not None:
+        from recipes.services.basket_service import notify_inspiration_cooked
+
+        notify_inspiration_cooked(post)
     return CookedResult(post, True)
+
+
+def _basket_item_or_error(user, basket_item_id, **match):
+    from recipes.services.basket_service import BasketError, resolve_basket_item_for_cooked
+
+    try:
+        return resolve_basket_item_for_cooked(user, basket_item_id=basket_item_id, **match)
+    except BasketError as exc:
+        raise CookedError(exc.message, exc.status_code, exc.code) from exc
+
+
+def _link_basket_item_to_existing(basket_item, post: Post) -> None:
+    """Plat déjà logué aujourd'hui (double tap, autre chemin) : l'envie est cochée sur ce repas."""
+    if basket_item is None or not post.meal_plan_id or post.meal_plan.user_id != basket_item.user_id:
+        return
+    if basket_item.meal_plan_id is None:
+        from recipes.services.basket_service import mark_item_cooked
+
+        mark_item_cooked(basket_item, post.meal_plan, meal_plan_created=False)
+    if basket_item.inspired_by_post_id and not post.inspired_by_post_id:
+        Post.objects.filter(pk=post.pk).update(inspired_by_post_id=basket_item.inspired_by_post_id)
+        post.inspired_by_post_id = basket_item.inspired_by_post_id
 
 
 def undo_cooked(post: Post) -> None:
@@ -475,11 +537,16 @@ def undo_cooked(post: Post) -> None:
         if not undo or not meal_plan or Post.objects.filter(meal_plan=meal_plan).exists():
             return
 
+        if undo.get('basket_item'):
+            from recipes.services.basket_service import restore_item_after_undo
+
+            restore_item_after_undo(undo['basket_item'])
+
         if undo.get('meal_plan_created'):
             batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
             meal_plan.delete()
             RecipeBatch.objects.filter(
-                id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True
+                id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
             return
 
@@ -488,8 +555,9 @@ def undo_cooked(post: Post) -> None:
             mprbs = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan, recipe_batch__recipe_id__in=added)
             batch_ids = list(mprbs.values_list('recipe_batch_id', flat=True))
             mprbs.delete()
+            # Le batch d'une envie du panier reste (liste de courses) : l'envie redevient « à faire ».
             RecipeBatch.objects.filter(
-                id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True
+                id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
 
         uncooked = undo.get('uncooked_batch_ids') or []

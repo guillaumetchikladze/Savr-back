@@ -198,6 +198,7 @@ class Notification(models.Model):
         ('post_repost', 'Repost de votre post'),
         ('shopping_list_invitation', 'Liste de courses partagée'),
         ('a_mon_tour', 'À mon tour'),
+        ('a_mon_tour_cooked', 'À mon tour : plat refait'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', verbose_name='Utilisateur')

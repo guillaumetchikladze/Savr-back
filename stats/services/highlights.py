@@ -418,6 +418,15 @@ def preview_cooked(user, data) -> dict:
             raise CookedError('Meal plan not found', 404, 'meal_plan_not_found')
         if meal_plan.user_id != user.id:
             raise CookedError('Only the meal plan owner can log it as cooked', 403, 'not_meal_plan_owner')
+    if data.get('basket_item_id') not in (None, ''):
+        from recipes.services.cooked_service import _basket_item_or_error
+
+        item = _basket_item_or_error(user, data.get('basket_item_id'))
+        if meal_plan is None and item.meal_plan_id:
+            meal_plan = item.meal_plan
+        elif meal_plan is None and recipe is None and not label:
+            recipe = item.recipe
+            label = '' if recipe else item.label[:LABEL_MAX_LENGTH]
     if not (recipe or label or meal_plan):
         raise CookedError('recipe_id, label or meal_plan_id is required', 400, 'missing_dish')
     day = meal_plan.date if meal_plan else _resolve_local_datetime(data.get('cooked_at')).date()

@@ -148,6 +148,18 @@ def _render_miam(ctx: dict) -> tuple[str, str]:
     return plural(n, 'Nouveau miam', 'Nouveaux miams'), f'{people(names, n)} {verb} {ctx["dish"]}.'
 
 
+def _render_my_turn(ctx: dict) -> tuple[str, str]:
+    names, n = _actors(ctx)
+    verb = 'veut refaire' if n == 1 else 'veulent refaire'
+    return 'Ton plat donne envie', f'{people(names, n)} {verb} {ctx["dish"]}.'
+
+
+def _render_my_turn_cooked(ctx: dict) -> tuple[str, str]:
+    names, n = _actors(ctx)
+    verb = 'a refait' if n == 1 else 'ont refait'
+    return 'Ton plat a été refait', f'{people(names, n)} {verb} {ctx["dish"]}.'
+
+
 def _render_comment(ctx: dict) -> tuple[str, str]:
     names, n = _actors(ctx)
     count = max(int(ctx.get('count') or 1), n)
@@ -321,17 +333,28 @@ _TYPES = (
         legacy_source='social',
         legacy_kind='follow',
     ),
-    # Réservé : « À mon tour » (2e réaction à côté du miam) — attend le panier « Cette semaine ».
+    # « À mon tour » (2e réaction à côté du miam) : un ami met ton plat dans son panier « Cette semaine ».
+    # Une fois par (ami, post) ; push débouncée et agrégée comme les miams, plafond quotidien.
     NotificationType(
         'a_mon_tour',
         'social',
-        title='Ton plat donne envie',
-        body='{actor} veut refaire {dish}.',
-        enabled=False,
+        renderer=_render_my_turn,
         inbox_type='a_mon_tour',
         data_fields=_POST,
         url='post/{post_id}',
         group_key='a_mon_tour:{post_id}',
+        group_window=12,
+    ),
+    # L'ami a cuisiné l'envie : `post_id` = ton post d'origine (regroupement), `cooked_post_id` = son post.
+    NotificationType(
+        'a_mon_tour_cooked',
+        'social',
+        renderer=_render_my_turn_cooked,
+        inbox_type='a_mon_tour_cooked',
+        data_fields=(*_POST, 'cooked_post_id'),
+        url='post/{post_id}',
+        group_key='a_mon_tour_cooked:{post_id}',
+        group_window=12,
     ),
     # --- Activité des amis / récap / badges (rétention) ----------------------------
     NotificationType(

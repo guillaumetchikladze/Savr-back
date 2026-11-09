@@ -77,15 +77,18 @@ def test_aggregated_likes_and_plurals():
     assert invitation.render({**ctx, 'count': 3})[1] == 'Léa t’invite à 3 repas.'
 
 
-def test_a_mon_tour_is_reserved_but_disabled(user, make_user, device, expo):
-    from accounts.models import Notification
-    from notifications.services import notify
-
-    spec = get_type('a_mon_tour')
-    assert not spec.enabled
-    assert spec.render({'actor': 'Léa', 'dish': '« Quiche »'})[1] == 'Léa veut refaire « Quiche ».'
-
-    device(user)
-    result = notify('a_mon_tour', user, actor=make_user('lea'))
-    assert result.push.status == 'disabled'
-    assert not Notification.objects.filter(user=user).exists() and expo.messages == []
+def test_a_mon_tour_renders_single_and_aggregated():
+    my_turn = get_type('a_mon_tour')
+    assert my_turn.enabled and my_turn.category == 'social' and not my_turn.transactional
+    assert my_turn.render({'actor': 'Léa', 'dish': '« Quiche »'}) == (
+        'Ton plat donne envie',
+        'Léa veut refaire « Quiche ».',
+    )
+    assert my_turn.render({'actors': ['Léa', 'Tom', 'Zoé'], 'dish': '« Quiche »'})[1] == (
+        'Léa et 2 autres veulent refaire « Quiche ».'
+    )
+    cooked = get_type('a_mon_tour_cooked')
+    assert cooked.render({'actor': 'Léa', 'dish': '« Quiche »'})[1] == 'Léa a refait « Quiche ».'
+    assert cooked.render({'actors': ['Léa', 'Tom'], 'dish': '« Quiche »'})[1] == 'Léa et Tom ont refait « Quiche ».'
+    data = cooked.build_data({'post_id': 4, 'cooked_post_id': 9}, notification_id=1)
+    assert data['url'] == 'tchikook://post/4' and data['cooked_post_id'] == 9

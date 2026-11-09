@@ -204,11 +204,12 @@ def add_item_to_shopping_list(
 
 
 # ---------------------------------------------------------------------------
-# Batch de recette → lignes de la liste (partagé par les endpoints ShoppingListViewSet)
+# Batch de recette → lignes de la liste (partagé : ShoppingListViewSet, panier « Cette semaine »)
 # ---------------------------------------------------------------------------
 def compute_total_servings_batch(batch: RecipeBatch) -> float:
     """
-    Portions totales d'un batch : somme des portions des repas liés ; sinon portions de la recette.
+    Portions totales d'un batch : somme des portions des repas liés ; sinon portions voulues dans le
+    panier « Cette semaine » (envie non datée) ; sinon portions de la recette.
     """
     from recipes.utils import get_batch_portions
 
@@ -218,7 +219,12 @@ def compute_total_servings_batch(batch: RecipeBatch) -> float:
     total = 0
     for mprb in MealPlanRecipeBatch.objects.filter(recipe_batch=batch).select_related('meal_plan'):
         total += get_batch_portions(mprb.meal_plan, mprb)
-    return float(total) if total > 0 else float(recipe.servings or 1)
+    if total > 0:
+        return float(total)
+    basket_servings = (
+        batch.basket_items.exclude(servings__isnull=True).order_by('-id').values_list('servings', flat=True).first()
+    )
+    return float(basket_servings or recipe.servings or 1)
 
 
 def add_batch_ingredients_to_list(shopping_list: ShoppingList, batch: RecipeBatch) -> None:

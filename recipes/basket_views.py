@@ -1,0 +1,247 @@
+"""
+API du panier « Cette semaine » (envies non datées). Contrat front : `.claude-work/specs/basket.md`.
+
+    GET    /basket/?week=YYYY-MM-DD          semaine (défaut : courante, fuseau de l'utilisateur)
+    POST   /basket/                          {recipe_id | label, servings?, week?}
+    PATCH  /basket/{id}/                     {servings?, label?}
+    DELETE /basket/{id}/
+    POST   /basket/reorder/                  {item_ids, week?}
+    POST   /basket/{id}/schedule/            {date, meal_time? | meal_plan_id}  → repas planifié normal
+    DELETE /basket/{id}/schedule/            → de nouveau sans date
+    POST   /basket/carry-over/               {from_week?, to_week?, item_ids?}
+    POST   /basket/shopping-list/            {item_ids? | week?, shopping_list_id? | name?}
+
+Cuisiner une envie : `POST /posts/cooked/` avec `basket_item_id` (flux « J'ai cuisiné » canonique).
+« À mon tour » : `POST|DELETE /posts/{id}/my-turn/` (PostViewSet).
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from functools import wraps
+
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from accounts.permissions import IsValidated as IsAuthenticated
+
+from .serializers import ShoppingListSerializer, UserLightSerializer
+from .services import basket_service as basket
+from .services.basket_service import BasketError
+
+
+def _basket_errors(view):
+    @wraps(view)
+    def wrapper(self, request, *args, **kwargs):
+        try:
+            return view(self, request, *args, **kwargs)
+        except BasketError as exc:
+            return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
+
+    return wrapper
+
+
+def basket_item_payload(item, request, *, week_now=None, cooked_posts: dict | None = None) -> dict:
+    week_now = week_now or basket.current_week_start(request.user)
+    recipe = item.recipe if item.recipe_id else None
+    meal_plan = item.meal_plan if item.meal_plan_id else None
+    original = item.inspired_by_post if item.inspired_by_post_id else None
+    if cooked_posts is None:
+        cooked_posts = basket.cooked_post_ids([item])
+    context = {'request': request}
+    return {
+        'id': item.id,
+        'week_start': item.week_start.isoformat(),
+        'position': item.position,
+        'status': basket.item_status(item, week_now),
+        'source': 'my_turn' if item.inspired_by_post_id else 'manual',
+        'display_title': item.display_title,
+        'label': item.label,
+        'servings': item.servings,
+        'recipe': (
+            {
+                'id': recipe.id,
+                'title': recipe.title,
+                'image_url': recipe.image_url,
+                'servings': recipe.servings,
+                'prep_time': recipe.prep_time,
+                'cook_time': recipe.cook_time,
+            }
+            if recipe
+            else None
+        ),
+        'recipe_batch_id': item.recipe_batch_id,
+        'meal_plan': (
+            {
+                'id': meal_plan.id,
+                'date': meal_plan.date.isoformat(),
+                'meal_time': meal_plan.meal_time,
+                'slot_key': meal_plan.slot_key,
+                'custom_label': meal_plan.custom_label,
+                'confirmed': meal_plan.confirmed,
+            }
+            if meal_plan
+            else None
+        ),
+        'cooked_post_id': cooked_posts.get(meal_plan.id) if meal_plan else None,
+        'inspired_by': (
+            {
+                'post_id': original.id,
+                'user': UserLightSerializer(original.user, context=context).data if original.user_id else None,
+            }
+            if original
+            else None
+        ),
+        'carried_over_to_id': item.carried_over_to_id,
+        'created_at': item.created_at.isoformat(),
+    }
+
+
+def _items_payload(items, request, week_now) -> list[dict]:
+    cooked_posts = basket.cooked_post_ids(items)
+    return [basket_item_payload(i, request, week_now=week_now, cooked_posts=cooked_posts) for i in items]
+
+
+class BasketViewSet(viewsets.ViewSet):
+    """Panier « Cette semaine » : envies sans date, datables, cuisinables, reportables."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _week_payload(self, request, week):
+        user = request.user
+        week_now = basket.current_week_start(user)
+        items = basket.week_items(user, week)
+        payload = _items_payload(items, request, week_now)
+        counts = {s: 0 for s in ('todo', 'planned', 'cooked', 'carried_over', 'not_done')}
+        for entry in payload:
+            counts[entry['status']] += 1
+        data = {
+            'week_start': week.isoformat(),
+            'week_end': (week + timedelta(days=6)).isoformat(),
+            'is_current_week': week == week_now,
+            'items': payload,
+            'counts': counts,
+            'previous_week': None,
+        }
+        if week == week_now:
+            previous = week - timedelta(days=7)
+            data['previous_week'] = {
+                'week_start': previous.isoformat(),
+                'open_count': basket.open_items_count(user, previous),
+            }
+        return data
+
+    @_basket_errors
+    def list(self, request):
+        week = basket.parse_week(request.query_params.get('week'), request.user)
+        return Response(self._week_payload(request, week))
+
+    @_basket_errors
+    def create(self, request):
+        data = request.data
+        item = basket.add_item(
+            request.user,
+            recipe_id=data.get('recipe_id'),
+            label=data.get('label'),
+            servings=data.get('servings'),
+            week=data.get('week'),
+        )
+        item = basket.get_item(request.user, item.id)
+        return Response(basket_item_payload(item, request), status=status.HTTP_201_CREATED)
+
+    @_basket_errors
+    def retrieve(self, request, pk=None):
+        return Response(basket_item_payload(basket.get_item(request.user, pk), request))
+
+    @_basket_errors
+    def partial_update(self, request, pk=None):
+        item = basket.get_item(request.user, pk)
+        kwargs = {k: request.data.get(k) for k in ('servings', 'label') if k in request.data}
+        basket.update_item(item, **kwargs)
+        return Response(basket_item_payload(basket.get_item(request.user, pk), request))
+
+    @_basket_errors
+    def destroy(self, request, pk=None):
+        basket.remove_item(basket.get_item(request.user, pk))
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=['post'])
+    @_basket_errors
+    def reorder(self, request):
+        week = basket.parse_week(request.data.get('week'), request.user)
+        basket.reorder(request.user, week, request.data.get('item_ids'))
+        return Response(self._week_payload(request, week))
+
+    @action(detail=True, methods=['post', 'delete'])
+    @_basket_errors
+    def schedule(self, request, pk=None):
+        item = basket.get_item(request.user, pk)
+        if request.method == 'DELETE':
+            basket.unschedule_item(item)
+        else:
+            data = request.data
+            if not data.get('meal_plan_id') and not data.get('date'):
+                raise BasketError('date or meal_plan_id is required')
+            basket.schedule_item(
+                request.user,
+                item,
+                date=data.get('date'),
+                meal_time=data.get('meal_time'),
+                meal_plan_id=data.get('meal_plan_id'),
+            )
+        return Response(basket_item_payload(basket.get_item(request.user, pk), request))
+
+    @action(detail=False, methods=['post'], url_path='carry-over')
+    @_basket_errors
+    def carry_over(self, request):
+        data = request.data
+        created = basket.carry_over(
+            request.user,
+            from_week=data.get('from_week'),
+            to_week=data.get('to_week'),
+            item_ids=data.get('item_ids'),
+        )
+        week_now = basket.current_week_start(request.user)
+        target = created[0].week_start if created else week_now
+        return Response(
+            {'carried_over_count': len(created), 'week': self._week_payload(request, target)},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=['post'], url_path='shopping-list')
+    @_basket_errors
+    def shopping_list(self, request):
+        data = request.data
+        user = request.user
+        item_ids = data.get('item_ids')
+        if item_ids is not None:
+            if not isinstance(item_ids, list) or not item_ids:
+                raise BasketError('item_ids must be a non-empty list')
+            try:
+                ids = [int(i) for i in item_ids]
+            except (TypeError, ValueError) as exc:
+                raise BasketError('item_ids must contain integers') from exc
+            items = list(basket.basket_queryset(user).filter(id__in=ids).order_by('week_start', 'position', 'id'))
+            if len(items) != len(set(ids)):
+                raise BasketError('Basket item not found', 404, 'basket_item_not_found')
+        else:
+            week = basket.parse_week(data.get('week'), user)
+            week_now = basket.current_week_start(user)
+            items = [
+                i
+                for i in basket.week_items(user, week)
+                if basket.item_status(i, week_now) in basket.OPEN_STATUSES and i.recipe_id
+            ]
+        result = basket.add_to_shopping_list(
+            user, items, shopping_list_id=data.get('shopping_list_id'), name=data.get('name')
+        )
+        return Response(
+            {
+                'shopping_list': ShoppingListSerializer(result.shopping_list, context={'request': request}).data,
+                'created_list': result.created_list,
+                'added_item_ids': result.added_item_ids,
+                'skipped': result.skipped,
+            },
+            status=status.HTTP_201_CREATED if result.created_list else status.HTTP_200_OK,
+        )

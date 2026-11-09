@@ -254,7 +254,11 @@ def remove_recipe_from_meal_plan(
     with transaction.atomic():
         batch = mprb.recipe_batch
         mprb.delete()
-        if not MealPlanRecipeBatch.objects.filter(recipe_batch_id=batch.id).exists():
+        # Batch d'une envie du panier « Cette semaine » : gardé (liste de courses de l'envie).
+        if (
+            not MealPlanRecipeBatch.objects.filter(recipe_batch_id=batch.id).exists()
+            and not batch.basket_items.exists()
+        ):
             batch.delete()
             batch_deleted = True
 

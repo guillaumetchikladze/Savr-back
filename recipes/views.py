@@ -4617,6 +4617,7 @@ class PostViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def _annotate_repost_fields(self, queryset):
+        queryset = self._annotate_my_turn_fields(queryset)
         user = self.request.user
         if user.is_authenticated:
             repost_exists = PostRepost.objects.filter(
@@ -4629,6 +4630,30 @@ class PostViewSet(viewsets.ModelViewSet):
             )
         else:
             queryset = queryset.annotate(_reposts_count=Count('reposts', distinct=True))
+        return queryset
+
+    def _annotate_my_turn_fields(self, queryset):
+        """« À mon tour » : compteur (amis distincts) et état du viewer en sous-requêtes (pas de N+1)."""
+        from django.db.models import Subquery
+        from django.db.models.functions import Coalesce
+
+        from .models import BasketItem
+        from .services.basket_service import NOT_COOKED
+
+        count_sq = (
+            BasketItem.objects.filter(inspired_by_post_id=OuterRef('pk'))
+            .order_by()
+            .values('inspired_by_post_id')
+            .annotate(c=Count('user_id', distinct=True))
+            .values('c')
+        )
+        queryset = queryset.select_related('inspired_by_post__user').annotate(
+            _my_turn_count=Coalesce(Subquery(count_sq, output_field=IntegerField()), 0)
+        )
+        user = self.request.user
+        if user.is_authenticated:
+            mine = BasketItem.objects.filter(NOT_COOKED, user_id=user.id, inspired_by_post_id=OuterRef('pk'))
+            queryset = queryset.annotate(_has_my_turn=Exists(mine))
         return queryset
 
     def _prefetch_reposts(self, queryset):
@@ -4878,7 +4903,7 @@ class PostViewSet(viewsets.ModelViewSet):
 
         post = (
             Post.objects.filter(pk=post_id)
-            .select_related('user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan')
+            .select_related('user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan', 'inspired_by_post__user')
             .prefetch_related(
                 'photos',
                 'cookies',
@@ -4897,9 +4922,10 @@ class PostViewSet(viewsets.ModelViewSet):
         """
         « J'ai cuisiné X » en 1 tap (log canonique, photo optionnelle).
 
-        Body : recipe_id?, label?, meal_plan_id?, cooked_at? (ISO, défaut maintenant), meal_time?,
-        comment?, photo_ids?, cooking_time_minutes?, publish (défaut true). Au moins recipe_id,
-        label ou meal_plan_id. Header optionnel `Idempotency-Key`.
+        Body : recipe_id?, label?, meal_plan_id?, basket_item_id? (envie du panier « Cette semaine »),
+        cooked_at? (ISO, défaut maintenant), meal_time?, comment?, photo_ids?, cooking_time_minutes?,
+        publish (défaut true). Au moins recipe_id, label, meal_plan_id ou basket_item_id.
+        Header optionnel `Idempotency-Key`.
         Réponse : post au format feed + `created` (201 créé / 200 existant) + `new_badges`
         (badges débloqués par ce log, cf. GET /badges/me/ ; liste vide sinon).
         """
@@ -4931,6 +4957,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 photo_ids=data.get('photo_ids'),
                 cooking_time_minutes=data.get('cooking_time_minutes'),
                 publish=bool(publish),
+                basket_item_id=data.get('basket_item_id'),
             )
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
@@ -5837,6 +5864,48 @@ class PostViewSet(viewsets.ModelViewSet):
             )
         except PostCookie.DoesNotExist:
             return Response({'error': 'Cookie not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post', 'delete'], url_path='my-turn')
+    def my_turn(self, request, pk=None):
+        """
+        « À mon tour » : POST ajoute le plat du post au panier « Cette semaine » (idempotent) et
+        prévient l'auteur ; DELETE retire les envies non cuisinées issues de ce post.
+        Body POST optionnel : week (YYYY-MM-DD). Réponse : {post_id, has_my_turn, my_turn_count,
+        created, basket_item}.
+        """
+        from .basket_views import basket_item_payload
+        from .services.basket_service import (
+            BasketError,
+            add_my_turn,
+            can_see_post,
+            has_my_turn,
+            my_turn_count,
+            remove_my_turn,
+        )
+
+        post = get_object_or_404(
+            Post.objects.select_related('user', 'recipe_batch__recipe', 'meal_plan'), pk=pk, is_published=True
+        )
+        if not can_see_post(request.user, post):
+            return Response({'error': 'Post not found', 'code': 'post_not_found'}, status=status.HTTP_404_NOT_FOUND)
+
+        item, created = None, False
+        if request.method == 'DELETE':
+            remove_my_turn(request.user, post)
+        else:
+            try:
+                item, created = add_my_turn(request.user, post, week=request.data.get('week'))
+            except BasketError as exc:
+                return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
+
+        payload = {
+            'post_id': post.id,
+            'has_my_turn': has_my_turn(request.user, post),
+            'my_turn_count': my_turn_count(post),
+            'created': created,
+            'basket_item': basket_item_payload(item, request) if item else None,
+        }
+        return Response(payload, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='cookie-users')
     def cookie_users(self, request, pk=None):
