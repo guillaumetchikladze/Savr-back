@@ -29,11 +29,10 @@ def _pending_action(user, action_type, payload, *, expires_in=timedelta(minutes=
     )
 
 
-def _revised(title):
+def _revised(title, description='Plus léger'):
     return RecipeFormalized(
         title=title,
-        # NB : description=None ferait planter l'application (NOT NULL) — bug signalé, cf. rapport.
-        description='Plus léger',
+        description=description,
         steps_summary='Version allégée.',
         prep_time=10,
         cook_time=20,
@@ -67,6 +66,20 @@ def test_recipe_revision_is_proposed_then_applied_on_confirmation(user, make_rec
     assert action.status == PendingAction.STATUS_CONFIRMED
     with pytest.raises(ValueError, match='déjà traitée'):
         execute_pending_action(user, action)
+
+
+def test_recipe_revision_without_description_keeps_the_existing_one(user, make_recipe):
+    recipe = make_recipe(user, 'Gratin lourd', ingredients=['crème'], description='Recette de mamie')
+    with mock.patch(
+        'recipes.services.recipe_revision_service.revise_recipe',
+        new=mock.AsyncMock(return_value=_revised('Gratin léger', description=None)),
+    ):
+        proposal = propose_recipe_revision_data(user, recipe.id, 'Allège la recette')
+
+    execute_pending_action(user, _pending_action(user, PendingAction.ACTION_RECIPE_REVISION, proposal.details))
+
+    recipe.refresh_from_db()
+    assert (recipe.title, recipe.description) == ('Gratin léger', 'Recette de mamie')
 
 
 def test_recipe_revision_refused_for_someone_else_recipe(user, make_user, make_recipe):

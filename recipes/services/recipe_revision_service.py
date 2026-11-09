@@ -185,18 +185,22 @@ def _formalized_to_edit_payload(formalized: dict) -> dict:
             }
         )
 
-    return {
-        'title': formalized.get('title'),
-        'description': formalized.get('description'),
-        'steps_summary': formalized.get('steps_summary'),
-        'meal_type': formalized.get('meal_type'),
-        'difficulty': formalized.get('difficulty'),
-        'prep_time': formalized.get('prep_time'),
-        'cook_time': formalized.get('cook_time'),
-        'servings': formalized.get('servings'),
-        'ingredients': ingredients,
-        'steps': steps,
-    }
+    # Champ méta absent / null dans la réponse LLM (ex. pas de description) : on garde la valeur
+    # existante plutôt que d'écrire NULL dans une colonne non nullable.
+    meta_fields = (
+        'title',
+        'description',
+        'steps_summary',
+        'meal_type',
+        'difficulty',
+        'prep_time',
+        'cook_time',
+        'servings',
+    )
+    payload = {f: formalized[f] for f in meta_fields if formalized.get(f) is not None}
+    payload['ingredients'] = ingredients
+    payload['steps'] = steps
+    return payload
 
 
 def execute_recipe_revision(user: AbstractBaseUser, payload: dict) -> dict:
