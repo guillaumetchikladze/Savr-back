@@ -5,6 +5,8 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 
+from core.public_links import post_share_url, recipe_share_url
+
 from .models import (
     Category,
     Collection,
@@ -242,6 +244,7 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
     is_favorited = serializers.SerializerMethodField()
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
+    share_url = serializers.SerializerMethodField()
     # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
 
     class Meta:
@@ -260,6 +263,7 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
             'servings',
             'image_path',
             'image_url',
+            'share_url',
             'created_by',
             'created_by_username',
             'is_public',
@@ -272,6 +276,9 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
             'is_author',
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
+
+    def get_share_url(self, obj):
+        return recipe_share_url(obj.id) if obj.id else None
 
     def get_image_url(self, obj):
         return obj.image_url
@@ -301,6 +308,7 @@ class RecipeSerializer(serializers.ModelSerializer):
     is_favorited = serializers.SerializerMethodField()
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
+    share_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Recipe
@@ -318,6 +326,7 @@ class RecipeSerializer(serializers.ModelSerializer):
             'servings',
             'image_path',
             'image_url',
+            'share_url',
             'created_by',
             'created_by_username',
             'is_public',
@@ -332,6 +341,9 @@ class RecipeSerializer(serializers.ModelSerializer):
             'is_author',
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
+
+    def get_share_url(self, obj):
+        return recipe_share_url(obj.id) if obj.id else None
 
     def get_image_url(self, obj):
         return obj.image_url
@@ -461,6 +473,7 @@ class RecipeLightSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
+    share_url = serializers.SerializerMethodField()
     total_time = serializers.SerializerMethodField()
 
     class Meta:
@@ -470,6 +483,7 @@ class RecipeLightSerializer(serializers.ModelSerializer):
             'title',
             'image_path',
             'image_url',
+            'share_url',
             'meal_type',
             'meal_type_display',
             'difficulty',
@@ -486,6 +500,9 @@ class RecipeLightSerializer(serializers.ModelSerializer):
             'created_at',
             'is_author',
         ]
+
+    def get_share_url(self, obj):
+        return recipe_share_url(obj.id) if obj.id else None
 
     def get_image_url(self, obj):
         return obj.image_url
@@ -2410,6 +2427,7 @@ class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, s
     has_cookie_from_user = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     display_title = serializers.SerializerMethodField()
+    share_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -2420,6 +2438,7 @@ class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, s
             'meal_plan',
             'label',
             'display_title',
+            'share_url',
             'cuisine',
             'highlights',
             'comment',
@@ -2446,6 +2465,9 @@ class PostSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixin, s
             'updated_at',
         ]
         read_only_fields = ['user', 'label', 'is_public', 'created_at', 'updated_at']
+
+    def get_share_url(self, obj):
+        return post_share_url(obj.id) if obj.id else None
 
     def get_display_title(self, obj):
         return post_display_title(obj)
@@ -2668,6 +2690,7 @@ class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixi
     comments_count = serializers.SerializerMethodField()
     author_is_following = serializers.SerializerMethodField()
     display_title = serializers.SerializerMethodField()
+    share_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -2676,6 +2699,7 @@ class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixi
             'user',
             'label',
             'display_title',
+            'share_url',
             'cuisine',
             'highlights',
             'comment',
@@ -2700,6 +2724,9 @@ class PostListSerializer(MyTurnFieldsMixin, ArdoiseFieldsMixin, RepostFieldsMixi
             'created_at',
         ]
         read_only_fields = ['user', 'label', 'created_at']
+
+    def get_share_url(self, obj):
+        return post_share_url(obj.id) if obj.id else None
 
     def get_display_title(self, obj):
         """Plat pour « X a cuisiné {display_title} » (label libre, recettes du repas ou libellé)."""

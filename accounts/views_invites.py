@@ -16,6 +16,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from core.public_links import public_display_name
+
 from .permissions import IsValidated
 from .serializers import UserSerializer
 from .services.invite_service import (
@@ -102,6 +104,11 @@ def invite_preview_view(request, code):
         {
             'valid': True,
             'code': invite.code,
-            'inviter': {'id': inviter.id, 'username': inviter.username, 'avatar_url': avatar},
+            'inviter': {
+                'id': inviter.id,
+                'username': inviter.username,
+                'display_name': public_display_name(inviter),
+                'avatar_url': avatar,
+            },
         }
     )

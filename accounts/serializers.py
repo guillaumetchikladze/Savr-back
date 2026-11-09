@@ -2,6 +2,8 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework import serializers
 
+from core.public_links import profile_share_url
+
 from .models import AllowedEmail, Follow, LoyaltyCard, Notification, User
 from .privacy import can_view_dietary_preferences
 from .services.follow_service import get_follow_relation
@@ -36,6 +38,7 @@ class UserSerializer(serializers.ModelSerializer):
     follow_request_incoming = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     is_validated = serializers.BooleanField(read_only=True)
+    share_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -63,6 +66,7 @@ class UserSerializer(serializers.ModelSerializer):
             'plan',
             'auto_publish_cooked',
             'auto_publish_cooked_set_at',
+            'share_url',
         )
         read_only_fields = (
             'id',
@@ -152,6 +156,9 @@ class UserSerializer(serializers.ModelSerializer):
                 s = s[:max_len]
             out.append(s)
         return out
+
+    def get_share_url(self, obj):
+        return profile_share_url(obj.username) if getattr(obj, 'username', None) else None
 
     def get_is_following(self, obj):
         """Vérifier si l'utilisateur connecté suit cet utilisateur"""

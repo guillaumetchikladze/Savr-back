@@ -201,6 +201,24 @@ Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas d
   invités vs autres).
 - Tests : `accounts/tests/test_auth_invites_api.py`, `recipes/tests/test_posts_density_api.py`.
 
+## Liens qui ouvrent l'app : aperçus publics et `share_url` (`recipes/views_public.py`)
+
+Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, fonctions Vercel) rend `/i/<code>`,
+`/r/<id>`, `/p/<id>`, `/u/<username>` avec balises Open Graph à partir de ces endpoints.
+
+- `GET /api/public/recipes/<id>/`, `GET /api/public/posts/<id>/`, `GET /api/public/users/<username>/` : sans
+  authentification (un jeton est ignoré, lecteur toujours anonyme), débit limité par IP (`PREVIEW_LIMIT_PER_IP`
+  = 60/h, les trois confondus ; même compteur en cache que les invitations, IP = 1re de `X-Forwarded-For`).
+- Recette : `is_public` + auteur actif, sinon 404 ; au plus 5 ingrédients (noms), pas d'étapes. Post : publié +
+  auteur actif, sinon 404 ; `is_public` → aperçu (titre, extrait, 1re photo, auteur, recette liée si publique),
+  sinon teaser `{id, url, app_url, teaser: true, message}` sans contenu ni auteur. Profil : actif et validé, sinon
+  404 ; `dishes_count` = repas cuisinés (`cooked_meal_plans`). Jamais d'email ni de préférences.
+- `share_url` (recettes, posts, profil `UserSerializer`) et `url` : `core/public_links.py`, base
+  `PUBLIC_WEB_BASE_URL` (vide → `INVITE_BASE_URL`, défaut `https://tchikook.fr`) ; `app_url` = `tchikook://recipe|post|user/<id>`.
+  L'aperçu d'invitation expose aussi `inviter.display_name` (prénom sinon pseudo).
+- Copie : jamais le mot « bande » dans un texte visible (test `notifications/tests/test_notifications_copy.py`).
+- Tests : `recipes/tests/test_recipe_public_previews_api.py`.
+
 ## Agent IA v2 (app `chat`)
 
 Contrat front : `.claude-work/specs/agent-v2.md`. Modèle : `CHAT_AI_MODEL` (défaut `gemini-2.5-flash`, endpoint

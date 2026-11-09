@@ -425,6 +425,11 @@ else:
 # Liens d'invitation (« Tes amis avant ton premier plat », .claude-work/specs/density.md).
 # Domaine public du site (landing), pas l'hôte de l'API (PUBLIC_BASE_URL) : https://tchikook.fr/i/<code>.
 INVITE_BASE_URL = config('INVITE_BASE_URL', default='https://tchikook.fr').strip().rstrip('/')
+# Liens de partage (`share_url` des recettes / posts / profils : <base>/r/<id>, /p/<id>, /u/<username>),
+# même domaine que les invitations par défaut (.claude-work/specs/deep-links.md).
+PUBLIC_WEB_BASE_URL = (
+    config('PUBLIC_WEB_BASE_URL', default='').strip().rstrip('/') or INVITE_BASE_URL or 'https://tchikook.fr'
+)
 # Un invité (code valide à l'inscription ou plus tard) saute la liste d'attente (et son email est
 # ajouté aux emails autorisés). False : l'amitié est créée mais la validation admin reste requise.
 INVITE_BYPASSES_WAITLIST = config('INVITE_BYPASSES_WAITLIST', default=True, cast=bool)

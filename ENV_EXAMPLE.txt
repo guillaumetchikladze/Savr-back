@@ -66,3 +66,8 @@ AWS_USE_PATH_STYLE_ENDPOINT=true
 # INVITE_BYPASSES_WAITLIST=True
 # Utilisations max par code (0 = illimité)
 # INVITE_CODE_MAX_USES=50
+
+# --- Liens de partage (recettes /r/<id>, posts /p/<id>, profils /u/<username>) ---
+# `share_url` des serializers ; vide = INVITE_BASE_URL (défaut https://tchikook.fr).
+# Aperçus publics lus par le site : GET /api/public/recipes/<id>/, posts/<id>/, users/<username>/
+# PUBLIC_WEB_BASE_URL=https://tchikook.fr
