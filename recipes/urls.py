@@ -3,7 +3,12 @@ from rest_framework.routers import APIRootView, DefaultRouter
 
 from accounts.permissions import IsValidated as IsAuthenticated
 
-from .dietary_views import dietary_conflicts_view
+from .dietary_views import (
+    dietary_conflict_dismiss_view,
+    dietary_conflicts_view,
+    dietary_exception_delete_view,
+    dietary_exceptions_list_view,
+)
 from .preference_views import (
     preference_mapping_fork,
     preference_mapping_propose,
@@ -60,6 +65,13 @@ router.register(r'shopping-list-invitations', ShoppingListInvitationViewSet, bas
 
 urlpatterns = [
     path('dietary-conflicts/', dietary_conflicts_view, name='dietary_conflicts'),
+    path('dietary-conflicts/dismiss/', dietary_conflict_dismiss_view, name='dietary_conflict_dismiss'),
+    path('dietary-conflicts/exceptions/', dietary_exceptions_list_view, name='dietary_exceptions_list'),
+    path(
+        'dietary-conflicts/exceptions/<int:pk>/',
+        dietary_exception_delete_view,
+        name='dietary_exception_delete',
+    ),
     path('preference-mappings/', preference_mappings_list, name='preference_mappings_list'),
     path('preference-mappings/resolved/', preference_mapping_resolved, name='preference_mapping_resolved'),
     path('preference-mappings/propose/', preference_mapping_propose, name='preference_mapping_propose'),

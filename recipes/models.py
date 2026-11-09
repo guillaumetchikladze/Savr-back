@@ -174,6 +174,73 @@ class UserPreferenceMapping(models.Model):
         return f'{self.user_id}:{self.kind}:{self.label}'
 
 
+class PreferenceIngredientException(models.Model):
+    """
+    « Pas un problème » : retire un ingrédient des conflits d'une préférence.
+
+    - ``user`` NULL = règle globale curée (seed migration / admin), sinon exception propre
+      aux préférences de cette personne.
+    - Côté ingrédient : soit ``ingredient`` (FK précise, cas des signalements depuis l'app),
+      soit ``ingredient_pattern`` (expression en mots entiers, ex. « huile d'olive »), utile
+      pour les règles globales qui doivent couvrir les ingrédients créés plus tard.
+    - ``label`` est comparé (sans accents / pluriel) au libellé déclaré OU au mot-clé qui a
+      matché : une règle globale ``lait`` → « lait de coco » vaut pour « Lactose / lait ».
+    - Portée d'une exception personnelle : créée par la personne elle-même → partout ;
+      créée par un hôte (goûts uniquement) → seulement dans les alertes vues par cet hôte.
+    """
+
+    KIND_CHOICES = [
+        ('allergy', 'Allergie'),
+        ('diet', 'Régime'),
+        ('dislike', 'Goût (n’aime pas)'),
+    ]
+
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES, db_index=True)
+    label = models.CharField(max_length=120)
+    ingredient = models.ForeignKey(
+        Ingredient,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='preference_exceptions',
+    )
+    ingredient_pattern = models.CharField(max_length=200, blank=True, default='')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='preference_ingredient_exceptions',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_preference_ingredient_exceptions',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(ingredient__isnull=False) | ~models.Q(ingredient_pattern=''),
+                name='prefexc_ingredient_or_pattern',
+            ),
+            models.UniqueConstraint(
+                fields=['user', 'created_by', 'kind', 'label', 'ingredient'],
+                condition=models.Q(ingredient__isnull=False),
+                name='prefexc_unique_user_ingredient',
+            ),
+        ]
+        indexes = [models.Index(fields=['user', 'kind'], name='prefexc_user_kind_idx')]
+        ordering = ['kind', 'label', 'id']
+
+    def __str__(self):
+        target = self.ingredient.name if self.ingredient_id else f'~{self.ingredient_pattern}'
+        return f'{self.user_id or "*"}:{self.kind}:{self.label} ↛ {target}'
+
+
 class Recipe(models.Model):
     """Recette de cuisine"""
 

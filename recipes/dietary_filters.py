@@ -1,44 +1,37 @@
 """
-Filtrage des recettes selon allergies / goûts.
+Filtrage des recettes / alertes selon allergies, régimes et goûts (« n'aime pas »).
 
-Stratégie en plusieurs couches (complémentaires) :
+Un seul moteur de matching pour tous les usages (exclusion stricte des suggestions,
+conflits invités, raisons + détail affichés dans l'app) :
 
-1. **Table `DietaryIngredientMatch`** : correspondances explicites libellé → sous-chaînes
-   dans les noms d’ingrédients. Haute précision, facile à faire évoluer en admin / migrations.
+1. **Mots-clés par préférence** (dans cet ordre de priorité) : override utilisateur
+   (``UserPreferenceMapping``) → mapping communautaire **validé** (``PreferenceMapping``,
+   les ``pending`` ne déclenchent jamais d'alerte) → table historique
+   ``DietaryIngredientMatch`` → le libellé brut. Régimes : ``REGIME_KEYWORDS``.
 
-2. **Texte libre utilisateur** : chaque libellé sans entrée en base est utilisé tel quel
-   en recherche `icontains` (avec variante sans accents via `unidecode`).
+2. **Match texte en mots entiers** (``dietary_matching``) : frontières de mot, accents,
+   pluriel simple, élision. Même regex en SQL (préfiltre catalogue) et en Python.
 
-3. **Similarité vectorielle (optionnelle)** : les `Ingredient` ont un champ `embedding`.
-   On embed chaque libellé utilisateur et on récupère les ingrédients dont la distance
-   cosinus est sous un seuil. Cela aide pour :
-   - noms d’ingrédients rares ou nouveaux qui ne matchent aucun mot-clé ;
-   - formulations proches sémantiquement (« intolérance au blé » vs « gluten ») ;
-   - limites : faux positifs possibles si le seuil est trop large ; ingrédients sans
-     embedding ne passent que par (1) et (2).
+3. **Exceptions** (``PreferenceIngredientException``) soustraites de tous les chemins :
+   règles globales curées (« olive » ↛ « huile d'olive », « lait » ↛ « lait de coco »…) et
+   « pas un problème » signalés depuis l'app.
 
-Réglages Django (optionnels, voir `savr_back/settings.py`) :
-- `DIETARY_SEMANTIC_MATCHING` : activer la couche sémantique (défaut True).
-- `DIETARY_SEMANTIC_MAX_DISTANCE` : distance cosinus max (0 = identique, 2 = opposé).
-- `DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL` : plafond de candidats par libellé.
-
-Améliorations possibles côté produit : tagger les ingrédients avec les 14 allergènes UE,
-revue manuelle des faux positifs, signalement utilisateur (« cette recette aurait dû
-être filtrée »).
+Pas de couche sémantique (embeddings) : elle reliait des ingrédients voisins mais distincts
+(« olives » ↔ « huile d'olive », distance cosinus ≤ 0,42) sans moyen de l'expliquer à
+l'utilisateur ; un match sémantique n'apportait de valeur que sans hit texte, précisément le
+cas où il produisait des faux positifs. Les allergies/régimes ne l'utilisaient déjà pas.
 """
 
 import logging
-import re
 
-from django.conf import settings
 from django.db.models import Q
-from pgvector.django import CosineDistance
-from unidecode import unidecode
 
+from .dietary_matching import keyword_pattern, match_key, name_matches
 from .models import (
     DietaryIngredientMatch,
     Ingredient,
     MealInvitation,
+    PreferenceIngredientException,
     PreferenceMapping,
     RecipeIngredient,
     StepIngredient,
@@ -46,6 +39,10 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+PREFERENCE_KINDS = ('allergy', 'diet', 'dislike')
+# Ordre UX : allergy > diet > dislike
+KIND_ORDER = {k: i for i, k in enumerate(PREFERENCE_KINDS)}
 
 
 def _normalize_label_strings(raw_iterable):
@@ -209,25 +206,6 @@ def _regimes_from_user(user):
     return regimes
 
 
-def _regime_keywords_from_user(user):
-    regimes = _regimes_from_user(user)
-    kws = []
-    for r in regimes:
-        kws.extend(REGIME_KEYWORDS.get(r, []))
-    return _normalize_label_strings(kws)
-
-
-def _labels_from_user(user):
-    if not user or not getattr(user, 'is_authenticated', False):
-        return []
-    fd = getattr(user, 'food_dislikes', None) or []
-    al = getattr(user, 'allergies', None) or []
-    merged = list(fd) + list(al)
-    # Compat historique: `is_vegetarian` est converti en régime via `_regimes_from_user`.
-    merged = list(merged) + list(_regime_keywords_from_user(user))
-    return _normalize_label_strings(merged)
-
-
 def _allergy_labels_from_user(user):
     if not user or not getattr(user, 'is_authenticated', False):
         return []
@@ -313,23 +291,18 @@ def _normalize_keywords_list(raw_iterable):
     return keywords_for_labels(out)
 
 
-def keywords_for_user_preference_labels(user, kind, labels, include_pending_global=False):
+def keywords_by_label_for_user(user, kind, labels):
     """
-    Mots-clés pour une liste de labels d'un type (allergy|dislike), en combinant:
-    - override user (fork) si présent
-    - mapping communautaire (validated, + pending optionnel)
-    - table historique DietaryIngredientMatch comme source "validée" (si existe)
-
-    Performance: batch queries.
+    ``{label: [mots-clés]}`` pour des libellés ``allergy`` | ``dislike`` :
+    override user > mapping communautaire validé > ``DietaryIngredientMatch`` > libellé brut.
+    Les mappings ``pending`` sont ignorés (jamais d'alerte sur une proposition non validée).
     """
     labels = _normalize_label_strings(labels)
     if not labels:
-        return []
-    kind = (kind or '').strip().lower()
+        return {}
     if kind not in {'allergy', 'dislike'}:
-        return keywords_for_labels(labels)
+        return {lbl: keywords_for_labels([lbl]) for lbl in labels}
 
-    # 1) overrides user
     user_map = {}
     if user and getattr(user, 'is_authenticated', False):
         for row in UserPreferenceMapping.objects.filter(user=user, kind=kind, label__in=labels).values(
@@ -337,399 +310,204 @@ def keywords_for_user_preference_labels(user, kind, labels, include_pending_glob
         ):
             user_map[row['label']] = _normalize_keywords_list(row.get('keywords') or [])
 
-    # 2) global mappings
-    statuses = ['validated']
-    if include_pending_global:
-        statuses.append('pending')
     global_map = {}
-    for row in PreferenceMapping.objects.filter(kind=kind, status__in=statuses, label__in=labels).values(
-        'label', 'keywords', 'status'
+    for row in PreferenceMapping.objects.filter(kind=kind, status='validated', label__in=labels).values(
+        'label', 'keywords'
     ):
         global_map[row['label']] = _normalize_keywords_list(row.get('keywords') or [])
 
-    # 3) legacy match table (validated-like)
     legacy_map = {}
-    # One query instead of N queries:
     for row in DietaryIngredientMatch.objects.filter(preference_label__in=labels).values(
         'preference_label', 'match_keyword'
     ):
         legacy_map.setdefault(row['preference_label'], []).append(row['match_keyword'])
 
-    out = []
+    out = {}
     for lbl in labels:
-        if lbl in user_map and user_map[lbl]:
-            out.extend(user_map[lbl])
-            continue
-        if lbl in global_map and global_map[lbl]:
-            out.extend(global_map[lbl])
-            continue
-        if lbl in legacy_map and legacy_map[lbl]:
-            out.extend(_normalize_keywords_list(legacy_map[lbl]))
-            continue
-        out.extend(keywords_for_labels([lbl]))
-    return _normalize_keywords_list(out)
+        if user_map.get(lbl):
+            out[lbl] = user_map[lbl]
+        elif global_map.get(lbl):
+            out[lbl] = global_map[lbl]
+        elif legacy_map.get(lbl):
+            out[lbl] = _normalize_keywords_list(legacy_map[lbl])
+        else:
+            out[lbl] = keywords_for_labels([lbl])
+    return out
 
 
-def keywords_for_user_labels(user):
+def _usable_keywords(keywords):
+    """Mots-clés matchables, dédoublonnés à la normalisation près (œuf/oeufs → un seul)."""
+    out = []
+    seen = set()
+    for kw in keywords or []:
+        key = match_key(kw)
+        if not key or key in seen or keyword_pattern(kw) is None:
+            continue
+        seen.add(key)
+        out.append(kw)
+    return out
+
+
+def _preference_rules(user, kinds=PREFERENCE_KINDS):
+    """``[(kind, label, [mots-clés])]`` triés allergy > diet > dislike puis ordre déclaré."""
+    if not user or not getattr(user, 'is_authenticated', False):
+        return []
+    rules = []
+    if 'allergy' in kinds:
+        labels = _allergy_labels_from_user(user)
+        kws = keywords_by_label_for_user(user, 'allergy', labels)
+        rules += [('allergy', lbl, _usable_keywords(kws.get(lbl))) for lbl in labels]
+    if 'diet' in kinds:
+        rules += [('diet', r, _usable_keywords(REGIME_KEYWORDS.get(r))) for r in _regimes_from_user(user)]
+    if 'dislike' in kinds:
+        labels = _dislike_labels_from_user(user)
+        kws = keywords_by_label_for_user(user, 'dislike', labels)
+        rules += [('dislike', lbl, _usable_keywords(kws.get(lbl))) for lbl in labels]
+    return [r for r in rules if r[2]]
+
+
+def declared_labels_for_kind(user, kind):
+    """Libellés déclarés par ``user`` pour un type (codes de régime pour ``diet``)."""
+    if kind == 'allergy':
+        return _allergy_labels_from_user(user)
+    if kind == 'dislike':
+        return _dislike_labels_from_user(user)
+    if kind == 'diet':
+        return _regimes_from_user(user)
+    return []
+
+
+def _load_exceptions(target, viewer=None):
     """
-    Mots-clés pour la recherche textuelle :
-    - lignes DietaryIngredientMatch pour chaque libellé ;
-    - sinon le libellé lui-même (texte libre).
+    Exceptions applicables aux préférences de ``target`` vues par ``viewer`` :
+    globales + celles posées par ``target`` lui-même + celles posées par ``viewer``.
     """
-    return keywords_for_labels(_labels_from_user(user))
+    creators = {target.id}
+    if viewer is not None and getattr(viewer, 'id', None):
+        creators.add(viewer.id)
+    rows = PreferenceIngredientException.objects.filter(
+        Q(user__isnull=True) | Q(user=target, created_by_id__in=creators)
+    ).values_list('kind', 'label', 'ingredient_id', 'ingredient_pattern')
+    return [(kind, match_key(label), ing_id, pattern) for kind, label, ing_id, pattern in rows]
 
 
-def build_ingredient_q(keywords):
-    """icontains sur le nom + variante sans accents quand elle diffère."""
-    q = Q()
-    found = False
+def _is_excepted(exceptions, kind, label, keyword, ing_id, ing_name):
+    keys = {match_key(label), match_key(keyword)}
+    for e_kind, e_key, e_ing_id, e_pattern in exceptions:
+        if e_kind != kind or e_key not in keys:
+            continue
+        if e_ing_id is not None and e_ing_id == ing_id:
+            return True
+        if e_pattern and name_matches(ing_name, e_pattern):
+            return True
+    return False
+
+
+def _rule_hits(rule, ing_id, ing_name, exceptions):
+    kind, label, keywords = rule
     for kw in keywords:
-        t = (kw or '').strip()
-        if len(t) < 2:
-            continue
-        found = True
-        q |= Q(ingredient__name__icontains=t)
+        if name_matches(ing_name, kw) and not _is_excepted(exceptions, kind, label, kw, ing_id, ing_name):
+            return True
+    return False
+
+
+def _parse_ids(recipe_ids):
+    out = []
+    for rid in recipe_ids or []:
         try:
-            alt = unidecode(t)
-            if alt and alt.lower() != t.lower():
-                q |= Q(ingredient__name__icontains=alt)
-        except Exception:
-            pass
-    if not found:
-        return None
-    return q
-
-
-def build_ingredient_q_safe_word_boundary(keywords):
-    """
-    Match "safe" par mots entiers via regex, pour limiter les faux positifs
-    (ex. `lait` ne doit pas matcher `laitue`).
-
-    On utilise une regex “portable” (SQLite tests + Postgres prod) basée sur des
-    frontières non-alphanumériques.
-    """
-    q = Q()
-    found = False
-    for kw in keywords:
-        t = (kw or '').strip()
-        # On évite les mots trop courts en strict (souvent trop ambigus)
-        if len(t) < 3:
+            out.append(int(rid))
+        except (TypeError, ValueError):
             continue
-        found = True
-        # Frontière unicode simple (lettres latines + chiffres + underscore + œ/Œ).
-        # Objectif: éviter `lait` -> `laitue` sans dépendre de \\m/\\M (pas portable).
-        boundary = r'[^0-9A-Za-zÀ-ÖØ-öø-ÿœŒ_]'
-        try:
-            pat = r'(^|' + boundary + r')' + re.escape(t) + r'(' + boundary + r'|$)'
-            q |= Q(ingredient__name__iregex=pat)
-        except Exception:
+    return list(dict.fromkeys(out))
+
+
+def _ingredients_by_recipe(recipe_ids):
+    """``{recipe_id: [(ingredient_id, nom), ...]}`` : liste recette puis étapes, sans doublon."""
+    rows = list(
+        RecipeIngredient.objects.filter(recipe_id__in=recipe_ids).values_list(
+            'recipe_id', 'ingredient_id', 'ingredient__name'
+        )
+    )
+    rows += list(
+        StepIngredient.objects.filter(step__recipe_id__in=recipe_ids).values_list(
+            'step__recipe_id', 'ingredient_id', 'ingredient__name'
+        )
+    )
+    out = {}
+    seen = set()
+    for rid, iid, name in rows:
+        if (rid, iid) in seen:
             continue
-        try:
-            alt = unidecode(t)
-            if alt and alt.lower() != t.lower() and len(alt) >= 3:
-                pat2 = r'(^|' + boundary + r')' + re.escape(alt) + r'(' + boundary + r'|$)'
-                q |= Q(ingredient__name__iregex=pat2)
-        except Exception:
-            pass
-    if not found:
-        return None
-    return q
+        seen.add((rid, iid))
+        out.setdefault(rid, []).append((iid, name or ''))
+    return out
 
 
-def _semantic_ingredient_ids(labels):
+def conflict_details_by_recipe_id(recipe_ids, user, viewer=None):
     """
-    Ingrédients dont l’embedding est proche du libellé utilisateur (même embedding API
-    que le reste du projet). Nécessite EMBEDDING_API_* et embeddings en base.
+    Conflits des préférences de ``user`` avec chaque recette de ``recipe_ids``.
+
+    ``viewer`` (défaut : ``user``) détermine quelles exceptions personnelles s'appliquent
+    (celles posées par ``user`` + celles posées par ``viewer``).
+
+    Retour : ``{recipe_id: {'reasons': [...], 'hits': [...]}}`` (recettes sans conflit absentes),
+    ``hits`` = au plus un par raison :
+    ``{'reason', 'label', 'ingredient', 'ingredient_id'}``.
     """
-    if not getattr(settings, 'DIETARY_SEMANTIC_MATCHING', True):
-        return []
-    if not labels:
-        return []
+    rules = _preference_rules(user)
+    ids = _parse_ids(recipe_ids)
+    if not rules or not ids:
+        return {}
+    exceptions = _load_exceptions(user, viewer or user)
+    ingredients = _ingredients_by_recipe(ids)
 
-    try:
-        from .services.ingredient_matcher import get_batch_embeddings
-    except Exception as e:
-        logger.debug('dietary semantic: import ingredient_matcher failed: %s', e)
-        return []
-
-    vectors = get_batch_embeddings(list(labels), input_type='query')
-    max_d = float(getattr(settings, 'DIETARY_SEMANTIC_MAX_DISTANCE', 0.42))
-    max_per = int(getattr(settings, 'DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', 120))
-
-    out = set()
-    for label, vec in zip(labels, vectors):
-        if not vec:
+    out = {}
+    for rid in ids:
+        ings = ingredients.get(rid)
+        if not ings:
             continue
-        try:
-            qs = (
-                Ingredient.objects.exclude(embedding__isnull=True)
-                .annotate(d=CosineDistance('embedding', vec))
-                .filter(d__lte=max_d)
-                .order_by('d')[:max_per]
-            )
-            out.update(qs.values_list('id', flat=True))
-        except Exception as e:
-            logger.warning('dietary semantic: label=%r error=%s', label, e)
-    return list(out)
+        hits = {}
+        for rule in rules:
+            kind, label, _kws = rule
+            if kind in hits:
+                continue
+            for iid, name in ings:
+                if _rule_hits(rule, iid, name, exceptions):
+                    hits[kind] = {'reason': kind, 'label': label, 'ingredient': name, 'ingredient_id': iid}
+                    break
+        if hits:
+            reasons = sorted(hits, key=KIND_ORDER.get)
+            out[rid] = {'reasons': reasons, 'hits': [hits[k] for k in reasons]}
+    return out
 
 
-def excluded_recipe_ids_for_labels(labels):
-    """
-    IDs de recettes à exclure pour une liste de libellés (allergies ou goûts seuls) :
-    même logique texte + sémantique que l’union historique.
-    """
-    if not labels:
-        return []
-
-    recipe_ids = set()
-
-    kws = keywords_for_labels(labels)
-    if kws:
-        q_kw = build_ingredient_q(kws)
-        if q_kw is not None:
-            ri = RecipeIngredient.objects.filter(q_kw).values_list('recipe_id', flat=True)
-            si = StepIngredient.objects.filter(q_kw).values_list('step__recipe_id', flat=True)
-            recipe_ids.update(ri)
-            recipe_ids.update(si)
-
-    sem_ids = _semantic_ingredient_ids(labels)
-    if sem_ids:
-        ri2 = RecipeIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('recipe_id', flat=True)
-        si2 = StepIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('step__recipe_id', flat=True)
-        recipe_ids.update(ri2)
-        recipe_ids.update(si2)
-
-    return list(recipe_ids)
-
-
-def _recipe_ids_matching_keywords_safe(keywords, semantic=False):
-    """
-    Recettes dont les ingrédients matchent une liste de mots-clés via regex "safe"
-    (mots entiers / frontières non-alphanumériques).
-    """
-    if not keywords:
-        return []
-
-    recipe_ids = set()
-    q_kw = build_ingredient_q_safe_word_boundary(keywords)
-    if q_kw is not None:
-        ri = RecipeIngredient.objects.filter(q_kw).values_list('recipe_id', flat=True)
-        si = StepIngredient.objects.filter(q_kw).values_list('step__recipe_id', flat=True)
-        recipe_ids.update(ri)
-        recipe_ids.update(si)
-
-    if semantic:
-        sem_ids = _semantic_ingredient_ids(keywords)
-        if sem_ids:
-            ri2 = RecipeIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('recipe_id', flat=True)
-            si2 = StepIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('step__recipe_id', flat=True)
-            recipe_ids.update(ri2)
-            recipe_ids.update(si2)
-
-    return list(recipe_ids)
-
-
-def excluded_recipe_ids_for_user(user):
-    """
-    IDs de recettes à exclure : union des matchs **texte** et **sémantiques** sur les
-    ingrédients (liste recette + ingrédients d’étapes).
-    """
-    labels = _labels_from_user(user)
-    return excluded_recipe_ids_for_labels(labels)
+def conflict_reasons_by_recipe_id(recipe_ids, user, viewer=None):
+    """``{recipe_id: ['allergy', 'diet', 'dislike']}`` (sous-ensemble, ordre UX)."""
+    return {rid: d['reasons'] for rid, d in conflict_details_by_recipe_id(recipe_ids, user, viewer).items()}
 
 
 def strict_excluded_recipe_ids_for_user(user):
     """
-    Mode strict pour suggestions:
-    - Exclut uniquement allergies + régimes (jamais les dislikes)
-    - Matching texte "safe" par mots entiers (anti faux-positifs)
-    - Matching sémantique désactivé par défaut (trop risqué en strict)
+    Mode strict (suggestions) : recettes exclues pour allergies + régimes, jamais les goûts.
+    Préfiltre SQL (même regex que le matching Python) puis confirmation + exceptions.
     """
-    if not user or not getattr(user, 'is_authenticated', False):
+    rules = _preference_rules(user, kinds=('allergy', 'diet'))
+    if not rules:
         return []
-
-    al_labels = _allergy_labels_from_user(user)
-    regime_kws = _regime_keywords_from_user(user)
-    # Allergies strict: uniquement mappings validés + overrides user.
-    allergy_kws = keywords_for_user_preference_labels(user, 'allergy', al_labels, include_pending_global=False)
-    strict_kws = _normalize_label_strings(list(allergy_kws) + list(regime_kws))
-    if not strict_kws:
+    q = Q()
+    for kw in _usable_keywords([kw for _k, _l, kws in rules for kw in kws]):
+        q |= Q(name__iregex=keyword_pattern(kw))
+    exceptions = _load_exceptions(user, user)
+    matched = {
+        iid
+        for iid, name in Ingredient.objects.filter(q).values_list('id', 'name')
+        if any(_rule_hits(rule, iid, name, exceptions) for rule in rules)
+    }
+    if not matched:
         return []
-
-    return _recipe_ids_matching_keywords_safe(
-        strict_kws,
-        semantic=bool(getattr(settings, 'DIETARY_STRICT_SEMANTIC_MATCHING', False)),
-    )
-
-
-def conflicting_recipe_ids_for_user(recipe_ids, user):
-    """
-    Sous-ensemble de ``recipe_ids`` qui seraient exclues par les préférences de ``user``
-    (même logique que ``excluded_recipe_ids_for_user``, restreinte à une liste).
-    """
-    if not user or not getattr(user, 'is_authenticated', False):
-        return []
-    excl = set(excluded_recipe_ids_for_user(user))
-    out = []
-    for rid in recipe_ids:
-        try:
-            rid = int(rid)
-        except (TypeError, ValueError):
-            continue
-        if rid in excl:
-            out.append(rid)
-    return out
-
-
-def conflict_reasons_by_recipe_id(recipe_ids, user):
-    """
-    Pour chaque id dans ``recipe_ids`` en conflit avec les préférences de ``user``,
-    indique si le match vient des **allergies**, des **goûts** (n’aime pas), ou les deux.
-
-    Retour : dict ``{ recipe_id: ['allergy', 'dislike'] }`` (valeurs triées allergies d’abord).
-    """
-    if not user or not getattr(user, 'is_authenticated', False):
-        return {}
-
-    al_labels = _allergy_labels_from_user(user)
-    dl_labels = _dislike_labels_from_user(user)
-
-    # Allergies: fort signal, validated only.
-    allergy_kws = keywords_for_user_preference_labels(user, 'allergy', al_labels, include_pending_global=False)
-    ex_a = set(_recipe_ids_matching_keywords_safe(allergy_kws, semantic=False)) if allergy_kws else set()
-
-    # Régimes: strict-safe (fort signal), basé sur keywords conservateurs.
-    regime_kws = _regime_keywords_from_user(user)
-    ex_r = set(_recipe_ids_matching_keywords_safe(regime_kws, semantic=False)) if regime_kws else set()
-
-    # Dislikes: signal soft. On inclut pending global pour améliorer la couverture,
-    # mais ça ne doit jamais être utilisé en strict exclusion.
-    dislike_kws = keywords_for_user_preference_labels(user, 'dislike', dl_labels, include_pending_global=True)
-    ex_d = set(excluded_recipe_ids_for_labels(dislike_kws)) if dislike_kws else set()
-
-    out = {}
-    for rid in recipe_ids:
-        try:
-            rid = int(rid)
-        except (TypeError, ValueError):
-            continue
-        reasons = []
-        if rid in ex_a:
-            reasons.append('allergy')
-        if rid in ex_r:
-            reasons.append('diet')
-        if rid in ex_d:
-            reasons.append('dislike')
-        if reasons:
-            # Ordre UX: allergy > diet > dislike
-            order = {'allergy': 0, 'diet': 1, 'dislike': 2}
-            out[rid] = sorted(reasons, key=lambda x: order.get(x, 99))
-    return out
-
-
-def _ingredient_objects_for_recipe(recipe_id):
-    """Ingrédients uniques (liste recette + étapes)."""
-    try:
-        rid = int(recipe_id)
-    except (TypeError, ValueError):
-        return []
-    seen = set()
-    out = []
-    for ri in RecipeIngredient.objects.filter(recipe_id=rid).select_related('ingredient'):
-        i = ri.ingredient
-        if i and i.id not in seen:
-            seen.add(i.id)
-            out.append(i)
-    for si in StepIngredient.objects.filter(step__recipe_id=rid).select_related('ingredient'):
-        i = si.ingredient
-        if i and i.id not in seen:
-            seen.add(i.id)
-            out.append(i)
-    return out
-
-
-def _text_hit_for_labels(ingredients, labels, reason_key):
-    """Premier match texte libellé → nom d’ingrédient."""
-    for lbl in labels:
-        kws = keywords_for_labels([lbl])
-        for ing in ingredients:
-            n = ing.name or ''
-            n_low = n.lower()
-            for kw in kws:
-                t = (kw or '').strip()
-                if len(t) < 2:
-                    continue
-                if t.lower() in n_low:
-                    return {'reason': reason_key, 'label': lbl, 'ingredient': ing.name}
-                try:
-                    alt = unidecode(t)
-                    if alt and alt.lower() != t.lower() and alt.lower() in n_low:
-                        return {'reason': reason_key, 'label': lbl, 'ingredient': ing.name}
-                except Exception:
-                    pass
-    return None
-
-
-def _semantic_hit_for_labels(ingredients, labels, reason_key):
-    """Premier match sémantique par libellé (chaque libellé embed séparément)."""
-    ing_by_id = {i.id: i for i in ingredients}
-    for lbl in labels:
-        sem_ids = set(_semantic_ingredient_ids([lbl]))
-        for iid in sem_ids:
-            if iid in ing_by_id:
-                return {'reason': reason_key, 'label': lbl, 'ingredient': ing_by_id[iid].name}
-    return None
-
-
-def hits_for_recipe_reasons(recipe_id, reasons, user):
-    """
-    Détail utilisable en UI : libellé déclaré + ingrédient repéré (max 1 par type allergy/dislike).
-    """
-    if not reasons:
-        return []
-    ingredients = _ingredient_objects_for_recipe(recipe_id)
-    out = []
-    if 'allergy' in reasons:
-        labs = _allergy_labels_from_user(user)
-        h = _text_hit_for_labels(ingredients, labs, 'allergy') or _semantic_hit_for_labels(ingredients, labs, 'allergy')
-        if h:
-            out.append(h)
-    if 'diet' in reasons:
-        regimes = _regimes_from_user(user)
-        # Best-effort: show a regime name and a matched ingredient.
-        # We only do a text-safe hit here (no semantic) to keep credibility.
-        boundary = r'[^0-9A-Za-zÀ-ÖØ-öø-ÿœŒ_]'
-        found = False
-        for r in regimes:
-            kws = _normalize_label_strings(REGIME_KEYWORDS.get(r, []))
-            for ing in ingredients:
-                n = ing.name or ''
-                for kw in kws:
-                    t = (kw or '').strip()
-                    if len(t) < 3:
-                        continue
-                    try:
-                        if re.search(
-                            r'(^|' + boundary + r')' + re.escape(t) + r'(' + boundary + r'|$)',
-                            n,
-                            flags=re.IGNORECASE,
-                        ):
-                            out.append({'reason': 'diet', 'label': r, 'ingredient': ing.name})
-                            found = True
-                            break
-                    except Exception:
-                        continue
-                if found:
-                    break
-            if found:
-                break
-        # Ignore if no hit found
-    if 'dislike' in reasons:
-        labs = _dislike_labels_from_user(user)
-        h = _text_hit_for_labels(ingredients, labs, 'dislike') or _semantic_hit_for_labels(ingredients, labs, 'dislike')
-        if h:
-            out.append(h)
-    return out
+    ids = set(RecipeIngredient.objects.filter(ingredient_id__in=matched).values_list('recipe_id', flat=True))
+    ids.update(StepIngredient.objects.filter(ingredient_id__in=matched).values_list('step__recipe_id', flat=True))
+    return list(ids)
 
 
 def meal_plan_recipe_id_list(meal_plan):
@@ -760,7 +538,7 @@ def meal_plan_dietary_flag_summary(meal_plan, request_user):
         target = inv.invitee
         if not target or not are_complices_in_network(request_user, target):
             continue
-        rmap = conflict_reasons_by_recipe_id(recipe_ids, target)
+        rmap = conflict_reasons_by_recipe_id(recipe_ids, target, viewer=request_user)
         for _rid, reasons in rmap.items():
             if 'dislike' in reasons:
                 dislike_any = True

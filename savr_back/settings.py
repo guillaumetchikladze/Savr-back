@@ -100,12 +100,6 @@ if not DEBUG:
     CSRF_COOKIE_SECURE = True
     SESSION_COOKIE_SECURE = True
 
-# Filtrage recettes / préférences alimentaires (recipes.dietary_filters)
-# Distance cosinus pgvector : 0 = identique, 2 = opposé. Plus la valeur est basse, plus c’est strict.
-DIETARY_SEMANTIC_MATCHING = config('DIETARY_SEMANTIC_MATCHING', default=True, cast=bool)
-DIETARY_SEMANTIC_MAX_DISTANCE = config('DIETARY_SEMANTIC_MAX_DISTANCE', default=0.42, cast=float)
-DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL = config('DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', default=120, cast=int)
-
 # Recherche recettes sémantique (nomic 512d + hybride pg_trgm/pgvector)
 EMBEDDING_DIMENSION = config('EMBEDDING_DIMENSION', default=512, cast=int)
 SEARCH_SEMANTIC_MAX_DISTANCE = config('SEARCH_SEMANTIC_MAX_DISTANCE', default=0.45, cast=float)

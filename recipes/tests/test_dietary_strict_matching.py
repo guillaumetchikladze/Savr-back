@@ -1,8 +1,10 @@
+import pytest
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
 from recipes.dietary_filters import strict_excluded_recipe_ids_for_user
+from recipes.dietary_matching import name_matches
 from recipes.models import Ingredient, Recipe, RecipeIngredient
 
 
@@ -58,3 +60,33 @@ class DietaryStrictMatchingTestCase(TestCase):
         excluded = set(strict_excluded_recipe_ids_for_user(self.user))
         self.assertIn(r_sing.id, excluded)
         self.assertIn(r_plur.id, excluded)
+
+    def test_strict_exclusion_handles_accents_and_curated_exceptions(self):
+        r_creme = self._recipe_with_ingredient('Gratin', 'Crème Fraîche')
+        r_coco = self._recipe_with_ingredient('Curry', 'Lait de coco')
+        r_laitue = self._recipe_with_ingredient('Salade', 'Laitues')
+
+        self.user.allergies = ['Lactose / lait']
+        self.user.save(update_fields=['allergies'])
+
+        excluded = set(strict_excluded_recipe_ids_for_user(self.user))
+        self.assertEqual(excluded & {r_creme.id, r_coco.id, r_laitue.id}, {r_creme.id})
+
+
+@pytest.mark.parametrize(
+    'keyword, name, expected',
+    [
+        ('olive', 'Olives noires', True),
+        ('Olives', 'olive verte', True),
+        ('oeuf', 'Œufs', True),
+        ("blanc d'oeuf", 'Blanc d’œufs', True),
+        ('crème', 'creme fraiche', True),
+        ('chou', 'choux de Bruxelles', True),
+        ('lait', 'laitue', False),
+        ('ris', 'riz', False),
+        ('bar', 'barbecue', False),
+        ('noix de saint-jacques', 'Noix de Saint Jacques', True),
+    ],
+)
+def test_word_boundary_matching(keyword, name, expected):
+    assert name_matches(name, keyword) is expected
