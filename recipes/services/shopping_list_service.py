@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from django.contrib.auth.models import AbstractBaseUser
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 
 from chat.services.tool_schemas import (
@@ -14,7 +15,15 @@ from chat.services.tool_schemas import (
     GetShoppingListItemsResult,
     ShoppingListItemSummary,
 )
-from recipes.models import ShoppingList, ShoppingListItem, ShoppingListItemQuantity, ShoppingListMember
+from recipes.models import (
+    MealPlanRecipeBatch,
+    RecipeBatch,
+    ShoppingList,
+    ShoppingListBatch,
+    ShoppingListItem,
+    ShoppingListItemQuantity,
+    ShoppingListMember,
+)
 from recipes.services.ingredient_matcher import get_or_create_ingredient
 from recipes.utils import shopping_list_item_quantity_is_stale
 
@@ -192,3 +201,86 @@ def add_item_to_shopping_list(
         created=item_created,
         message=f'« {ingredient.name} » {action} ({canonical_qty} {canonical_unit}).',
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch de recette → lignes de la liste (partagé par les endpoints ShoppingListViewSet)
+# ---------------------------------------------------------------------------
+def compute_total_servings_batch(batch: RecipeBatch) -> float:
+    """
+    Portions totales d'un batch : somme des portions des repas liés ; sinon portions de la recette.
+    """
+    from recipes.utils import get_batch_portions
+
+    recipe = batch.recipe
+    if not recipe:
+        return 1.0
+    total = 0
+    for mprb in MealPlanRecipeBatch.objects.filter(recipe_batch=batch).select_related('meal_plan'):
+        total += get_batch_portions(mprb.meal_plan, mprb)
+    return float(total) if total > 0 else float(recipe.servings or 1)
+
+
+def add_batch_ingredients_to_list(shopping_list: ShoppingList, batch: RecipeBatch) -> None:
+    """
+    Ajoute les ingrédients de la recette du batch à la liste :
+    - ShoppingListItem (ingrédient + unit_group) ;
+    - ShoppingListItemQuantity par batch (unité canonique pour les dimensions convertibles),
+      fusionnée (additionnée) si la ligne existe déjà.
+    """
+    from recipes.services.ingredient_categorization import ensure_ingredient_category
+
+    recipe = batch.recipe
+    if not recipe:
+        return
+
+    servings = compute_total_servings_batch(batch)
+    base_servings = float(recipe.servings or 1)
+    ratio = servings / base_servings if base_servings else 1.0
+
+    for ri in recipe.recipe_ingredients.all().select_related('ingredient__category'):
+        if ri.ingredient_id:
+            ensure_ingredient_category(ri.ingredient)
+
+        unit_group = _unit_group_for_unit(ri.unit)
+        qty = float(ri.quantity) * ratio
+        qty_canon, unit_canon = _canonicalize_quantity(qty, ri.unit)
+
+        # V2 : fusion seulement dans un même unit_group ; non convertibles = lignes séparées.
+        item, _ = ShoppingListItem.objects.get_or_create(
+            shopping_list=shopping_list,
+            ingredient=ri.ingredient,
+            unit_group=unit_group,
+            defaults={'pantry_quantity': 0, 'pantry_unit': unit_canon},
+        )
+        if not item.pantry_unit:
+            item.pantry_unit = unit_canon
+            item.save(update_fields=['pantry_unit'])
+
+        slq, created = ShoppingListItemQuantity.objects.get_or_create(
+            shopping_list_item=item,
+            recipe_batch=batch,
+            defaults={'quantity': qty_canon, 'unit': unit_canon, 'checked_quantity': 0},
+        )
+        if not created:
+            slq.quantity = Decimal(str(slq.quantity or 0)) + Decimal(str(qty_canon))
+            slq.unit = unit_canon or slq.unit
+            slq.save(update_fields=['quantity', 'unit', 'updated_at'])
+
+
+def link_batch_to_shopping_list(shopping_list: ShoppingList, batch: RecipeBatch) -> None:
+    """
+    Associe le batch à la liste (un batch = une liste) et y ajoute ses ingrédients. S'il était dans
+    une autre liste, ses quantités y sont retirées d'abord. À appeler dans une transaction.
+    """
+    existing_link = ShoppingListBatch.objects.filter(recipe_batch=batch).select_related('shopping_list').first()
+    if existing_link and existing_link.shopping_list_id != shopping_list.id:
+        old_list = existing_link.shopping_list
+        ShoppingListItemQuantity.objects.filter(recipe_batch=batch, shopping_list_item__shopping_list=old_list).delete()
+        ShoppingListItem.objects.filter(shopping_list=old_list).annotate(qcount=Count('quantities')).filter(
+            qcount=0
+        ).delete()
+        existing_link.delete()
+
+    ShoppingListBatch.objects.update_or_create(recipe_batch=batch, defaults={'shopping_list': shopping_list})
+    add_batch_ingredients_to_list(shopping_list, batch)

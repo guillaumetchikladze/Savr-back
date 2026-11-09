@@ -6223,74 +6223,14 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         return float(quantity), unit
 
     def _compute_total_servings_batch(self, batch: RecipeBatch) -> float:
-        """
-        Compute total servings for a batch by summing servings across all linked meal plans.
-        Falls back to recipe.servings.
-        """
-        recipe = batch.recipe
-        if not recipe:
-            return 1.0
-        total = 0
-        mprbs = MealPlanRecipeBatch.objects.filter(recipe_batch=batch).select_related('meal_plan')
-        for mprb in mprbs:
-            total += get_batch_portions(mprb.meal_plan, mprb)
-        return float(total) if total > 0 else float(recipe.servings or 1)
+        from .services.shopping_list_service import compute_total_servings_batch
+
+        return compute_total_servings_batch(batch)
 
     def _add_batch_ingredients_to_list(self, shopping_list: ShoppingList, batch: RecipeBatch, actor):
-        """
-        Adds all recipe ingredients for the given batch into the shopping list as:
-        - ShoppingListItem (ingredient + unit_group)
-        - ShoppingListItemQuantity per batch (canonical unit for convertible dims)
-        """
-        recipe = batch.recipe
-        if not recipe:
-            return
+        from .services.shopping_list_service import add_batch_ingredients_to_list
 
-        servings = self._compute_total_servings_batch(batch)
-        base_servings = float(recipe.servings or 1)
-        ratio = servings / base_servings if base_servings else 1.0
-
-        # Prefetch recipe ingredients if possible
-        ris = recipe.recipe_ingredients.all().select_related('ingredient__category')
-
-        from .services.ingredient_categorization import ensure_ingredient_category
-
-        for ri in ris:
-            if ri.ingredient_id:
-                ensure_ingredient_category(ri.ingredient)
-
-            unit_group = self._unit_group_for_unit(ri.unit)
-            qty = float(ri.quantity) * ratio
-            qty_canon, unit_canon = self._canonicalize_quantity(qty, ri.unit)
-
-            # V2 rule: only merge within same unit_group; non-convertibles become separate lines by unit_group mapping
-            item, _ = ShoppingListItem.objects.get_or_create(
-                shopping_list=shopping_list,
-                ingredient=ri.ingredient,
-                unit_group=unit_group,
-                defaults={
-                    'pantry_quantity': 0,
-                    'pantry_unit': unit_canon,
-                },
-            )
-            if not item.pantry_unit:
-                item.pantry_unit = unit_canon
-                item.save(update_fields=['pantry_unit'])
-
-            slq, created = ShoppingListItemQuantity.objects.get_or_create(
-                shopping_list_item=item,
-                recipe_batch=batch,
-                defaults={
-                    'quantity': qty_canon,
-                    'unit': unit_canon,
-                    'checked_quantity': 0,
-                },
-            )
-            if not created:
-                # merge quantities (add)
-                slq.quantity = Decimal(str(slq.quantity or 0)) + Decimal(str(qty_canon))
-                slq.unit = unit_canon or slq.unit
-                slq.save(update_fields=['quantity', 'unit', 'updated_at'])
+        add_batch_ingredients_to_list(shopping_list, batch)
 
     @action(detail=True, methods=['post'])
     def associate_batch(self, request, pk=None):
@@ -6305,29 +6245,11 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         except (RecipeBatch.DoesNotExist, ValueError, TypeError):
             return Response({'error': 'Recipe batch not found'}, status=status.HTTP_404_NOT_FOUND)
 
+        from .services.shopping_list_service import link_batch_to_shopping_list
+
         with transaction.atomic():
-            # If already in another list, remove from old list (and remove all ingredients from that batch)
-            existing_link = ShoppingListBatch.objects.filter(recipe_batch=batch).select_related('shopping_list').first()
-            if existing_link and existing_link.shopping_list_id != shopping_list.id:
-                old_list = existing_link.shopping_list
-                # Delete all quantities contributed by this batch in old list
-                ShoppingListItemQuantity.objects.filter(
-                    recipe_batch=batch, shopping_list_item__shopping_list=old_list
-                ).delete()
-                # Delete empty items
-                ShoppingListItem.objects.filter(shopping_list=old_list).annotate(qcount=Count('quantities')).filter(
-                    qcount=0
-                ).delete()
-                existing_link.delete()
-
-            # Create link to new list (or keep if already linked)
-            ShoppingListBatch.objects.update_or_create(
-                recipe_batch=batch,
-                defaults={'shopping_list': shopping_list},
-            )
-
-            # Add ingredients for this batch into the list
-            self._add_batch_ingredients_to_list(shopping_list, batch, request.user)
+            # Retiré de l'ancienne liste éventuelle, lié à celle-ci, ingrédients ajoutés.
+            link_batch_to_shopping_list(shopping_list, batch)
 
         return Response(
             ShoppingListSerializer(shopping_list, context={'request': request}).data, status=status.HTTP_200_OK
@@ -6368,27 +6290,11 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
 
         batches = [mprb.recipe_batch for mprb in mprb_qs if mprb.recipe_batch_id]
 
+        from .services.shopping_list_service import link_batch_to_shopping_list
+
         with transaction.atomic():
             for batch in batches:
-                existing_link = (
-                    ShoppingListBatch.objects.filter(recipe_batch=batch).select_related('shopping_list').first()
-                )
-                if existing_link and existing_link.shopping_list_id != shopping_list.id:
-                    old_list = existing_link.shopping_list
-                    ShoppingListItemQuantity.objects.filter(
-                        recipe_batch=batch,
-                        shopping_list_item__shopping_list=old_list,
-                    ).delete()
-                    ShoppingListItem.objects.filter(shopping_list=old_list).annotate(qcount=Count('quantities')).filter(
-                        qcount=0
-                    ).delete()
-                    existing_link.delete()
-
-                ShoppingListBatch.objects.update_or_create(
-                    recipe_batch=batch,
-                    defaults={'shopping_list': shopping_list},
-                )
-                self._add_batch_ingredients_to_list(shopping_list, batch, request.user)
+                link_batch_to_shopping_list(shopping_list, batch)
 
         return Response(
             ShoppingListSerializer(shopping_list, context={'request': request}).data,
