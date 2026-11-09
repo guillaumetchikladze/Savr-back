@@ -114,7 +114,7 @@ Pour mettre à jour l'application après des changements de code :
 git pull
 
 # 2. Reconstruire les images et redémarrer les services
-docker compose up -d --build django celery-worker caddy
+docker compose up -d --build django celery-worker celery-beat caddy
 ```
 
 C'est tout ! 🎉
@@ -123,7 +123,7 @@ C'est tout ! 🎉
 
 - `git pull` : Récupère le nouveau code
 - `--build` : Reconstruit les images Docker avec le nouveau code
-- `django celery-worker caddy` : Redémarre uniquement ces services (les autres comme Redis et MinIO continuent de tourner)
+- `django celery-worker celery-beat caddy` : Redémarre uniquement ces services (les autres comme Redis et MinIO continuent de tourner)
 
 ### Vérification après mise à jour
 
@@ -173,6 +173,7 @@ docker compose down -v                 # Arrête tout et supprime les volumes (�
 ```bash
 docker compose restart django
 docker compose restart celery-worker
+docker compose restart celery-beat
 ```
 
 ### Accéder au shell du container Django
@@ -196,6 +197,7 @@ docker compose exec django python manage.py collectstatic  # Si nécessaire
 |---------|-------------|-------|
 | **Django** | API principale avec Gunicorn | 8000 (interne) |
 | **Celery Worker** | Traitement des tâches asynchrones | - |
+| **Celery Beat** | Planificateur (une seule instance, ne pas scaler) | - |
 | **Redis** | Broker pour Celery | 6379 |
 | **MinIO** | Stockage S3-compatible | 9000 (API), 9001 (Console) |
 | **Caddy** | Reverse proxy + HTTPS automatique | 80, 443 |

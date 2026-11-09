@@ -160,6 +160,6 @@ ou `push(type, user, …)` (push seule). Spec et contrat front : `.claude-work/s
 - Suivi : chaque push = une `NotificationDelivery` (`data.notification_id`) ; `POST /api/notifications/opened/`
   pose `opened_at`. Taux d'ouverture : `python manage.py notification_open_rates --days 30`.
 - Rétention (Celery beat, toutes les heures, `CELERY_BEAT_SCHEDULE`) : digest des posts des amis (≤ 1/jour,
-  18:00 locale) et récap du dimanche (19:00). Le worker Docker lance le beat embarqué (`-B`) ; en local :
+  18:00 locale) et récap du dimanche (19:00). Le beat tourne comme service Docker dédié `celery-beat` (jamais `worker -B`, jamais plus d'une instance) ; en local :
   `celery -A savr_back beat -l info`.
 - Tests : `make test-domain d=notifications` (mocker `notifications.services.send_expo_push_notifications`).

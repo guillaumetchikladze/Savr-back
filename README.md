@@ -111,13 +111,14 @@ Le dossier `docker/` contient tout le nécessaire pour lancer l'API derrière Ca
 
 ```bash
 # Toujours dans Savr-back/
-docker compose up -d --build redis minio django celery-worker caddy
+docker compose up -d --build redis minio django celery-worker celery-beat caddy
 ```
 
 Compose bricole automati­quement :
 
 - `django` : Gunicorn sur port interne 8000
 - `celery-worker` : worker Celery (file redis)
+- `celery-beat` : planificateur Celery (instance unique, ne jamais scaler)
 - `redis` : broker/résultat Celery
 - `minio` : stockage S3-compatible (ports 9000/9001)
 - `caddy` : reverse proxy / certificats auto Let's Encrypt
@@ -135,7 +136,7 @@ docker compose logs -f caddy               # vérifier l'émission des certifica
 
 ```bash
 git pull
-docker compose up -d --build django celery-worker caddy
+docker compose up -d --build django celery-worker celery-beat caddy
 ```
 
 ### 6. Rappels opérationnels

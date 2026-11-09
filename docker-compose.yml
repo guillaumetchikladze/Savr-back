@@ -120,9 +120,9 @@ services:
       dockerfile: docker/Dockerfile.celery
     container_name: savr-celery-worker
     restart: unless-stopped
-    # -B : beat embarqué (un seul conteneur worker) pour CELERY_BEAT_SCHEDULE (notifications de rétention).
-    command: celery -A savr_back worker -B -s /tmp/celerybeat-schedule -l info -Q savr_default,emails_urgent,emails_high,emails_normal,emails_low
-    environment:
+    # Pas de -B : le beat tourne dans le service dédié `celery-beat` ci-dessous.
+    command: celery -A savr_back worker -l info -Q savr_default,emails_urgent,emails_high,emails_normal,emails_low
+    environment: &celery-env
       - DB_NAME=${DB_NAME:-savr_db}
       - DB_USER=${DB_USER:-postgres}
       - DB_PASSWORD=${DB_PASSWORD:-postgres}
@@ -149,13 +149,27 @@ services:
       - MS_GRAPH_CLIENT_SECRET=${MS_GRAPH_CLIENT_SECRET:-}
       - MS_GRAPH_SENDER=${MS_GRAPH_SENDER:-}
       - EMAIL_FROM_ADDRESS=${EMAIL_FROM_ADDRESS:-noreply@savr.app}
-    depends_on:
+    depends_on: &celery-depends
       redis:
         condition: service_healthy
       minio:
         condition: service_healthy
       embedding:
         condition: service_healthy
+    volumes:
+      - .:/app
+
+  # Celery beat (CELERY_BEAT_SCHEDULE : notifications de rétention).
+  # NE JAMAIS scaler ce service : une seule instance, sinon chaque tâche planifiée est émise en double.
+  celery-beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.celery
+    container_name: savr-celery-beat
+    restart: unless-stopped
+    command: celery -A savr_back beat -l info -s /tmp/celerybeat-schedule
+    environment: *celery-env
+    depends_on: *celery-depends
     volumes:
       - .:/app
 
