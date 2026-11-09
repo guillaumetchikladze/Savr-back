@@ -8,6 +8,7 @@ from pathlib import Path
 
 import boto3
 from celery.schedules import crontab
+from corsheaders.defaults import default_headers
 from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -325,6 +326,16 @@ else:
     ]
 
 CORS_ALLOW_CREDENTIALS = True
+# En-têtes envoyés par l'app (Expo web compris) en plus des défauts de django-cors-headers :
+# idempotence (`POST /posts/cooked/`, listes de courses) et version de l'app (contrôle de version).
+CORS_ALLOW_HEADERS = (
+    *default_headers,
+    'idempotency-key',
+    'x-idempotency-key',
+    'x-app-version',
+    'x-app-platform',
+    'x-app-build',
+)
 
 # AWS S3 Configuration for file storage
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
