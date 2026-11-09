@@ -687,18 +687,10 @@ def add_to_shopping_list(
 # « À mon tour »
 # ---------------------------------------------------------------------------
 def can_see_post(user: AbstractBaseUser, post: Post) -> bool:
-    if not post.is_published:
-        return False
-    if post.user_id == user.id:
-        return True
-    from accounts.blocks import blocked_user_ids_for
-    from accounts.privacy import can_view_profile_content
+    """Compat : règle unique dans `recipes.services.post_visibility`."""
+    from recipes.services.post_visibility import can_see_post as _can_see_post
 
-    if post.user_id in blocked_user_ids_for(user):
-        return False
-    if post.is_public:  # partagé avec la communauté (Suggestions du feed)
-        return True
-    return can_view_profile_content(user, post.user)
+    return _can_see_post(user, post)
 
 
 def post_dish(post: Post) -> tuple[Recipe | None, str]:

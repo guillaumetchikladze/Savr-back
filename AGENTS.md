@@ -181,7 +181,15 @@ Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas d
 - `GET /api/feed/suggestions/` : endpoint **séparé** (feed principal inchangé pour l'app 1.0.9), posts publiés
   **et** `Post.is_public` (partage communauté opt-in par post, défaut False, via `POST /posts/cooked/` ou
   `PATCH /posts/{id}/update-content/`), hors amis / soi / blocages, `suggested: true` ; vide (`active: false`)
-  dès 3 amis actifs. Un post `is_public` s'ouvre (`retrieve`) et accepte « À mon tour » hors amis (sauf blocage).
+  dès 3 amis actifs. Un post `is_public` s'ouvre (`retrieve`) et accepte miam / « À mon tour » hors amis (sauf blocage).
+- Visibilité d'un post : **source unique** `recipes/services/post_visibility.py` (`visible_posts`,
+  `get_visible_post_or_404`), appliquée à toute action `/api/posts/{id}/…` ; invisible → **404** (jamais 403).
+  `VIEW` (détail, miam + liste, « À mon tour », signaler, repost) = soi, suivi de l'auteur, invité au repas /
+  co-cuisiné, `is_public`, ou reposté par un compte suivi ; `FRIENDS` (commentaires : liste, création, likes)
+  = idem sans `is_public` ni repost d'ami. Toujours : publié, auteur actif, aucun blocage dans un sens ou l'autre
+  (commentaires, miams et co-cuisiniers des comptes bloqués masqués). Écritures (`update`, `destroy`, `publish`,
+  `update-content`, photos) : auteur seulement, quels que soient les paramètres. Tests :
+  `recipes/tests/test_posts_visibility_api.py`.
 - Feed réutilisable : `PostViewSet.feed_list_queryset(request, qs)` (préchargements + annotations, pas de N+1).
 - Mesure : `python manage.py density_report --days 30 [--json]` (% ≥ 3 amis à J7, miams donnés en semaine 1,
   invités vs autres).

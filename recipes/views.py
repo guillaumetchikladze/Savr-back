@@ -78,6 +78,13 @@ from .services.meal_plan_service import (
     relink_composer_photos_to_meal_plan,
     update_composer_slot,
 )
+from .services.post_visibility import (
+    FRIENDS,
+    can_see_post,
+    get_visible_post_or_404,
+    request_blocked_user_ids,
+    visible_posts,
+)
 from .services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryset
 from .services.recipe_search_index import schedule_recipe_search_reindex
 from .services.repost_service import create_post_repost, delete_post_repost, user_can_repost_post
@@ -4761,7 +4768,8 @@ class PostViewSet(viewsets.ModelViewSet):
         return view._optimize_list_queryset(queryset)
 
     def get_queryset(self):
-        # retrieve : post publié visible seulement si auteur = soi ou suivi approuvé
+        # retrieve : règle de visibilité unique (`post_visibility.visible_posts`) : soi, suivi approuvé,
+        # partage communauté (`is_public`) ou co-cuisiné, hors blocages et comptes inactifs.
         if self.action == 'retrieve':
             queryset = (
                 Post.objects.filter(is_published=True)
@@ -4784,14 +4792,27 @@ class PostViewSet(viewsets.ModelViewSet):
                 )
                 .order_by('-created_at')
             )
-            if self.request.user.is_authenticated:
-                from accounts.blocks import blocked_user_ids_for
+            queryset = visible_posts(self.request.user, queryset=queryset)
+            return self._annotate_repost_fields(queryset)
 
-                # + posts partagés avec la communauté (`is_public`, choix de l'auteur), hors blocages :
-                # une carte « Suggestions » du feed doit pouvoir s'ouvrir.
-                author_ids = self._get_feed_author_ids(self.request.user)
-                public = Q(is_public=True) & ~Q(user_id__in=blocked_user_ids_for(self.request.user))
-                queryset = queryset.filter(Q(user_id__in=author_ids) | public)
+        if self.action != 'list':
+            # Écritures et actions de détail via get_object() (update, destroy, publish, upload_photo,
+            # delete_photo, update-content) : ses propres posts seulement, quels que soient les paramètres
+            # (`?is_published=true&user=` ne doit jamais ouvrir le post d'un autre en écriture).
+            queryset = (
+                Post.objects.filter(user=self.request.user)
+                .select_related('user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan')
+                .prefetch_related(
+                    'photos',
+                    'cookies',
+                    'comments',
+                    Prefetch(
+                        'reposts',
+                        queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+                    ),
+                )
+                .order_by('-created_at')
+            )
             return self._annotate_repost_fields(queryset)
 
         # Posts publiés : feed social (abonnements approuvés + soi) sauf profil explicite (?user=)
@@ -4829,35 +4850,21 @@ class PostViewSet(viewsets.ModelViewSet):
                     if not profile_user or not can_view_profile_content(viewer, profile_user):
                         return Post.objects.none()
                 reposted_post_ids = PostRepost.objects.filter(user_id=profile_user_id).values('original_post_id')
-                queryset = queryset.filter(Q(user_id=profile_user_id) | Q(id__in=reposted_post_ids)).distinct()
+                # Co-cuisinés (reposts) : jamais le post d'un auteur bloqué (dans un sens ou l'autre) ou inactif.
+                co_cooked = Q(id__in=reposted_post_ids, user__is_active=True)
+                if viewer.is_authenticated:
+                    from accounts.blocks import blocked_user_ids_for
+
+                    blocked_ids = blocked_user_ids_for(viewer)
+                    if blocked_ids:
+                        co_cooked &= ~Q(user_id__in=blocked_ids)
+                queryset = queryset.filter(Q(user_id=profile_user_id) | co_cooked).distinct()
             except (ValueError, TypeError):
-                pass
+                # `?user=` invalide : ne jamais retomber sur tous les posts publiés (feed social contourné).
+                return Post.objects.none()
 
         # Optimisation : pour les listes, limiter les champs chargés
-        if self.action == 'list':
-            queryset = self._optimize_list_queryset(queryset)
-        else:
-            queryset = (
-                queryset.select_related(
-                    'user',
-                    'recipe_batch',
-                    'recipe_batch__recipe',
-                    'meal_plan',
-                )
-                .prefetch_related(
-                    'photos',
-                    'cookies',
-                    'comments',
-                    Prefetch(
-                        'reposts',
-                        queryset=PostRepost.objects.select_related('user').order_by('created_at'),
-                    ),
-                )
-                .order_by('-created_at')
-            )
-            return self._annotate_repost_fields(queryset)
-
-        return queryset
+        return self._optimize_list_queryset(queryset)
 
     def list(self, request, *args, **kwargs):
         """Liste optimisée des posts avec pagination"""
@@ -5090,8 +5097,8 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='report')
     def report(self, request, pk=None):
-        """Signaler un post publié (un signalement par utilisateur et par post)."""
-        post = get_object_or_404(Post, pk=pk, is_published=True)
+        """Signaler un post publié visible (un signalement par utilisateur et par post ; invisible → 404)."""
+        post = get_visible_post_or_404(request.user, pk)
         if post.user_id == request.user.id:
             return Response(
                 {'detail': 'Vous ne pouvez pas signaler votre propre publication.'},
@@ -5107,8 +5114,8 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='repost')
     def repost(self, request, pk=None):
-        """Reposter un post meal plan (invité pending ou accepted)."""
-        post = get_object_or_404(Post, pk=pk, is_published=True)
+        """Reposter un post meal plan (invité pending ou accepted ; post invisible → 404)."""
+        post = get_visible_post_or_404(request.user, pk)
         if not user_can_repost_post(request.user, post):
             return Response(
                 {'detail': 'Vous ne pouvez pas reposter ce post.'},
@@ -5120,8 +5127,8 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['delete'], url_path='repost')
     def unrepost(self, request, pk=None):
-        """Retirer son repost d'un post meal plan."""
-        post = get_object_or_404(Post, pk=pk, is_published=True)
+        """Retirer son repost d'un post meal plan (post invisible → 404)."""
+        post = get_visible_post_or_404(request.user, pk)
         if not delete_post_repost(request.user, post):
             return Response(
                 {'detail': 'Aucun repost à retirer.'},
@@ -5845,19 +5852,11 @@ class PostViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_cookie(self, request, pk=None):
         """
-        Envoyer un cookie (like) à un post.
-
-        Contrairement au queryset par défaut de PostViewSet (qui limite parfois
-        aux posts de l'utilisateur connecté), ici on veut permettre d'envoyer
-        un cookie à (presque) n'importe quel post publié.
+        Envoyer un miam (cookie) à un post **visible** (`post_visibility.VIEW` : ami, post partagé avec la
+        communauté, co-cuisiné ; hors blocages). Post invisible → 404.
         """
         user = request.user
-
-        # On autorise les cookies sur tous les posts publiés, sans restriction
-        # de propriétaire ou d'amitié (la "visibilité" d'un post est déjà
-        # gérée par is_published).
-        post_qs = Post.objects.filter(is_published=True)
-        post = get_object_or_404(post_qs, pk=pk)
+        post = get_visible_post_or_404(user, pk)
 
         # Vérifier si l'utilisateur a déjà donné un cookie
         cookie, created = PostCookie.objects.get_or_create(user=user, post=post)
@@ -5879,9 +5878,7 @@ class PostViewSet(viewsets.ModelViewSet):
         """Retirer un cookie (like) d'un post"""
         user = request.user
 
-        # Permettre de retirer un cookie sur n'importe quel post publié
-        post_qs = Post.objects.filter(is_published=True)
-        post = get_object_or_404(post_qs, pk=pk)
+        post = get_visible_post_or_404(user, pk)
 
         try:
             cookie = PostCookie.objects.get(user=user, post=post)
@@ -5905,16 +5902,19 @@ class PostViewSet(viewsets.ModelViewSet):
         from .services.basket_service import (
             BasketError,
             add_my_turn,
-            can_see_post,
             has_my_turn,
             my_turn_count,
             remove_my_turn,
         )
 
-        post = get_object_or_404(
-            Post.objects.select_related('user', 'recipe_batch__recipe', 'meal_plan'), pk=pk, is_published=True
+        post = (
+            visible_posts(
+                request.user, queryset=Post.objects.select_related('user', 'recipe_batch__recipe', 'meal_plan')
+            )
+            .filter(pk=pk)
+            .first()
         )
-        if not can_see_post(request.user, post):
+        if post is None:
             return Response({'error': 'Post not found', 'code': 'post_not_found'}, status=status.HTTP_404_NOT_FOUND)
 
         item, created = None, False
@@ -5937,11 +5937,10 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='cookie-users')
     def cookie_users(self, request, pk=None):
-        """Liste paginée des utilisateurs qui ont donné un Miam (cookie) à ce post."""
+        """Liste paginée des utilisateurs qui ont donné un Miam (cookie) à ce post (visible ; hors blocages)."""
         from .pagination import CustomPageNumberPagination
 
-        post_qs = Post.objects.filter(is_published=True)
-        post = get_object_or_404(post_qs, pk=pk)
+        post = get_visible_post_or_404(request.user, pk)
 
         follow_exists = Follow.objects.filter(
             follower=request.user,
@@ -5954,6 +5953,7 @@ class PostViewSet(viewsets.ModelViewSet):
 
         cookies_qs = (
             PostCookie.objects.filter(post=post)
+            .exclude(user_id__in=request_blocked_user_ids(request))
             .select_related('user')
             .annotate(
                 is_following_rel=Exists(follow_exists),
@@ -5970,12 +5970,21 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get', 'post'], url_path='comments')
     def comments(self, request, pk=None):
-        """Liste des commentaires d'un post (GET) ou création d'un commentaire (POST)."""
-        post_qs = Post.objects.filter(is_published=True)
-        post = get_object_or_404(post_qs, pk=pk)
+        """
+        Liste des commentaires d'un post (GET) ou création d'un commentaire (POST).
+
+        Cercle `post_visibility.FRIENDS` (soi, suivi de l'auteur, invité / co-cuisiné ; hors blocages) : un post
+        partagé avec la communauté n'est pas commentable par un inconnu. Sinon 404.
+        """
+        post = get_visible_post_or_404(request.user, pk, level=FRIENDS)
 
         if request.method == 'GET':
-            comments = PostComment.objects.filter(post=post).select_related('user').order_by('created_at')
+            comments = (
+                PostComment.objects.filter(post=post)
+                .exclude(user_id__in=request_blocked_user_ids(request))
+                .select_related('user')
+                .order_by('created_at')
+            )
             serializer = PostCommentSerializer(comments, many=True, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -5996,7 +6005,13 @@ class PostViewSet(viewsets.ModelViewSet):
             notified_user_ids = {post.user_id, commenter.id}
             for username in mentioned_usernames:
                 mentioned_user = User.objects.filter(username__iexact=username).first()
-                if mentioned_user and mentioned_user.id not in notified_user_ids:
+                # Jamais de notif à quelqu'un qui ne peut pas lire ces commentaires (ou bloqué avec l'auteur).
+                if (
+                    mentioned_user
+                    and mentioned_user.id not in notified_user_ids
+                    and mentioned_user.id not in request_blocked_user_ids(request)
+                    and can_see_post(mentioned_user, post, level=FRIENDS)
+                ):
                     notified_user_ids.add(mentioned_user.id)
                     notify('post_comment_mention', mentioned_user, actor=commenter, post=post)
 
@@ -6016,9 +6031,10 @@ class PostViewSet(viewsets.ModelViewSet):
         - POST   /posts/{post_id}/comments/{comment_id}/like/   => ajoute un like
         - DELETE /posts/{post_id}/comments/{comment_id}/like/   => retire le like
         """
-        post_qs = Post.objects.filter(is_published=True)
-        post = get_object_or_404(post_qs, pk=pk)
-        comment = get_object_or_404(PostComment, pk=comment_id, post=post)
+        post = get_visible_post_or_404(request.user, pk, level=FRIENDS)
+        comment = get_object_or_404(
+            PostComment.objects.exclude(user_id__in=request_blocked_user_ids(request)), pk=comment_id, post=post
+        )
         user = request.user
 
         if request.method == 'POST':

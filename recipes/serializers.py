@@ -2313,11 +2313,14 @@ class RepostFieldsMixin(serializers.Serializer):
     def get_co_cooked_users(self, obj):
         from accounts.services.follow_service import get_follow_relation
 
+        from .services.post_visibility import request_blocked_user_ids
         from .services.repost_service import get_co_cooked_users
 
-        users = get_co_cooked_users(obj)
-        data = UserLightSerializer(users, many=True, context=self.context).data
         request = self.context.get('request')
+        blocked_ids = request_blocked_user_ids(request)
+        # Co-cuisiniers bloqués (dans un sens ou l'autre) masqués ; l'hôte reste (post visible = hôte non bloqué).
+        users = [u for u in get_co_cooked_users(obj) if u.id == obj.user_id or u.id not in blocked_ids]
+        data = UserLightSerializer(users, many=True, context=self.context).data
         viewer = getattr(request, 'user', None) if request else None
         if viewer and getattr(viewer, 'is_authenticated', False) and data:
             user_by_id = {u.id: u for u in users}
@@ -2382,6 +2385,10 @@ class MyTurnFieldsMixin(serializers.Serializer):
             return None
         original = obj.inspired_by_post
         if original is None:
+            return None
+        from .services.post_visibility import request_blocked_user_ids
+
+        if original.user_id in request_blocked_user_ids(self.context.get('request')):
             return None
         return {
             'post_id': original.id,

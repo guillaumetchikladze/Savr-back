@@ -66,11 +66,14 @@ def test_category_and_type_preferences_mute_push_not_inbox(user, make_user, devi
     assert notify('follow_new', user, actor=lea, now=paris(12)).push.status == 'sent'
 
 
-def test_miams_are_grouped_into_one_aggregated_push(api, user, make_user, device, expo, make_post, celery_delay):
+def test_miams_are_grouped_into_one_aggregated_push(
+    api, user, make_user, follow, device, expo, make_post, celery_delay
+):
     device(user)
     post = make_post(user, 'Quiche')
     fans = [make_user(name) for name in ('lea', 'tom', 'zoe', 'max')]
     for fan in fans:
+        follow(fan, user)  # miam réservé aux posts visibles (amis)
         assert api.as_user(fan).post(f'/api/posts/{post.id}/send_cookie/').status_code == 201
 
     # Une in-app par miam, aucune push immédiate : des tâches débouncées.
