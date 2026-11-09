@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from core.celery_dispatch import publish
 from savr_back.celery import app
 
 from .graph_client import GraphEmailError, send_mail_via_graph
@@ -17,7 +18,9 @@ def _retry_countdown(retries: int) -> int:
     return schedule[idx]
 
 
-@app.task(bind=True, max_retries=0, acks_late=True)
+# ignore_result : personne ne lit le résultat, et sans cela `apply_async` s'abonne au backend Redis
+# (≈ 19 s de reconnexion dans la requête d'inscription quand Redis est absent).
+@app.task(bind=True, max_retries=0, acks_late=True, ignore_result=True)
 def send_queued_email(self, email_id: int) -> str:
     """
     Envoie 1 email de la table EmailQueue.
@@ -63,7 +66,8 @@ def send_queued_email(self, email_id: int) -> str:
 
         if should_retry:
             countdown = _retry_countdown(row.retries)
-            send_queued_email.apply_async(
+            publish(
+                send_queued_email,
                 args=[email_id],
                 countdown=countdown,
                 queue=priority_to_celery_queue(row.priority),

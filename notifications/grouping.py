@@ -27,7 +27,7 @@ def _get_redis() -> redis.Redis | None:
     if not url.startswith('redis'):
         return None
     try:
-        client = redis.from_url(url, decode_responses=True, socket_connect_timeout=1)
+        client = redis.from_url(url, decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
         client.ping()
         _redis_client = client
         return client

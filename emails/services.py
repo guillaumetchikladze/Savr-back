@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from django.template.loader import render_to_string
 
+from core.celery_dispatch import enqueue_on_commit
+
+from .graph_client import is_configured
 from .models import EmailPriority, EmailQueue
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -58,7 +64,17 @@ def enqueue_email(
     priority: str = EmailPriority.NORMAL,
     user_id: int | None = None,
     max_retries: int = 3,
-) -> EmailQueue:
+) -> EmailQueue | None:
+    """
+    Met un e-mail en file (ligne `EmailQueue` + tâche Celery sur `emails_<priorité>`), jamais d'envoi
+    dans la requête : la tâche part au commit (`enqueue_on_commit`), broker indisponible → la ligne reste
+    `PENDING` et la requête continue. Sans configuration d'envoi (MS_GRAPH_*) : rien n'est créé ni envoyé
+    (retour None, aucun appel réseau).
+    """
+    if not is_configured():
+        logger.info('[emails] %s non mis en file (user=%s) : envoi non configuré (MS_GRAPH_*)', action_name, user_id)
+        return None
+
     row = EmailQueue.objects.create(
         action_name=action_name,
         priority=priority,
@@ -73,8 +89,5 @@ def enqueue_email(
     # Import local pour éviter les imports circulaires au démarrage.
     from .tasks import send_queued_email
 
-    send_queued_email.apply_async(
-        args=[row.id],
-        queue=priority_to_celery_queue(priority),
-    )
+    enqueue_on_commit(send_queued_email, args=[row.id], queue=priority_to_celery_queue(priority))
     return row

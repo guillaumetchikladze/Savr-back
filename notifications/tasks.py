@@ -24,6 +24,39 @@ def send_grouped_push_task(self, user_id: int, type_key: str, object_id: int, ve
 
 
 @shared_task(ignore_result=True)
+def send_push_task(
+    type_key: str,
+    user_id: int,
+    data: dict | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    inbox_id: int | None = None,
+    dedupe_key: str = '',
+) -> str:
+    """Push différée par `notify(..., defer_push=True)` (hors requête HTTP) ; `QUIET_DEFER` → replanifiée."""
+    from django.contrib.auth import get_user_model
+
+    from accounts.models import Notification
+    from core.celery_dispatch import publish
+
+    from .services import push
+
+    user = get_user_model().objects.filter(pk=user_id, is_active=True).first()
+    if user is None:
+        return 'missing'
+    inbox = Notification.objects.filter(pk=inbox_id, user_id=user_id).first() if inbox_id else None
+    result = push(type_key, user, data=data, title=title, body=body, inbox=inbox, dedupe_key=dedupe_key)
+    if result.status == 'deferred' and result.retry_at is not None:
+        publish(
+            send_push_task,
+            args=[type_key, user_id],
+            kwargs={'data': data, 'title': title, 'body': body, 'inbox_id': inbox_id, 'dedupe_key': dedupe_key},
+            eta=result.retry_at,
+        )
+    return result.status
+
+
+@shared_task(ignore_result=True)
 def send_friends_digests_task() -> dict:
     from .retention import send_friends_digests
 

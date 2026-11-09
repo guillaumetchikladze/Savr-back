@@ -112,7 +112,9 @@ def non_transactional_sent_today(user, prefs: NotificationPreference, now: datet
 # ---------------------------------------------------------------------------
 @dataclass
 class PushResult:
-    status: str  # sent | disabled | no_devices | muted | quiet_hours | deferred | capped | duplicate | grouped
+    status: (
+        str  # sent | disabled | no_devices | muted | quiet_hours | deferred | capped | duplicate | grouped | scheduled
+    )
     delivery: NotificationDelivery | None = None
     retry_at: datetime | None = None
 
@@ -231,11 +233,14 @@ def notify(
     send_push: bool = True,
     dedupe_key: str = '',
     now: datetime | None = None,
+    defer_push: bool = False,
 ) -> NotifyResult:
     """
     Notification in-app (si le type en a une) + push. `actor` remplit {actor} et `data.user_id` ;
     `post` remplit {dish} (titre affichable du plat) et `data.post_id`.
     Types groupés (`group_window`) : push débouncée puis agrégée (« Léa et 3 autres… »).
+    `defer_push=True` : la push (appel HTTP Expo) part dans une tâche Celery au commit (`send_push_task`),
+    jamais dans la requête ; mêmes règles d'envoi, appliquées par la tâche.
     """
     spec = get_type(type_key)
     if not spec.enabled:
@@ -266,7 +271,24 @@ def notify(
 
     push_result = None
     if send_push:
-        if spec.group_window and inbox_notification is not None and data.get('post_id'):
+        if defer_push:
+            from core.celery_dispatch import enqueue_on_commit
+
+            from .tasks import send_push_task
+
+            enqueue_on_commit(
+                send_push_task,
+                args=[spec.key, user.id],
+                kwargs={
+                    'data': data,
+                    'title': title,
+                    'body': body,
+                    'inbox_id': inbox_notification.id if inbox_notification is not None else None,
+                    'dedupe_key': dedupe_key,
+                },
+            )
+            push_result = PushResult('scheduled')
+        elif spec.group_window and inbox_notification is not None and data.get('post_id'):
             if _active_tokens(user):
                 grouping.schedule_grouped_push(user_id=user.id, type_key=spec.key, object_id=data['post_id'])
                 push_result = PushResult('grouped')

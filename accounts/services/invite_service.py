@@ -193,6 +193,7 @@ def redeem(invitee, raw_code, *, at_signup: bool = False) -> RedeemResult:
         actor=invitee,
         context={'new_member': new_member},
         dedupe_key=f'invite_joined:{invitee.id}',
+        defer_push=True,  # appel Expo hors requête (inscription / redeem)
     )
     return RedeemResult(redemption, True)
 

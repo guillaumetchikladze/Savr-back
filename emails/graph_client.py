@@ -5,6 +5,9 @@ import msal
 import requests
 from django.conf import settings
 
+# Délais explicites (connexion, lecture) : un serveur muet ne bloque jamais un worker indéfiniment.
+GRAPH_HTTP_TIMEOUT = (5, 15)
+
 
 class GraphEmailError(RuntimeError):
     pass
@@ -16,6 +19,15 @@ class GraphConfig:
     client_id: str
     client_secret: str
     sender: str
+
+
+def is_configured() -> bool:
+    """Envoi possible (tous les MS_GRAPH_* renseignés) ; lecture des réglages seulement, aucun appel réseau."""
+    try:
+        _get_graph_config()
+    except GraphEmailError:
+        return False
+    return True
 
 
 def _get_graph_config() -> GraphConfig:
@@ -40,6 +52,7 @@ def acquire_app_token() -> str:
         client_id=cfg.client_id,
         authority=authority,
         client_credential=cfg.client_secret,
+        timeout=GRAPH_HTTP_TIMEOUT,
     )
     result = app.acquire_token_for_client(scopes=['https://graph.microsoft.com/.default'])
     access_token = result.get('access_token')
@@ -88,6 +101,6 @@ def send_mail_via_graph(
 
     payload = {'message': message, 'saveToSentItems': True}
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=20)
+    resp = requests.post(url, headers=headers, json=payload, timeout=GRAPH_HTTP_TIMEOUT)
     if resp.status_code not in (202, 200):
         raise GraphEmailError(f'Graph sendMail failed ({resp.status_code}): {resp.text}')

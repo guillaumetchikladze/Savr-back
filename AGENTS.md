@@ -323,3 +323,15 @@ ou `push(type, user, …)` (push seule). Spec et contrat front : `.claude-work/s
   18:00 locale) et récap du dimanche (19:00). Le beat tourne comme service Docker dédié `celery-beat` (jamais `worker -B`, jamais plus d'une instance) ; en local :
   `celery -A savr_back beat -l info`.
 - Tests : `make test-domain d=notifications` (mocker `notifications.services.send_expo_push_notifications`).
+
+## E-mails et tâches depuis une requête (`emails`, `core/celery_dispatch.py`)
+
+- Aucun appel réseau dans `register` / `login` / `password-reset/request` / `invites/redeem` : e-mails via
+  `emails.services.enqueue_email` (ligne `EmailQueue` + `send_queued_email` sur `emails_urgent|high|normal|low`,
+  publiée **au commit**) ; push « invite_joined » via `notify(..., defer_push=True)` → `notifications.tasks.send_push_task`.
+- Sans MS_GRAPH_* : `enqueue_email` ne crée rien et renvoie None (aucune tentative réseau).
+- Publier depuis une requête : `core.celery_dispatch.enqueue_on_commit(task, args=…, queue=…)` (ou `publish`) —
+  publication bornée, broker absent → log, jamais d'exception. La tâche doit être `ignore_result=True` : sinon
+  `apply_async` s'abonne au backend Redis et un Redis absent coûte ~19 s dans la requête.
+- Clients HTTP : délais explicites (connexion, lecture) — Graph/MSAL (5, 15), Expo (3, 10).
+- Tests : `accounts/tests/test_auth_emails_api.py` (`celery_delay` + `django_capture_on_commit_callbacks`).

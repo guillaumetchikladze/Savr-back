@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 
 
 EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
+# (connexion, lecture) : encore appelé en synchrone par certaines notifications, garder court.
+EXPO_HTTP_TIMEOUT = (3, 10)
 
 
 def send_expo_push_notifications(messages: Iterable[dict]) -> None:
@@ -41,7 +43,7 @@ def send_expo_push_notifications(messages: Iterable[dict]) -> None:
         if expo_access_token:
             headers['Authorization'] = f'Bearer {expo_access_token}'
 
-        response = requests.post(EXPO_PUSH_URL, json=messages, headers=headers, timeout=10)
+        response = requests.post(EXPO_PUSH_URL, json=messages, headers=headers, timeout=EXPO_HTTP_TIMEOUT)
         logger.info('Expo push response status=%s body=%s', response.status_code, response.text)
 
         if response.status_code != 200:
