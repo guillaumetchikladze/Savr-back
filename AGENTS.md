@@ -88,3 +88,27 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   fin du mode cuisine (`complete_cooking`, `cooking-progress/{id}/complete/`), `POST /meal-plans/{id}/confirm/`.
   `unmark_cooking` et `DELETE /posts/{id}/?undo_cooked=true` défont la trace.
 - Ne jamais copier `confirmed` lors d'une duplication de repas (planifier ≠ cuisiner).
+
+## Stats, badges et Récap (app `stats`)
+
+Endpoints : `GET /api/stats/me/?period=week|month|year|all&year=2026`, `GET /api/stats/users/{id}/`
+(sous-ensemble public, profil visible requis), `GET /api/badges/me/`, `GET /api/recap/{year}/`
+(à partir de `RECAP_AVAILABLE_FROM`, défaut `12-01` ; staff toujours). `POST /posts/cooked/` renvoie `new_badges`.
+
+- Calcul à la volée depuis `cooked_meal_plans()` (nombre de requêtes constant), cache par utilisateur
+  (empreinte DB du « cuisiné » + version invalidée par miam/invitations, TTL 10 min).
+- Plafonds doux : 4 cuisinés comptés par jour ; un même plat compte une fois par jour pour plat star,
+  collections et badges ; 12 invités anonymes max par repas. Ingrédients « de base » exclus de la diversité.
+- « Régalés » : `household_member_ids()` est le point d'exclusion du futur foyer.
+- Données : `IngredientProfile` (groupe, végétal, de base) et `Recipe.cuisine` (liste fermée `stats/cuisines.py`).
+  Sans profil, les stats retombent sur le seed déterministe (`stats/food_groups.py`).
+
+Commandes prod, dans l'ordre (idempotentes, reprenables) :
+
+```bash
+python manage.py classify_ingredients --only-missing   # seed + Gemini par lots de 50
+python manage.py normalize_cuisines --only-missing     # synonymes + Gemini pour le reste
+python manage.py backfill_badges                       # badges déjà mérités, sans push
+```
+
+Tests : `make test-domain d=stats` (LLM mocké via `stats.services.classification._call_llm`).
