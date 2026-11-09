@@ -1,5 +1,5 @@
 """
-Mesure de densité sociale (« Ta bande avant ton premier plat », .claude-work/specs/density.md) :
+Mesure de densité sociale (« Tes amis avant ton premier plat », .claude-work/specs/density.md) :
 
     python manage.py density_report --days 30 [--json]
 

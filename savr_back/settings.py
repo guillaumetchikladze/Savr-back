@@ -422,7 +422,7 @@ if API_URL and API_URL.rstrip('/').endswith('/api'):
 else:
     PUBLIC_BASE_URL = config('PUBLIC_BASE_URL', default='')
 
-# Liens d'invitation (« Ta bande avant ton premier plat », .claude-work/specs/density.md).
+# Liens d'invitation (« Tes amis avant ton premier plat », .claude-work/specs/density.md).
 # Domaine public du site (landing), pas l'hôte de l'API (PUBLIC_BASE_URL) : https://tchikook.fr/i/<code>.
 INVITE_BASE_URL = config('INVITE_BASE_URL', default='https://tchikook.fr').strip().rstrip('/')
 # Un invité (code valide à l'inscription ou plus tard) saute la liste d'attente (et son email est

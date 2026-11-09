@@ -167,7 +167,7 @@ Le foyer est réglé une fois et inclus par défaut dans chaque repas / envie, s
 - Foyer jamais compté comme convive (stats, badge « Hôte », ardoise) ; lien modifié → signaux `stats`.
 - Tests : `recipes/tests/test_mealplan_household_api.py`, `stats/tests/test_stats_*` (foyer).
 
-## Densité : « Ta bande avant ton premier plat » (invitations, onboarding social, Suggestions)
+## Densité : « Tes amis avant ton premier plat » (invitations, onboarding social, Suggestions)
 
 Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas de géolocalisation.
 

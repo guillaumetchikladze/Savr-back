@@ -163,7 +163,7 @@ def _render_my_turn_cooked(ctx: dict) -> tuple[str, str]:
 def _render_invite_joined(ctx: dict) -> tuple[str, str]:
     """Lien d'invitation utilisé : nouvel inscrit (« grâce à toi ») ou compte existant (amis)."""
     if ctx.get('new_member'):
-        return 'Ta bande s’agrandit', f'{ctx["actor"]} a rejoint Tchikook grâce à toi.'
+        return 'Un ami de plus', f'{ctx["actor"]} a rejoint Tchikook grâce à toi.'
     return 'Nouvel ami', f'{ctx["actor"]} a utilisé ton lien. Tu peux voir ses plats.'
 
 
@@ -340,7 +340,7 @@ _TYPES = (
         legacy_source='social',
         legacy_kind='follow',
     ),
-    # Lien d'invitation utilisé (« Ta bande avant ton premier plat ») : amitié mutuelle déjà créée.
+    # Lien d'invitation utilisé (« Tes amis avant ton premier plat ») : amitié mutuelle déjà créée.
     # In-app `follow` (lue par l'app 1.0.9 comme un nouvel ami) ; pas de push la nuit.
     NotificationType(
         'invite_joined',

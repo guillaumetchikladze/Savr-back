@@ -58,7 +58,7 @@ def test_signup_with_invite_skips_waitlist_befriends_and_notifies_inviter(api, u
     assert redemption.at_signup and redemption.is_acquisition and redemption.bypassed_waitlist
     notif = Notification.objects.get(user=user, related_user_id=bob_id)
     assert notif.notification_type == 'follow'  # lu par l'app 1.0.9 comme un nouvel ami
-    assert (notif.title, notif.message) == ('Ta bande s’agrandit', 'bob a rejoint Tchikook grâce à toi.')
+    assert (notif.title, notif.message) == ('Un ami de plus', 'bob a rejoint Tchikook grâce à toi.')
     assert api.get('/api/invites/me/').data['uses'] == 1
 
 

@@ -1,5 +1,5 @@
 """
-Liens d'invitation personnels (« Ta bande avant ton premier plat », .claude-work/specs/density.md).
+Liens d'invitation personnels (« Tes amis avant ton premier plat », .claude-work/specs/density.md).
 
 - Un code actif par utilisateur, créé à la demande, régénérable (`rotate_code`).
 - Utiliser un code (`redeem`) : amitié mutuelle parrain ↔ invité (les deux suivis approuvés),
@@ -100,7 +100,7 @@ def app_invite_url(code: str) -> str:
 
 
 def share_text(code: str) -> str:
-    return f'Je note ce que je cuisine sur Tchikook. Rejoins ma bande pour voir ce qu’on mange : {invite_url(code)}'
+    return f'Je note ce que je cuisine sur Tchikook. Rejoins-moi pour voir ce qu’on mange : {invite_url(code)}'
 
 
 def invite_payload(user) -> dict:

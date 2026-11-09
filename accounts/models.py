@@ -416,7 +416,7 @@ class HouseholdMember(models.Model):
 
 class InviteCode(models.Model):
     """
-    Lien d'invitation personnel (« Ta bande avant ton premier plat », .claude-work/specs/density.md).
+    Lien d'invitation personnel (« Tes amis avant ton premier plat », .claude-work/specs/density.md).
 
     Un seul code actif par utilisateur (`is_active`), régénérable (l'ancien est désactivé, ses
     utilisations restent comptées dans `InviteRedemption`). Code non devinable (~50 bits, alphabet

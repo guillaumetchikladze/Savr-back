@@ -1,5 +1,5 @@
 """
-Densité sociale (« Ta bande avant ton premier plat », .claude-work/specs/density.md).
+Densité sociale (« Tes amis avant ton premier plat », .claude-work/specs/density.md).
 
 - **Ami** = compte que l'utilisateur suit (Follow approuvé, mutuel ou non), hors blocages :
   c'est ce qui remplit son feed.

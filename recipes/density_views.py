@@ -1,8 +1,8 @@
 """
-Onboarding social et « Suggestions » du feed (« Ta bande avant ton premier plat »).
+Onboarding social et « Suggestions » du feed (« Tes amis avant ton premier plat »).
 Contrat front : .claude-work/specs/density.md.
 
-- `GET /api/onboarding/social/` : état de la bande (amis, amis actifs, cible 3), premier miam,
+- `GET /api/onboarding/social/` : état des amis (amis, amis actifs, cible 3), premier miam,
   personnes à ajouter, posts d'amis pour un premier miam, lien d'invitation.
 - `GET /api/feed/suggestions/` : posts partagés avec la communauté tant qu'il y a moins de 3 amis
   actifs. Endpoint séparé du feed principal (`GET /api/posts/?is_published=true` inchangé : l'app

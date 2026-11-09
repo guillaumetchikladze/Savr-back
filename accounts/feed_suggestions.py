@@ -148,7 +148,7 @@ def build_feed_user_suggestions(viewer):
 
 
 # ---------------------------------------------------------------------------
-# Onboarding social (« Ta bande avant ton premier plat ») : amis d'amis + liens d'invitation.
+# Onboarding social (« Tes amis avant ton premier plat ») : amis d'amis + liens d'invitation.
 # Jamais de géolocalisation ni de carnet d'adresses : seulement le graphe Follow et les invitations.
 # ---------------------------------------------------------------------------
 REASON_INVITED_YOU = 'invited_you'
