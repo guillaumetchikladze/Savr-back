@@ -44,14 +44,21 @@ _REQUIRED = ('what', 'uses', 'aisle')
 _MIN_WHAT = 20
 _MAX_SUBSTITUTE_CHARS = 60
 
-# Aucune allégation santé / nutrition (règle produit), pas de « bande » ni de nom d'app de référence.
+# Allégations santé / régime refusées (règle produit) ; les faits culinaires neutres passent (« source de protéines
+# végétales », « riche en protéines »). Vitamines / antioxydants = toujours présentés comme un bienfait : refusés.
+# Pas de « bande » ni de nom d'app de référence. Le prompt demande en plus d'éviter de parler nutrition.
 FORBIDDEN_RE = re.compile(
     r'\b('
-    r'sant[ée]|sain(?:e|s|es)?|calori\w*|kcal|minceur|maigrir|amincissant\w*|perte\s+de\s+poids|'
-    r'r[ée]gimes?\s+(?:alimentaires?|minceur|amaigrissants?|c[ée]tog[èe]nes?|hyper\w*|hypo\w*)|'
-    r'di[ée]t[ée]ti\w*|nutriti\w*|nutriments?|vitamines?|min[ée]raux|antioxydant\w*|prot[ée]ines?|glucides?|'
-    r'lipides?|fibres\s+alimentaires|bienfaits?|vertus?|cholest[ée]rol|glyc[ée]mi\w*|immunit\w*|d[ée]tox\w*|'
-    r'superaliment\w*|m[ée]dic\w*|maladies?|digestion|bon\s+pour\s+(?:le|la|les|ton|ta|tes)\s+\w+|'
+    # calories, perte de poids
+    r'calori\w*|kcal|minceur|maigrir|amaigri\w*|amincissant\w*|perdre\s+du\s+poids|perte\s+de\s+poids|'
+    # santé, régime (sauf « régime de bananes »), diététique, détox
+    r'sant[ée]|r[ée]gimes?(?!\s+de\s+(?:bananes?|dattes?|plantains?))|di[ée]t[ée]ti\w*|d[ée]tox\w*|'
+    r'superaliment\w*|bienfaits?|vertus?|vitamines?|antioxydant\w*|'
+    r'bons?\s+pour\s+(?:la|ta|le|ton|les|tes|l\W)\s*(?:sant[ée]|c(?:œ|oe)ur|ligne|peau|cerveau|os|intestins?|'
+    r'transit|organisme|corps|immunit[ée]|digestion)|'
+    # termes médicaux
+    r'm[ée]dic\w*|maladies?|cholest[ée]rol|glyc[ée]mi\w*|diab[èe]t\w*|immunit\w*|inflammat\w*|cancers?|'
+    r'anticanc\w*|gu[ée]ri(?:r|t|son)|soigner|th[ée]rapeut\w*|hypertension|digestion|'
     r'bande|strava'
     r')\b',
     re.I,

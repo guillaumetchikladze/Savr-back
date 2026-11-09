@@ -162,7 +162,11 @@ def test_provider_errors_are_classified():
         json.dumps({**GOOD, 'what': 'Le céleri-rave est très bon pour la santé et peu calorique.'}),
         json.dumps({**GOOD, 'uses': 'Idéal pour un régime minceur.'}),
         json.dumps({**GOOD, 'keep': 'Riche en vitamines, garde-le au frais.'}),
-        json.dumps({**GOOD, 'choose': 'Une source de protéines à choisir bien ferme.'}),
+        json.dumps({**GOOD, 'uses': 'Idéal pour maigrir, en salade.'}),
+        json.dumps({**GOOD, 'what': 'Le céleri-rave est une racine. Elle est bonne pour la santé et la ligne.'}),
+        json.dumps({**GOOD, 'keep': 'Environ 40 kcal pour 100 g, garde-le au frais.'}),
+        json.dumps({**GOOD, 'uses': 'Parfait pour une cure détox.'}),
+        json.dumps({**GOOD, 'what': 'Une racine ferme et parfumée, qui aide contre le cholestérol.'}),
         json.dumps({**GOOD, 'substitutes': ['Panais', 'Navet détox']}),
         json.dumps({**GOOD, 'uses': 'Parfait après une sortie Strava.'}),
     ],
@@ -174,6 +178,33 @@ def test_invalid_llm_output_returns_503_and_stores_nothing(api, user, ingredient
     assert resp.data['code'] == 'info_unavailable'
     assert resp['Retry-After']
     assert not IngredientInfo.objects.filter(ingredient=ingredient).exists()
+
+
+TOFU = {
+    'what': 'Le tofu est un caillé de lait de soja pressé en bloc. Il a un goût neutre et prend bien les saveurs.',
+    'uses': 'Source de protéines végétales, il se poêle, se marine ou se mixe dans une sauce.',
+    'aisle': 'Produits frais végétariens',
+    'choose': 'Riche en protéines, le tofu ferme se tient mieux à la cuisson ; le soyeux sert aux desserts.',
+    'keep': "Une fois ouvert, garde-le dans l'eau au frais 3 à 4 jours.",
+    'substitutes': ['Tempeh', 'Seitan'],
+}
+
+
+def test_neutral_protein_mentions_are_accepted_and_stored(api, user):
+    tofu = Ingredient.objects.create(name='tofu')
+    with _llm(json.dumps(TOFU)):
+        resp = api.as_user(user).get(_url(tofu.id))
+    assert resp.status_code == 200, resp.data
+    info = IngredientInfo.objects.get(ingredient=tofu)
+    assert 'protéines végétales' in info.uses and 'Riche en protéines' in info.choose
+
+
+@pytest.mark.parametrize(
+    'text',
+    ['Coupe-le en régime de bananes', 'Choisis-le bien sain', 'Lave-le soigneusement', 'Une valeur sûre'],
+)
+def test_culinary_wording_is_not_mistaken_for_health_claims(text):
+    assert not service.FORBIDDEN_RE.search(text)
 
 
 def test_llm_error_returns_503_then_cooldown_avoids_new_calls(api, user, ingredient):

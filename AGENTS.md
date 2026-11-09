@@ -464,8 +464,10 @@ Le front met en file les actions faites en magasin sans réseau et les rejoue. C
   nouvel essai avec `CHAT_AI_MODEL` dans le temps restant. Budget total `INGREDIENT_INFO_LLM_TIMEOUT_SECONDS` (8 s),
   `max_retries=0`.
 - Validation stricte (`parse_response`) : JSON objet, `what` 20–450 car., `uses` / `aisle` requis, longueurs
-  bornées, ≤ 5 substitutions ; refus de tout propos santé / nutrition / calories / régime minceur / vitamines /
-  protéines…, « bande », Strava (`FORBIDDEN_RE`). Invalide, erreur, délai → **503 `info_unavailable`** +
+  bornées, ≤ 5 substitutions ; refus des allégations santé / régime (`FORBIDDEN_RE` : calories, kcal, maigrir /
+  perte de poids, santé, « bon pour la santé / le cœur… », régime (sauf « régime de bananes »), vitamines /
+  antioxydants, détox, termes médicaux), « bande », Strava. Faits culinaires neutres acceptés (« source de
+  protéines végétales », « riche en protéines »). Le prompt demande toujours d'éviter la nutrition. Invalide, erreur, délai → **503 `info_unavailable`** +
   `Retry-After`, rien n'est stocké, pas de nouvel appel pour cet ingrédient pendant
   `INGREDIENT_INFO_FAILURE_COOLDOWN_SECONDS` (600 s). `INGREDIENT_INFO_LLM_ENABLED=False` : cache seul.
 - Concurrence : verrou consultatif Postgres par ingrédient (`pg_try_advisory_lock`, inter-processus) ; une requête
