@@ -199,6 +199,8 @@ class Notification(models.Model):
         ('shopping_list_invitation', 'Liste de courses partagée'),
         ('a_mon_tour', 'À mon tour'),
         ('a_mon_tour_cooked', 'À mon tour : plat refait'),
+        ('household_request', 'Demande de foyer'),
+        ('household_accepted', 'Foyer : demande acceptée'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', verbose_name='Utilisateur')
@@ -344,3 +346,69 @@ class LoyaltyCard(models.Model):
     def __str__(self):
         suffix = f' • ••••{self.number_last4}' if self.number_last4 else ''
         return f'{self.name}{suffix} ({self.owner.email})'
+
+
+class HouseholdMember(models.Model):
+    """
+    Foyer (« Foyer + invités », .claude-work/specs/household.md) : les personnes avec qui on mange
+    au quotidien, incluses par défaut dans chaque repas et chaque envie du panier, sans invitation.
+
+    Deux sortes d'entrées :
+    - **compte** (`user` renseigné) : lien entre deux utilisateurs, consenti (`pending` → `accepted`
+      par `user`). Une fois accepté, le lien est **réciproque** : chacun est dans le foyer de l'autre ;
+    - **nominative** (`user` vide, ex. « Jules », enfant) : juste un nom, possédée par `owner`,
+      partagée avec les comptes liés à `owner`. Acceptée d'office.
+
+    L'`id` de l'entrée sert d'identifiant stable pour l'exclure d'un repas (`excluded_household_ids`).
+    Les membres du foyer ne comptent jamais comme convives (stats « Régalés », badge « Hôte », ardoise).
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_DECLINED = 'declined'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'En attente'),
+        (STATUS_ACCEPTED, 'Accepté'),
+        (STATUS_DECLINED, 'Refusé'),
+    ]
+
+    owner = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='household_entries', verbose_name='Ajouté par'
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='household_memberships',
+        verbose_name='Compte lié',
+    )
+    name = models.CharField(max_length=60, blank=True, default='', help_text='Nom affiché (membre sans compte).')
+    is_child = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACCEPTED)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+        verbose_name = 'Membre du foyer'
+        verbose_name_plural = 'Membres du foyer'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['owner', 'user'],
+                condition=models.Q(user__isnull=False),
+                name='household_owner_user_uniq',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(user__isnull=True) | ~models.Q(user=models.F('owner')),
+                name='household_not_self',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['user', 'status'], name='household_user_status_idx'),
+        ]
+
+    def __str__(self):
+        target = self.user.username if self.user_id else self.name
+        return f'{self.owner.username} ⌂ {target} ({self.status})'

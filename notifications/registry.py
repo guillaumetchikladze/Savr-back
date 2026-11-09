@@ -468,6 +468,29 @@ _TYPES = (
         legacy_source='social',
         legacy_kind='shopping_list_invitation',
     ),
+    # Foyer (« Foyer + invités ») : un ami t'ajoute à son foyer (repas comptés pour toi par défaut).
+    NotificationType(
+        'household_request',
+        'planning',
+        title='Foyer',
+        body='{actor} veut t’ajouter à son foyer.',
+        transactional=True,
+        inbox_type='household_request',
+        data_fields=('household_link_id', 'user_id'),
+        url='household',
+        group_key='household:{household_link_id}',
+    ),
+    NotificationType(
+        'household_accepted',
+        'planning',
+        title='Foyer',
+        body='{actor} a rejoint ton foyer.',
+        transactional=True,
+        inbox_type='household_accepted',
+        data_fields=('household_link_id', 'user_id'),
+        url='household',
+        group_key='household:{household_link_id}',
+    ),
     # --- Technique ---------------------------------------------------------------------
     NotificationType(
         'test_push',

@@ -2,8 +2,9 @@
 API du panier « Cette semaine » (envies non datées). Contrat front : `.claude-work/specs/basket.md`.
 
     GET    /basket/?week=YYYY-MM-DD          semaine (défaut : courante, fuseau de l'utilisateur)
-    POST   /basket/                          {recipe_id | label, servings?, week?}
-    PATCH  /basket/{id}/                     {servings?, label?}
+    POST   /basket/                          {recipe_id | label, servings?, week?, guest_count?, excluded_household_ids?}
+    PATCH  /basket/{id}/                     {servings?, label?, guest_count?, excluded_household_ids?}
+    POST   /basket/diners/                   {week?, guest_count?, excluded_household_ids?}  en-tête « Pour N »
     DELETE /basket/{id}/
     POST   /basket/reorder/                  {item_ids, week?}
     POST   /basket/{id}/schedule/            {date, meal_time? | meal_plan_id}  → repas planifié normal
@@ -26,9 +27,11 @@ from rest_framework.response import Response
 
 from accounts.permissions import IsValidated as IsAuthenticated
 
+from .models import BasketItem
 from .serializers import ShoppingListSerializer, UserLightSerializer
 from .services import basket_service as basket
 from .services.basket_service import BasketError
+from .services.diners_service import basket_item_composition, context_cache, diners_payload
 
 
 def _basket_errors(view):
@@ -42,14 +45,17 @@ def _basket_errors(view):
     return wrapper
 
 
-def basket_item_payload(item, request, *, week_now=None, cooked_posts: dict | None = None) -> dict:
+def basket_item_payload(
+    item, request, *, week_now=None, cooked_posts: dict | None = None, context: dict | None = None
+) -> dict:
     week_now = week_now or basket.current_week_start(request.user)
     recipe = item.recipe if item.recipe_id else None
     meal_plan = item.meal_plan if item.meal_plan_id else None
     original = item.inspired_by_post if item.inspired_by_post_id else None
     if cooked_posts is None:
         cooked_posts = basket.cooked_post_ids([item])
-    context = {'request': request}
+    context = context if context is not None else {'request': request}
+    composition = basket_item_composition(item, context_cache(context))
     return {
         'id': item.id,
         'week_start': item.week_start.isoformat(),
@@ -59,6 +65,10 @@ def basket_item_payload(item, request, *, week_now=None, cooked_posts: dict | No
         'display_title': item.display_title,
         'label': item.label,
         'servings': item.servings,
+        'guest_count': item.guest_count,
+        'excluded_household_ids': list(item.excluded_household_ids or []),
+        'diners': diners_payload(composition, context),
+        'servings_suggested': composition.total,
         'recipe': (
             {
                 'id': recipe.id,
@@ -98,9 +108,12 @@ def basket_item_payload(item, request, *, week_now=None, cooked_posts: dict | No
     }
 
 
-def _items_payload(items, request, week_now) -> list[dict]:
+def _items_payload(items, request, week_now, context: dict | None = None) -> list[dict]:
     cooked_posts = basket.cooked_post_ids(items)
-    return [basket_item_payload(i, request, week_now=week_now, cooked_posts=cooked_posts) for i in items]
+    context = context if context is not None else {'request': request}
+    return [
+        basket_item_payload(i, request, week_now=week_now, cooked_posts=cooked_posts, context=context) for i in items
+    ]
 
 
 class BasketViewSet(viewsets.ViewSet):
@@ -112,7 +125,8 @@ class BasketViewSet(viewsets.ViewSet):
         user = request.user
         week_now = basket.current_week_start(user)
         items = basket.week_items(user, week)
-        payload = _items_payload(items, request, week_now)
+        context = {'request': request}
+        payload = _items_payload(items, request, week_now, context)
         counts = {s: 0 for s in ('todo', 'planned', 'cooked', 'carried_over', 'not_done')}
         for entry in payload:
             counts[entry['status']] += 1
@@ -122,6 +136,7 @@ class BasketViewSet(viewsets.ViewSet):
             'is_current_week': week == week_now,
             'items': payload,
             'counts': counts,
+            'diners': self._week_diners(user, week, context),
             'previous_week': None,
         }
         if week == week_now:
@@ -131,6 +146,18 @@ class BasketViewSet(viewsets.ViewSet):
                 'open_count': basket.open_items_count(user, previous),
             }
         return data
+
+    @staticmethod
+    def _week_diners(user, week, context) -> dict:
+        """En-tête « Pour N » : composition de la semaine (celle que prend une nouvelle envie)."""
+        guests, excluded = basket.week_composition(user, week)
+        item = BasketItem(user=user, guest_count=guests, excluded_household_ids=excluded)
+        composition = basket_item_composition(item, context_cache(context))
+        return {
+            **diners_payload(composition, context),
+            'excluded_household_ids': excluded,
+            'servings_suggested': composition.total,
+        }
 
     @_basket_errors
     def list(self, request):
@@ -146,6 +173,8 @@ class BasketViewSet(viewsets.ViewSet):
             label=data.get('label'),
             servings=data.get('servings'),
             week=data.get('week'),
+            guest_count=data.get('guest_count'),
+            excluded_household_ids=data.get('excluded_household_ids'),
         )
         item = basket.get_item(request.user, item.id)
         return Response(basket_item_payload(item, request), status=status.HTTP_201_CREATED)
@@ -157,7 +186,8 @@ class BasketViewSet(viewsets.ViewSet):
     @_basket_errors
     def partial_update(self, request, pk=None):
         item = basket.get_item(request.user, pk)
-        kwargs = {k: request.data.get(k) for k in ('servings', 'label') if k in request.data}
+        fields = ('servings', 'label', 'guest_count', 'excluded_household_ids')
+        kwargs = {k: request.data.get(k) for k in fields if k in request.data}
         basket.update_item(item, **kwargs)
         return Response(basket_item_payload(basket.get_item(request.user, pk), request))
 
@@ -191,6 +221,16 @@ class BasketViewSet(viewsets.ViewSet):
                 meal_plan_id=data.get('meal_plan_id'),
             )
         return Response(basket_item_payload(basket.get_item(request.user, pk), request))
+
+    @action(detail=False, methods=['post'])
+    @_basket_errors
+    def diners(self, request):
+        """En-tête « Pour N » : stepper invités / membre du foyer décoché pour toutes les envies non datées."""
+        data = request.data
+        week = basket.parse_week(data.get('week'), request.user)
+        kwargs = {k: data.get(k) for k in ('guest_count', 'excluded_household_ids') if k in data}
+        basket.set_week_diners(request.user, week, **kwargs)
+        return Response(self._week_payload(request, week))
 
     @action(detail=False, methods=['post'], url_path='carry-over')
     @_basket_errors

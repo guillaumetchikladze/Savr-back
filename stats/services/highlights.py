@@ -24,10 +24,10 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
-from django.contrib.auth import get_user_model
 from django.db.models import Max, Q
 from django.utils import timezone
 
+from accounts.services.household_service import household_member_ids_map
 from recipes.models import (
     CookingProgress,
     MealInvitation,
@@ -47,12 +47,11 @@ from .stats_service import (
     Meal,
     _ingredient_info,
     _week_monday,
-    household_member_ids,
 )
 
 logger = logging.getLogger(__name__)
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2  # v2 : foyer réel (« Foyer + invités ») exclu des convives
 MAX_HIGHLIGHTS = 3
 MIN_PLANTS = 3  # « 2 végétaux » n'est pas un fait marquant : seuil pour rester positif
 MIN_STREAK_WEEKS = 2
@@ -216,11 +215,14 @@ class _Context:
                 self.ingredients[row['recipe_id']].append((row['ingredient_id'], _ingredient_info(row)))
 
         self.invitees: dict[int, set[int]] = defaultdict(set)
+        self.household: dict[int, set[int]] = {}
         if plan_ids:
             for row in MealInvitation.objects.filter(meal_plan_id__in=plan_ids, status='accepted').values(
                 'meal_plan_id', 'invitee_id'
             ):
                 self.invitees[row['meal_plan_id']].add(row['invitee_id'])
+            if self.invitees:  # foyer (1 requête, tous auteurs) : seulement s'il y a des invités à filtrer
+                self.household = household_member_ids_map(self.user_ids)
         target_batches = {bid for pid in plan_ids if pid in self.meals for bid in self.meals[pid].batch_ids}
         self.minutes: dict[tuple[int, int], int] = {}
         if target_batches:
@@ -284,7 +286,7 @@ class _Context:
 
         # Convives (hors cuisinier et foyer) et durée mesurée par le mode cuisine
         if meal.id in self.meals:
-            excluded = household_member_ids(get_user_model()(id=target.user_id)) | {target.user_id}
+            excluded = self.household.get(target.user_id, set()) | {target.user_id}
             guests = len(self.invitees.get(meal.id, set()) - excluded)
             guests += min(max(meal.guest_count, 0), MAX_ANON_GUESTS_PER_MEAL)
             if guests:

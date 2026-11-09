@@ -959,13 +959,9 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
         active_participants_count = len(active_participants_by_user)
         base_servings = len(group_meal_plans) + active_participants_count + total_guest_count
     else:
-        participants_count = (
-            meal_plan.invitations.filter(status__in=['accepted', 'pending']).count()
-            if hasattr(meal_plan, 'invitations')
-            else 0
-        )
-        guest_count = meal_plan.guest_count or 0
-        base_servings = 1 + participants_count + guest_count
+        from .utils import get_meal_plan_people_count
+
+        base_servings = get_meal_plan_people_count(meal_plan)  # foyer + invités (diners_service)
 
     people_count = int(base_servings)
     if include_breakdown:

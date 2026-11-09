@@ -91,8 +91,11 @@ def resolve_period(kind: str | None = 'month', year=None, today: date | None = N
 # Foyer (invitations-rethink) : ses membres ne comptent pas comme « régalés ».
 # ---------------------------------------------------------------------------
 def household_member_ids(user) -> set[int]:
-    """Membres du foyer de `user` (comptes). Vide tant que le foyer n'existe pas côté modèle."""
-    return set()
+    """Comptes du foyer de `user` (liens acceptés, dans les deux sens) : jamais comptés comme convives."""
+    from accounts.services.household_service import household_member_ids_map
+
+    uid = getattr(user, 'id', None)
+    return household_member_ids_map([uid]).get(uid, set()) if uid else set()
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +457,9 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
     if guest_meals:
         gid, n = max(guest_meals.items(), key=lambda kv: (kv[1], -kv[0]))
         top_guest = {'user_id': gid, 'username': guest_names.get(gid), 'meals': n}
+    # « Invité N fois » : les repas cuisinés par le foyer ne comptent pas (excluded_guests ⊇ foyer).
     invited_qs = MealInvitation.objects.filter(invitee=user, status='accepted', meal_plan__date__lte=today).exclude(
-        meal_plan__user=user
+        meal_plan__user_id__in=excluded_guests
     )
     if period.start:
         invited_qs = invited_qs.filter(meal_plan__date__gte=period.start)

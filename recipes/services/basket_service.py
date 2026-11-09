@@ -18,6 +18,11 @@ Statut (dérivé, jamais stocké → pas de dérive quand un repas est confirmé
 `inspired_by_post` et prévient l'auteur (`a_mon_tour`, agrégé, une fois par ami et par post).
 Quand l'envie est cuisinée, le post « J'ai cuisiné » porte `inspired_by_post` et l'auteur reçoit
 `a_mon_tour_cooked` (« Léa a refait « Quiche ». »).
+
+Convives (« Foyer + invités ») : chaque envie a la composition d'un repas (`guest_count`,
+`excluded_household_ids`, foyer inclus par défaut, `diners_service`). Une nouvelle envie reprend celle
+de la semaine (en-tête « Pour 4 : toi, Pauline + 2 invités ») ; `servings` vide = ce total (portions et
+liste de courses). Une envie datée prend les convives de son repas.
 """
 
 from __future__ import annotations
@@ -196,6 +201,8 @@ def add_item(
     servings=None,
     week=None,
     inspired_by_post: Post | None = None,
+    guest_count=None,
+    excluded_household_ids=None,
 ) -> BasketItem:
     """Ajoute une envie (recette ou plat libre). Plusieurs envies par semaine, doublons permis."""
     label = (label or '').strip()[:LABEL_MAX_LENGTH]
@@ -209,19 +216,97 @@ def add_item(
         raise BasketError('recipe_id or label is required', 400, 'missing_dish')
     servings = parse_servings(servings)
     week_start = parse_week(week, user)
+    guests, excluded = week_composition(user, week_start)
+    if guest_count is not None:
+        guests = parse_guest_count(guest_count)
+    if excluded_household_ids is not None:
+        excluded = parse_excluded_household_ids(excluded_household_ids)
     return BasketItem.objects.create(
         user=user,
         week_start=week_start,
         recipe=recipe,
         label=label or (recipe.title[:LABEL_MAX_LENGTH] if recipe else ''),
         servings=servings,
+        guest_count=guests,
+        excluded_household_ids=excluded,
         position=_next_position(user, week_start),
         inspired_by_post=inspired_by_post,
     )
 
 
-def update_item(item: BasketItem, *, servings=..., label=...) -> BasketItem:
+def parse_guest_count(value) -> int:
+    guests = _parse_int(value, 'guest_count') or 0
+    if not 0 <= guests <= MAX_SERVINGS:
+        raise BasketError(f'guest_count must be between 0 and {MAX_SERVINGS}')
+    return guests
+
+
+def parse_excluded_household_ids(value) -> list[int]:
+    from accounts.services.household_service import HouseholdError, clean_excluded_ids
+
+    try:
+        return clean_excluded_ids(value)
+    except HouseholdError as exc:
+        raise BasketError(exc.message) from None
+
+
+def week_composition(user: AbstractBaseUser, week: date_type) -> tuple[int, list[int]]:
+    """Composition de la semaine : celle de la dernière envie non datée (défaut : foyer complet, 0 invité)."""
+    last = (
+        BasketItem.objects.filter(user=user, week_start=week, meal_plan__isnull=True)
+        .order_by('-position', '-id')
+        .values('guest_count', 'excluded_household_ids')
+        .first()
+    )
+    if not last:
+        return 0, []
+    return last['guest_count'] or 0, list(last['excluded_household_ids'] or [])
+
+
+def _set_meal_composition(meal_plan: MealPlan, *, guest_count=..., excluded_household_ids=...) -> None:
+    fields = []
+    if guest_count is not ...:
+        meal_plan.guest_count = guest_count
+        fields.append('guest_count')
+    if excluded_household_ids is not ...:
+        meal_plan.excluded_household_ids = excluded_household_ids
+        fields.append('excluded_household_ids')
+    if fields:
+        meal_plan.save(update_fields=[*fields, 'updated_at'])
+
+
+def set_week_diners(user: AbstractBaseUser, week: date_type, *, guest_count=..., excluded_household_ids=...) -> int:
+    """En-tête du panier : applique la composition à toutes les envies non datées et non cuisinées de la semaine."""
+    values = {}
+    if guest_count is not ...:
+        values['guest_count'] = parse_guest_count(guest_count)
+    if excluded_household_ids is not ...:
+        values['excluded_household_ids'] = parse_excluded_household_ids(excluded_household_ids)
+    if not values:
+        raise BasketError('guest_count or excluded_household_ids is required')
+    return BasketItem.objects.filter(
+        user=user, week_start=week, meal_plan__isnull=True, carried_over_to__isnull=True
+    ).update(**values, updated_at=timezone.now())
+
+
+def update_item(
+    item: BasketItem, *, servings=..., label=..., guest_count=..., excluded_household_ids=...
+) -> BasketItem:
     update_fields = ['updated_at']
+    composition = {}
+    if guest_count is not ...:
+        composition['guest_count'] = parse_guest_count(guest_count)
+    if excluded_household_ids is not ...:
+        composition['excluded_household_ids'] = parse_excluded_household_ids(excluded_household_ids)
+    if composition:
+        if item.meal_plan_id:  # envie datée : les convives sont ceux du repas
+            if item.meal_plan.confirmed:
+                raise BasketError('This dish is already cooked', 400, 'already_cooked')
+            _set_meal_composition(item.meal_plan, **composition)
+        else:
+            for name, value in composition.items():
+                setattr(item, name, value)
+            update_fields.extend(composition)
     if servings is not ...:
         item.servings = parse_servings(servings)
         update_fields.append('servings')
@@ -417,6 +502,8 @@ def schedule_item(
                     custom_label=dish_label,
                     meal_type='recipe',
                     confirmed=False,
+                    guest_count=item.guest_count,
+                    excluded_household_ids=list(item.excluded_household_ids or []),
                 )
                 created = True
             elif _meal_is_free(existing) and not (existing.custom_label or '').strip():
@@ -433,6 +520,8 @@ def schedule_item(
                 custom_label=(dish_label or item.display_title or 'Repas')[:80],
                 meal_type='recipe',
                 confirmed=False,
+                guest_count=item.guest_count,
+                excluded_household_ids=list(item.excluded_household_ids or []),
             )
             created = True
 
@@ -502,6 +591,8 @@ def carry_over(user: AbstractBaseUser, *, from_week=None, to_week=None, item_ids
                 recipe_id=item.recipe_id,
                 label=item.label,
                 servings=item.servings,
+                guest_count=item.guest_count,
+                excluded_household_ids=list(item.excluded_household_ids or []),
                 position=position,
                 recipe_batch_id=item.recipe_batch_id,
                 inspired_by_post_id=item.inspired_by_post_id,

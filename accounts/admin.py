@@ -4,7 +4,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils import timezone
 
 from .billing import activate_premium_license
-from .models import AllowedEmail, User, UserBlock
+from .models import AllowedEmail, HouseholdMember, User, UserBlock
 
 
 def _enqueue_access_granted_email(user):
@@ -91,4 +91,13 @@ class UserBlockAdmin(admin.ModelAdmin):
     list_filter = ['created_at']
     search_fields = ['blocker__username', 'blocker__email', 'blocked__username', 'blocked__email']
     raw_id_fields = ['blocker', 'blocked']
+    ordering = ['-created_at']
+
+
+@admin.register(HouseholdMember)
+class HouseholdMemberAdmin(admin.ModelAdmin):
+    list_display = ['owner', 'user', 'name', 'is_child', 'status', 'created_at']
+    list_filter = ['status', 'is_child']
+    search_fields = ['owner__username', 'owner__email', 'user__username', 'user__email', 'name']
+    raw_id_fields = ['owner', 'user']
     ordering = ['-created_at']

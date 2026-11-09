@@ -130,15 +130,16 @@ def test_shopping_list_from_basket_merges_and_is_idempotent(api, user, make_reci
             for item in ShoppingListItem.objects.filter(shopping_list=existing)
         }
 
-    # Une ligne par ingrédient, quantités par batch additionnées (oignon : 2 risotto + 1 quiche).
-    assert totals() == {'riz': Decimal('2'), 'oignon': Decimal('3'), 'oeufs': Decimal('1')}
+    # Une ligne par ingrédient, quantités par batch additionnées. Quiche sans `servings` : suit ses
+    # convives (« Pour 1 : toi », foyer vide) → ½ recette pour 2 (oignon : 2 risotto + 0,5 quiche).
+    assert totals() == {'riz': Decimal('2'), 'oignon': Decimal('2.5'), 'oeufs': Decimal('0.5')}
 
     again = client.post(
         f'{BASKET_URL}shopping-list/', {**body, 'item_ids': [a['id'], b['id'], free['id']]}, format='json'
     )
     assert again.data['added_item_ids'] == []
     assert {s['reason'] for s in again.data['skipped']} == {'already_in_list', 'no_recipe'}
-    assert totals() == {'riz': Decimal('2'), 'oignon': Decimal('3'), 'oeufs': Decimal('1')}
+    assert totals() == {'riz': Decimal('2'), 'oignon': Decimal('2.5'), 'oeufs': Decimal('0.5')}
 
     # Nouvelle liste : la recette passe d'une liste à l'autre (un batch = une liste), rien en double.
     new = client.post(f'{BASKET_URL}shopping-list/', {'item_ids': [b['id']], 'name': 'Week-end'}, format='json')

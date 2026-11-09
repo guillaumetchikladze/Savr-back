@@ -620,6 +620,10 @@ class MealPlan(models.Model):
         default=False,
         help_text="L'hôte a confirmé qu'il mange seul (offramp step Convives)",
     )
+    # Foyer : membres (ids `accounts.HouseholdMember`) absents de ce repas ; tous inclus par défaut.
+    excluded_household_ids = models.JSONField(
+        default=list, blank=True, help_text='Membres du foyer exclus de ce repas (ids HouseholdMember).'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -938,6 +942,11 @@ class BasketItem(models.Model):
         null=True, blank=True, help_text='Portions voulues (None = portions de la recette / du repas).'
     )
     position = models.IntegerField(default=0, help_text='Ordre dans le panier de la semaine.')
+    # Convives de l'envie (même règle que MealPlan) : cuisinier + foyer non exclu + invités sans compte.
+    guest_count = models.PositiveSmallIntegerField(default=0, help_text='Invités sans compte pour cette envie.')
+    excluded_household_ids = models.JSONField(
+        default=list, blank=True, help_text='Membres du foyer exclus de cette envie (ids HouseholdMember).'
+    )
     recipe_batch = models.ForeignKey(
         RecipeBatch,
         on_delete=models.SET_NULL,

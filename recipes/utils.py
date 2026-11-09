@@ -5,10 +5,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from django.db.models import Q
 
 
-def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
+def get_meal_plan_people_count(meal_plan, group_meal_plans=None, cache=None):
     """
-    Retourne le nombre de personnes pour un meal plan (1 + participants acceptés/pending + guest_count).
-    Utilisable depuis serializers sans importer views.
+    Nombre de personnes d'un repas : 1 (cuisinier) + foyer non exclu + invités sans compte (guest_count)
+    + invitations acceptées / en attente (dédupliquées avec le foyer). Source unique des portions qui
+    « suivent » et des quantités de courses : `recipes.services.diners_service`.
+    `cache` : mémo foyer par requête (`diners_service.context_cache(serializer.context)`).
     """
     if group_meal_plans and len(group_meal_plans) > 1:
         total_guest_count = sum(mp.guest_count or 0 for mp in group_meal_plans)
@@ -32,13 +34,9 @@ def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
                     if not existing or (p.get('status') == 'accepted' and existing != 'accepted'):
                         active_participants_by_user[user_id] = p.get('status')
         return len(group_meal_plans) + len(active_participants_by_user) + total_guest_count
-    participants_count = (
-        meal_plan.invitations.filter(status__in=['accepted', 'pending']).count()
-        if hasattr(meal_plan, 'invitations')
-        else 0
-    )
-    guest_count = meal_plan.guest_count or 0
-    return 1 + participants_count + guest_count
+    from .services.diners_service import meal_plan_people_count
+
+    return meal_plan_people_count(meal_plan, cache)
 
 
 def get_batch_portions(meal_plan, mprb, people_count=None):

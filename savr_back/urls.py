@@ -49,6 +49,7 @@ urlpatterns = [
     path('api/health/', health_view),
     path('api/app/', include('appversion.urls')),
     path('api/auth/', include('accounts.urls')),
+    path('api/household/', include('accounts.urls_household')),
     path('api/notifications/', include('notifications.urls')),
     path('api/', include('stats.urls')),
     path('api/', include('recipes.urls')),

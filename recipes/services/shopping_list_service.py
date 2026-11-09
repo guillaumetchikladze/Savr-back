@@ -208,23 +208,33 @@ def add_item_to_shopping_list(
 # ---------------------------------------------------------------------------
 def compute_total_servings_batch(batch: RecipeBatch) -> float:
     """
-    Portions totales d'un batch : somme des portions des repas liés ; sinon portions voulues dans le
-    panier « Cette semaine » (envie non datée) ; sinon portions de la recette.
+    Portions totales d'un batch : somme des portions des repas liés (personnes du repas : foyer +
+    invités, sauf portions fixées) ; sinon envie non datée du panier « Cette semaine » (`servings`, à
+    défaut ses convives) ; sinon portions de la recette.
     """
-    from recipes.utils import get_batch_portions
+    from recipes.services.diners_service import basket_item_people_count
+    from recipes.utils import get_batch_portions, get_meal_plan_people_count
 
     recipe = batch.recipe
     if not recipe:
         return 1.0
     total = 0
-    for mprb in MealPlanRecipeBatch.objects.filter(recipe_batch=batch).select_related('meal_plan'):
-        total += get_batch_portions(mprb.meal_plan, mprb)
+    household_cache: dict = {}
+    for mprb in (
+        MealPlanRecipeBatch.objects.filter(recipe_batch=batch)
+        .select_related('meal_plan')
+        .prefetch_related('meal_plan__invitations')
+    ):
+        people = (
+            None if mprb.portions is not None else get_meal_plan_people_count(mprb.meal_plan, cache=household_cache)
+        )
+        total += get_batch_portions(mprb.meal_plan, mprb, people_count=people)
     if total > 0:
         return float(total)
-    basket_servings = (
-        batch.basket_items.exclude(servings__isnull=True).order_by('-id').values_list('servings', flat=True).first()
-    )
-    return float(basket_servings or recipe.servings or 1)
+    item = batch.basket_items.filter(meal_plan__isnull=True).order_by('-id').first()
+    if item is not None:
+        return float(item.servings or basket_item_people_count(item, household_cache))
+    return float(recipe.servings or 1)
 
 
 def add_batch_ingredients_to_list(shopping_list: ShoppingList, batch: RecipeBatch) -> None:

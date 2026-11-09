@@ -3,15 +3,19 @@ Signaux stats (jamais bloquants : tout passe par transaction.on_commit + try/exc
 - nouvel ingrédient → classification différée (lot débouncé) ;
 - repas confirmé / post créé → évaluation différée des badges ;
 - miam / invitation → invalidation du cache stats (le « cuisiné » est couvert par l'empreinte DB) ;
-- invités / recettes du repas / fin du mode cuisine → ardoise des posts du repas à recalculer (`Post.highlights`).
+- invités / recettes du repas / fin du mode cuisine → ardoise des posts du repas à recalculer (`Post.highlights`) ;
+- lien de foyer entre deux comptes (créé, accepté, retiré) → stats des deux + ardoises des repas où l'un
+  invitait l'autre (le foyer ne compte pas comme convive).
 """
 
 from __future__ import annotations
 
 from django.db import transaction
+from django.db.models import Q
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
+from accounts.models import HouseholdMember
 from recipes.models import CookingProgress, Ingredient, MealInvitation, MealPlan, MealPlanRecipeBatch, Post, PostCookie
 
 from .services.highlights import invalidate_post_highlights
@@ -70,3 +74,17 @@ def _invitation_changed(sender, instance, **kwargs):
     invalidate_user_stats(instance.inviter_id)
     invalidate_user_stats(instance.invitee_id)
     invalidate_post_highlights(meal_plan_ids=[instance.meal_plan_id])
+
+
+@receiver(post_save, sender=HouseholdMember, dispatch_uid='stats_household_saved')
+@receiver(post_delete, sender=HouseholdMember, dispatch_uid='stats_household_deleted')
+def _household_changed(sender, instance, **kwargs):
+    if kwargs.get('raw') or not instance.user_id:
+        return
+    a, b = instance.owner_id, instance.user_id
+    invalidate_user_stats(a)
+    invalidate_user_stats(b)
+    meal_plan_ids = MealInvitation.objects.filter(
+        Q(inviter_id=a, invitee_id=b) | Q(inviter_id=b, invitee_id=a)
+    ).values_list('meal_plan_id', flat=True)
+    invalidate_post_highlights(meal_plan_ids=list(meal_plan_ids))

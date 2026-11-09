@@ -12,6 +12,7 @@ from recipes.models import CookingProgress, MealInvitation, MealPlan, MealPlanRe
 from stats.services.highlights import (
     KINDS,
     MAX_HIGHLIGHTS,
+    SNAPSHOT_VERSION,
     duration_fr,
     make_highlight,
     ordinal_fr,
@@ -171,6 +172,22 @@ def test_snapshot_refreshed_when_guests_join(api, user, make_user, make_recipe, 
     assert labels == ['1re fois', '1 convive']
 
 
+def test_household_is_not_counted_as_guests(api, user, make_user, make_recipe, cooked_post):
+    from accounts.models import HouseholdMember
+
+    partner, friend = make_user('pauline'), make_user('léa')
+    post = cooked_post(user, date(2026, 10, 5), make_recipe(user, 'Soupe'))
+    for guest in (partner, friend):
+        MealInvitation.objects.create(inviter=user, invitee=guest, meal_plan=post.meal_plan, status='accepted')
+    client = api.as_user(user)
+    assert '2 convives' in [h['label'] for h in client.get(f'/api/posts/{post.id}/').data['highlights']]
+
+    # Pauline rejoint le foyer : l'ardoise est recalculée, elle n'est plus une convive.
+    HouseholdMember.objects.create(owner=user, user=partner, status='accepted')
+    assert Post.objects.get(pk=post.pk).highlights is None
+    assert '1 convive' in [h['label'] for h in client.get(f'/api/posts/{post.id}/').data['highlights']]
+
+
 # ---------------------------------------------------------------------------
 # Feed : pas de N+1 (instantané lu tel quel ; calcul à froid en nombre de requêtes constant)
 # ---------------------------------------------------------------------------
@@ -262,5 +279,6 @@ def test_backfill_command(user, make_recipe, cooked_post):
     call_command('backfill_post_highlights', '--batch', '1', stdout=io.StringIO())
 
     assert all(
-        p.highlights['v'] == 1 and p.highlights['items'] for p in Post.objects.filter(pk__in=[post.pk, stale.pk])
+        p.highlights['v'] == SNAPSHOT_VERSION and p.highlights['items']
+        for p in Post.objects.filter(pk__in=[post.pk, stale.pk])
     )

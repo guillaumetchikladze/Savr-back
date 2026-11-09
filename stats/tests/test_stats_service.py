@@ -99,14 +99,20 @@ def test_soft_caps_per_day(user, make_recipe, cook):
     assert stats['star_dish']['count'] == 1  # même plat le même jour : compté une fois
 
 
-def test_hosted_excludes_self_and_household(user, make_user, make_recipe, cook, monkeypatch):
+def test_hosted_excludes_self_and_household(user, make_user, make_recipe, cook):
+    from accounts.models import HouseholdMember
+
     friend, partner, other = make_user('friend'), make_user('partner'), make_user('other')
     meal = cook(user, date(2026, 11, 1), make_recipe(user), guest_count=40)
     for guest in (friend, partner):
         MealInvitation.objects.create(inviter=user, invitee=guest, meal_plan=meal, status='accepted')
     host_meal = cook(other, date(2026, 11, 2), make_recipe(other))
     MealInvitation.objects.create(inviter=other, invitee=user, meal_plan=host_meal, status='accepted')
-    monkeypatch.setattr(stats_service, 'household_member_ids', lambda u: {partner.id})
+    partner_meal = cook(partner, date(2026, 11, 3), make_recipe(partner))  # cuisiné par le foyer
+    MealInvitation.objects.create(inviter=partner, invitee=user, meal_plan=partner_meal, status='accepted')
+    # Lien de foyer (accepté par partner, posé par partner : réciproque) + entrée sans compte.
+    HouseholdMember.objects.create(owner=partner, user=user, status='accepted')
+    HouseholdMember.objects.create(owner=user, name='Jules', is_child=True)
 
     hosted = compute_stats(user, resolve_period('month', today=TODAY), today=TODAY).payload['hosted']
 
@@ -114,7 +120,7 @@ def test_hosted_excludes_self_and_household(user, make_user, make_recipe, cook, 
     assert hosted['anonymous_guests'] == stats_service.MAX_ANON_GUESTS_PER_MEAL
     assert hosted['people_fed_count'] == 1 + stats_service.MAX_ANON_GUESTS_PER_MEAL
     assert hosted['top_guest']['username'] == 'friend'
-    assert hosted['invited_count'] == 1
+    assert hosted['invited_count'] == 1  # le repas de partner (foyer) ne compte pas comme invitation
 
 
 def test_minutes_miam_and_constant_query_count(user, make_user, history, cook, django_assert_max_num_queries):
