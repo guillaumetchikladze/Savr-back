@@ -1,46 +1,48 @@
-from rest_framework import status, generics
+import uuid
+
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector, TrigramSimilarity
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
+from django.db.models import Exists, OuterRef, Q
+from django.shortcuts import render
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.views.decorators.http import require_http_methods
+from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth import get_user_model
-from django.db.models import Q, Exists, OuterRef
-from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank, TrigramSimilarity
-from django.conf import settings
-import uuid
+
+from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
+from recipes.serializers import RecipeSerializer
+from savr_back.settings import build_s3_client, build_s3_url
+
+from .blocks import are_blocked_either_way, blocked_user_ids_for, exclude_blocked_from_user_qs
+from .feed_suggestions import build_feed_user_suggestions
+from .models import Follow, FollowRequest, LoyaltyCard, Notification, PushDevice, UserBlock
 from .permissions import IsValidated
 from .serializers import (
-    UserRegistrationSerializer,
-    UserSerializer,
-    UserSearchResultSerializer,
-    LoginSerializer,
-    NotificationSerializer,
-    LoyaltyCardSerializer,
     FeedUserSuggestionSerializer,
+    LoginSerializer,
+    LoyaltyCardSerializer,
+    NotificationSerializer,
+    UserRegistrationSerializer,
+    UserSearchResultSerializer,
+    UserSerializer,
 )
-from .feed_suggestions import build_feed_user_suggestions
 from .serializers_push import PushDeviceRegisterSerializer
-from .models import Follow, FollowRequest, Notification, PushDevice, LoyaltyCard, UserBlock
-from .blocks import are_blocked_either_way, blocked_user_ids_for, exclude_blocked_from_user_qs
+from .services.expo_push import send_expo_push_notifications
 from .services.follow_service import (
     accept_follow_request,
     decline_follow_request,
     request_follow,
     unfollow_or_cancel,
 )
-from .services.expo_push import send_expo_push_notifications
-import random
-from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
-from recipes.serializers import RecipeSerializer
-from savr_back.settings import build_s3_client, build_presigned_get_url, build_s3_url
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
-from django.core.cache import cache
-from django.contrib.auth.tokens import default_token_generator
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
-from django.shortcuts import render, redirect
-from django.views.decorators.http import require_http_methods
 
 User = get_user_model()
 

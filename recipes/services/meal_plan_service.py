@@ -1,7 +1,8 @@
 """Service sync pour les meal plans — réutilisable par ViewSets et agent chat."""
 
 import uuid
-from datetime import date as date_type, datetime
+from datetime import date as date_type
+from datetime import datetime
 
 from django.contrib.auth.models import AbstractBaseUser
 from django.db import transaction

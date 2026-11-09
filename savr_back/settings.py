@@ -2,11 +2,12 @@
 Django settings for savr_back project.
 """
 
-from pathlib import Path
-from decouple import config
-from datetime import timedelta
 import sys
+from datetime import timedelta
+from pathlib import Path
+
 import boto3
+from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -23,8 +24,8 @@ DEBUG = config('DEBUG', default=True, cast=bool)
 
 # Sentry Configuration
 import sentry_sdk
-from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.celery import CeleryIntegration
+from sentry_sdk.integrations.django import DjangoIntegration
 
 SENTRY_DSN = config('SENTRY_DSN', default='')
 

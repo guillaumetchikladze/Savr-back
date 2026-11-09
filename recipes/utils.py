@@ -1,8 +1,8 @@
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from django.db.models import Q
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 
 def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
@@ -11,8 +11,6 @@ def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
     Utilisable depuis serializers sans importer views.
     """
     if group_meal_plans and len(group_meal_plans) > 1:
-        from .models import MealPlan
-
         total_guest_count = sum(mp.guest_count or 0 for mp in group_meal_plans)
         all_participants = []
         for mp in group_meal_plans:
@@ -63,6 +61,7 @@ def get_accessible_meal_plan_filter(user):
     Préférer get_accessible_meal_plans_queryset() pour les listes bornées par date.
     """
     from django.db.models import Exists, OuterRef, Q
+
     from .models import MealInvitation
 
     invited = MealInvitation.objects.filter(
@@ -82,7 +81,7 @@ def get_accessible_meal_plans_queryset(user, date_gte=None, date_lte=None):
     - invited: ids via mealinv_invitee_status_idx puis IN
     Évite le Exists corrélé ligne-à-ligne (coûteux sur grandes fenêtres).
     """
-    from .models import MealPlan, MealInvitation
+    from .models import MealInvitation, MealPlan
 
     invited_qs = MealInvitation.objects.filter(
         invitee=user,

@@ -3,8 +3,9 @@ Configuration de l'API d'embedding
 Centralise toutes les variables de configuration
 """
 
-from decouple import config
 import logging
+
+from decouple import config
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,8 @@
 from rest_framework import generics, status
-from accounts.permissions import IsValidated as IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import IsValidated as IsAuthenticated
 from chat.models import Conversation, Message, MessageFeedback
 from chat.serializers import ConversationSerializer, MessageSerializer
 

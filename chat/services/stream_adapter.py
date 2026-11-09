@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from agents import Runner
 from agents.items import ItemHelpers
@@ -47,14 +48,14 @@ class StreamEvent:
     tool_name: str = ''
     summary: str = ''
     action_id: str = ''
-    message_id: Optional[int] = None
-    payload: Optional[dict] = None
+    message_id: int | None = None
+    payload: dict | None = None
     request_id: str = ''
     url: str = ''
     code: str = ''
     message: str = ''
-    result: Optional[dict] = None
-    request: Optional[dict] = None
+    result: dict | None = None
+    request: dict | None = None
 
 
 @dataclass
@@ -63,16 +64,16 @@ class StreamResult:
     assistant_text: str = ''
     tool_traces: list[dict] = field(default_factory=list)
     content_blocks: list[dict] = field(default_factory=list)
-    mutation_proposal: Optional[MutationProposal] = None
+    mutation_proposal: MutationProposal | None = None
     mutation_tool_name: str = ''
-    import_job: Optional[ImportJobStarted] = None
+    import_job: ImportJobStarted | None = None
     interrupted: bool = False
 
 
 class BlockStreamAdapter:
     """Machine à états : text → tool → text → mutation/complete."""
 
-    def __init__(self, turn_id: Optional[str] = None):
+    def __init__(self, turn_id: str | None = None):
         self.turn_id = turn_id or str(uuid.uuid4())
         self.block_index = 0
         self.stream_phase = STREAM_PHASE_TEXT
@@ -80,9 +81,9 @@ class BlockStreamAdapter:
         self._pending_text: list[str] = []
         self._tool_traces: list[dict] = []
         self._ordered_blocks: list[dict] = []
-        self._mutation: Optional[MutationProposal] = None
+        self._mutation: MutationProposal | None = None
         self._mutation_tool = ''
-        self._import_job: Optional[ImportJobStarted] = None
+        self._import_job: ImportJobStarted | None = None
 
     def _evt(self, event_type: str, **kwargs) -> StreamEvent:
         return StreamEvent(
@@ -251,7 +252,7 @@ class BlockStreamAdapter:
         )
 
 
-def _serialize_tool_result(output) -> Optional[dict]:
+def _serialize_tool_result(output) -> dict | None:
     if output is None:
         return None
     if hasattr(output, 'model_dump'):

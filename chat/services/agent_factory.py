@@ -7,16 +7,13 @@ from chat.services.gemini_tool_compat import install as install_gemini_tool_comp
 
 install_gemini_tool_compat()
 
-from decouple import config
-from openai import AsyncOpenAI
-
 from agents import Agent, set_tracing_disabled
 from agents.model_settings import ModelSettings
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from decouple import config
+from openai import AsyncOpenAI
 
 from chat.services.agent_context import AgentContext
-from chat.services.session_context import build_session_context_prompt
-from recipes.services.ai_service import sanitize_model_string
 from chat.services.async_tools import (
     add_recipe_to_meal_plan,
     add_shopping_list_item,
@@ -30,6 +27,8 @@ from chat.services.async_tools import (
     search_recipes,
     send_invitation_proposal,
 )
+from chat.services.session_context import build_session_context_prompt
+from recipes.services.ai_service import sanitize_model_string
 
 logger = logging.getLogger(__name__)
 

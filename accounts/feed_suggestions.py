@@ -6,8 +6,8 @@ Reste borné en coût (pool limité, requêtes Follow en masse).
 
 from __future__ import annotations
 
-from collections import defaultdict
 import random
+from collections import defaultdict
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -127,7 +127,7 @@ def build_feed_user_suggestions(viewer):
     top = prio_pick + rest_top[: max(0, remaining)]
 
     preview_user_ids: set[int] = set()
-    for _, u, mset in top:
+    for _, _u, mset in top:
         preview_user_ids.update(list(mset)[:PREVIEW_N])
 
     preview_bulk = User.objects.filter(id__in=preview_user_ids).only('id', 'username', 'avatar_url')

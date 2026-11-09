@@ -4,8 +4,10 @@ Usage: python manage.py generate_missing_embeddings [--ingredients] [--recipes] 
 """
 
 import logging
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
+
 from recipes.models import Ingredient, Recipe
 from recipes.services.ingredient_matcher import get_batch_embeddings
 

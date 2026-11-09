@@ -15,7 +15,7 @@ from accounts.services.miam_push import (
     should_send_version,
     unique_usernames_newest_first,
 )
-from recipes.models import MealPlan, MealPlanRecipeBatch, Post, PostPhoto, RecipeBatch, Timer
+from recipes.models import MealPlan, MealPlanRecipeBatch, Post, Timer
 
 logger = logging.getLogger(__name__)
 

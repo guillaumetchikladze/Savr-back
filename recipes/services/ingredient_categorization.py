@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from recipes.models import Category, Ingredient
 from recipes.supermarket_categories import match_leaf_slug_from_name
 
 
-def _category_slug(ingredient: Ingredient) -> Optional[str]:
+def _category_slug(ingredient: Ingredient) -> str | None:
     cat = ingredient.category
     if cat is None:
         return None
@@ -21,7 +19,7 @@ def resolve_category_for_ingredient(
     *,
     force: bool = False,
     retry_autres: bool = True,
-) -> Optional[Category]:
+) -> Category | None:
     """
     Détermine la catégorie feuille pour un ingrédient.
     Ordre : catégorie déjà posée (sauf Autres si retry) → mots-clés → Autres.
@@ -48,7 +46,7 @@ def ensure_ingredient_category(
     *,
     force: bool = False,
     retry_autres: bool = True,
-) -> Optional[Category]:
+) -> Category | None:
     """
     Assigne et persiste une catégorie si besoin (null / Autres / force).
     Idempotent : ne touche pas une feuille déjà correctement posée.

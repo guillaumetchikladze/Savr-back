@@ -1,5 +1,6 @@
-import logging
 import asyncio
+import logging
+
 import nest_asyncio
 
 # Permettre les boucles asyncio imbriquées (nécessaire pour Celery)
@@ -10,8 +11,8 @@ from celery import shared_task
 from .models import RecipeImportRequest
 from .services.ai_service import formalize_recipe, generate_recipe_from_idea
 from .services.formalization_pipeline import create_recipe_from_formalized
-from .services.recipe_importer import import_recipe_from_url, is_ingredients_suspicious, InstagramImportError
 from .services.image_uploader import download_and_upload_image
+from .services.recipe_importer import InstagramImportError, import_recipe_from_url, is_ingredients_suspicious
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 """DTOs partagés backend ↔ mobile ↔ agent tools."""
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -8,16 +8,16 @@ from pydantic import BaseModel, Field
 class RecipeSummary(BaseModel):
     id: int
     title: str
-    prep_time: Optional[int] = None
-    cook_time: Optional[int] = None
-    difficulty: Optional[str] = None
-    image_url: Optional[str] = None
+    prep_time: int | None = None
+    cook_time: int | None = None
+    difficulty: str | None = None
+    image_url: str | None = None
 
 
 class MealPlanRecipeSummary(BaseModel):
     recipe_id: int
     recipe_title: str
-    recipe_batch_id: Optional[int] = None
+    recipe_batch_id: int | None = None
 
 
 class MealPlanInviteeSummary(BaseModel):
@@ -32,7 +32,7 @@ class MealPlanSummary(BaseModel):
     id: int
     date: str
     meal_time: str
-    meal_type: Optional[str] = None
+    meal_type: str | None = None
     confirmed: bool = False
     is_owner: bool = True
     recipes: list[MealPlanRecipeSummary] = Field(default_factory=list)

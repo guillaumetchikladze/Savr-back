@@ -4,9 +4,9 @@ Service pour télécharger et uploader des images vers S3/MinIO
 
 import logging
 import uuid
-import requests
 from io import BytesIO
-from typing import Optional
+
+import requests
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 30
 
 
-def download_and_upload_image(image_url: str, user_id: int, recipe_id: Optional[int] = None) -> Optional[str]:
+def download_and_upload_image(image_url: str, user_id: int, recipe_id: int | None = None) -> str | None:
     """
     Télécharge une image depuis une URL externe et l'upload vers S3/MinIO.
 
@@ -122,7 +122,7 @@ def download_and_upload_image(image_url: str, user_id: int, recipe_id: Optional[
         return None
 
 
-def copy_s3_image_to_recipe_cover(source_key: str, user_id: int) -> Optional[str]:
+def copy_s3_image_to_recipe_cover(source_key: str, user_id: int) -> str | None:
     """Copie une image S3 existante vers le namespace couverture recette."""
     if not source_key:
         return None

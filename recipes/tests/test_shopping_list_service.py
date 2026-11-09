@@ -116,8 +116,10 @@ class ShoppingListServiceTests(TestCase):
         self.assertEqual(float(manual_qty.quantity), 5.0)
 
     def test_get_shopping_list_items_excludes_fully_checked_stale(self):
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
+
         from recipes.models import Recipe, RecipeBatch
 
         recipe = Recipe.objects.create(

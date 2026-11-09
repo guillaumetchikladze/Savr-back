@@ -38,6 +38,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "*/tests/*" = ["B011"]
 "conftest.py" = ["B011"]
+# Espaces de fin dans les prompts LLM (chaînes multi-lignes) : ne pas altérer les prompts.
+"recipes/services/ai_service.py" = ["W291"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["accounts", "chat", "core", "emails", "recipes", "savr_back"]

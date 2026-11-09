@@ -35,7 +35,7 @@ class HasAIFeature(BasePermission):
                     'code': 'not_validated',
                 }
             )
-        from accounts.entitlements import user_has_feature, feature_locked_payload
+        from accounts.entitlements import feature_locked_payload, user_has_feature
 
         if not user_has_feature(user, 'ai'):
             raise PermissionDenied(detail=feature_locked_payload('ai'))

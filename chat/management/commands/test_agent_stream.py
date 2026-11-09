@@ -3,12 +3,11 @@
 import asyncio
 import time
 
+from agents import RunContextWrapper, Runner, function_tool
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
-
-from agents import RunContextWrapper, Runner, function_tool
 
 from chat.services.agent_context import AgentContext
 from chat.services.agent_factory import create_chat_model, create_planning_agent

@@ -1,28 +1,30 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter, APIRootView
+from django.urls import include, path
+from rest_framework.routers import APIRootView, DefaultRouter
+
 from accounts.permissions import IsValidated as IsAuthenticated
-from .views import (
-    CategoryViewSet,
-    RecipeViewSet,
-    IngredientViewSet,
-    MealPlanViewSet,
-    MealInvitationViewSet,
-    CookingProgressViewSet,
-    TimerViewSet,
-    PostViewSet,
-    ShoppingListViewSet,
-    ShoppingListItemViewSet,
-    ShoppingListInvitationViewSet,
-    CollectionViewSet,
-    RecipeBatchViewSet,
-)
+
 from .dietary_views import dietary_conflicts_view
 from .preference_views import (
-    preference_mappings_list,
-    preference_mapping_resolved,
-    preference_mapping_propose,
     preference_mapping_fork,
+    preference_mapping_propose,
+    preference_mapping_resolved,
     preference_mapping_validate,
+    preference_mappings_list,
+)
+from .views import (
+    CategoryViewSet,
+    CollectionViewSet,
+    CookingProgressViewSet,
+    IngredientViewSet,
+    MealInvitationViewSet,
+    MealPlanViewSet,
+    PostViewSet,
+    RecipeBatchViewSet,
+    RecipeViewSet,
+    ShoppingListInvitationViewSet,
+    ShoppingListItemViewSet,
+    ShoppingListViewSet,
+    TimerViewSet,
 )
 
 

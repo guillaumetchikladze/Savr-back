@@ -7,7 +7,7 @@ from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
-from django.urls import path, include
+from django.urls import include, path
 
 
 def health_view(request):

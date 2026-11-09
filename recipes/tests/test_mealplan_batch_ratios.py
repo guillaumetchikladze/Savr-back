@@ -14,8 +14,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from recipes.models import Recipe, MealPlan, RecipeBatch, MealPlanRecipeBatch
-
+from recipes.models import MealPlan, MealPlanRecipeBatch, Recipe, RecipeBatch
 
 User = get_user_model()
 

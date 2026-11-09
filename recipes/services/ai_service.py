@@ -8,13 +8,15 @@ import logging
 import os
 import time
 from decimal import Decimal
-from typing import Literal, Optional, cast
+from typing import Literal, cast
+
 from decouple import config
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UserError as PydanticAIUserError, UnexpectedModelBehavior
-from pydantic_ai.models.google import GoogleModel, GoogleModelName
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import UserError as PydanticAIUserError
 from pydantic_ai.models.gemini import GeminiModel, GeminiModelName
+from pydantic_ai.models.google import GoogleModel, GoogleModelName
 
 from .pydantic_models import RecipeFormalized
 
@@ -288,15 +290,15 @@ class InstagramCaptionParsed(BaseModel):
         default='',
         description="Étapes de la recette, une ligne par étape, idéalement numérotée '1. ...'. Peut être générée à partir du titre + ingrédients.",
     )
-    servings: Optional[int] = Field(
+    servings: int | None = Field(
         default=None,
         description='Nombre de portions si inférable.',
     )
-    prep_time: Optional[int] = Field(
+    prep_time: int | None = Field(
         default=None,
         description='Temps de préparation en minutes si inférable.',
     )
-    cook_time: Optional[int] = Field(
+    cook_time: int | None = Field(
         default=None,
         description='Temps de cuisson en minutes si inférable.',
     )
@@ -454,13 +456,13 @@ async def normalize_ingredient_names(names: list[str]) -> dict[str, str]:
 
 async def formalize_recipe(
     title: str,
-    description: Optional[str],
+    description: str | None,
     ingredients_text: str,
     instructions_text: str,
-    servings: Optional[int] = None,
-    prep_time: Optional[int] = None,
-    cook_time: Optional[int] = None,
-    raw_text: Optional[str] = None,
+    servings: int | None = None,
+    prep_time: int | None = None,
+    cook_time: int | None = None,
+    raw_text: str | None = None,
 ) -> RecipeFormalized:
     """
     Formalise une recette brute en utilisant l'IA
@@ -659,7 +661,7 @@ Contraintes :
 
 async def generate_recipe_from_idea(
     idea_text: str,
-    servings: Optional[int] = None,
+    servings: int | None = None,
 ) -> RecipeFormalized:
     """Génère une recette structurée à partir d'une idée libre."""
     if not AI_API_KEY:

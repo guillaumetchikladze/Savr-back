@@ -1,7 +1,7 @@
 """Tests d'intégration API pour shopping-list-items/with_quantities (masquage 24h des quantités)."""
 
 import uuid
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -57,7 +57,7 @@ class WithQuantitiesStaleIntegrationTests(APITestCase):
         self.batch_old = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
         self.batch_new = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
 
-        self.frozen_now = datetime(2026, 6, 15, 14, 0, 0, tzinfo=dt_timezone.utc)
+        self.frozen_now = datetime(2026, 6, 15, 14, 0, 0, tzinfo=UTC)
 
     def _url(self):
         return reverse('shoppinglistitem-with-quantities')

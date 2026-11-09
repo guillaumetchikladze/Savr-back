@@ -5,16 +5,15 @@ API d'embedding nomic-embed-text-v1.5 (Matryoshka 512d, optimisé CPU / Raspberr
 from __future__ import annotations
 
 import logging
-from typing import List, Literal
+from typing import Literal
 
 import numpy as np
 import torch
+from config import Config
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
-
-from config import Config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,20 +97,20 @@ class EmbeddingRequest(BaseModel):
 
 
 class BatchEmbeddingRequest(BaseModel):
-    texts: List[str] = Field(..., min_items=1)
+    texts: list[str] = Field(..., min_items=1)
     normalize: bool = True
     input_type: Literal['query', 'passage'] = 'passage'
     dimensions: int = Field(default=512, ge=1, le=768)
 
 
 class EmbeddingResponse(BaseModel):
-    embedding: List[float]
+    embedding: list[float]
     dimension: int
     text: str
 
 
 class BatchEmbeddingResponse(BaseModel):
-    embeddings: List[List[float]]
+    embeddings: list[list[float]]
     dimension: int
     count: int
 

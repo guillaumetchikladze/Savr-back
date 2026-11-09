@@ -1,6 +1,7 @@
 from time import perf_counter
-from django.db import connection, reset_queries
+
 from django.conf import settings
+from django.db import connection, reset_queries
 
 
 class TimingMiddleware:

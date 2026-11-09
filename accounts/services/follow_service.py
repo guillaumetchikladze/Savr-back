@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-from typing import Optional
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -15,7 +14,7 @@ from .expo_push import send_expo_push_notifications
 User = get_user_model()
 
 
-def get_follow_relation(viewer: Optional[User], target: User) -> dict:
+def get_follow_relation(viewer: User | None, target: User) -> dict:
     """État de la relation entre viewer et target."""
     if not viewer or not getattr(viewer, 'is_authenticated', False):
         return {
@@ -43,7 +42,7 @@ def get_follow_relation(viewer: Optional[User], target: User) -> dict:
     }
 
 
-def follow_relation_payload(viewer: Optional[User], target: User) -> dict:
+def follow_relation_payload(viewer: User | None, target: User) -> dict:
     rel = get_follow_relation(viewer, target)
     return {
         **rel,
@@ -185,7 +184,7 @@ def _accept_request(request: FollowRequest, *, notify_requester: bool = True) ->
     return follow
 
 
-def _establish_mutual(requester: User, target: User, incoming_request: Optional[FollowRequest] = None):
+def _establish_mutual(requester: User, target: User, incoming_request: FollowRequest | None = None):
     """Accepte la demande entrante et crée le suivi retour sans nouvelle validation."""
     if incoming_request:
         _accept_request(incoming_request, notify_requester=True)

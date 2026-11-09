@@ -5,12 +5,11 @@ import logging
 from django.contrib.auth.models import AbstractBaseUser
 from django.db.models import Q
 
+from chat.services.tool_schemas import RecipeSummary, SearchRecipesResult
 from recipes.dietary_filters import conflict_reasons_by_recipe_id
 from recipes.models import Recipe
 from recipes.services.ingredient_matcher import get_batch_embeddings
 from recipes.services.recipe_search import hybrid_recipe_queryset
-
-from chat.services.tool_schemas import RecipeSummary, SearchRecipesResult
 
 logger = logging.getLogger(__name__)
 

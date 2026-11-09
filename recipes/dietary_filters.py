@@ -593,7 +593,6 @@ def conflict_reasons_by_recipe_id(recipe_ids, user):
 
     al_labels = _allergy_labels_from_user(user)
     dl_labels = _dislike_labels_from_user(user)
-    regimes = _regimes_from_user(user)
 
     # Allergies: fort signal, validated only.
     allergy_kws = keywords_for_user_preference_labels(user, 'allergy', al_labels, include_pending_global=False)

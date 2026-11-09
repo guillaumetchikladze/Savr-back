@@ -9,8 +9,8 @@ rapides sur le même post → une seule push avec un wording agrégé.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
-from typing import Iterable, Optional, Sequence, Tuple
 
 import redis
 from django.conf import settings
@@ -24,10 +24,10 @@ MIAM_PUSH_DEBOUNCE_SECONDS = 12
 # Marge pour inclure le like qui a ouvert le burst (horloge / latence DB).
 MIAM_PUSH_SINCE_SKEW_SECONDS = 2
 
-_redis_client: Optional[redis.Redis] = None
+_redis_client: redis.Redis | None = None
 
 
-def _get_redis() -> Optional[redis.Redis]:
+def _get_redis() -> redis.Redis | None:
     global _redis_client
     if _redis_client is not None:
         return _redis_client
@@ -54,7 +54,7 @@ def _ttl_seconds() -> int:
     return MIAM_PUSH_DEBOUNCE_SECONDS + 120
 
 
-def build_miam_aggregation_texts(usernames: Sequence[str], total_count: int) -> Tuple[str, str]:
+def build_miam_aggregation_texts(usernames: Sequence[str], total_count: int) -> tuple[str, str]:
     """Même logique que Savr/src/utils/notifications.js (buildMiamAggregationTexts)."""
     safe = [u for u in usernames if u]
     first = safe[0] if safe else None
@@ -86,7 +86,7 @@ def build_miam_aggregation_texts(usernames: Sequence[str], total_count: int) -> 
     )
 
 
-def unique_usernames_newest_first(usernames: Iterable[Optional[str]]) -> list:
+def unique_usernames_newest_first(usernames: Iterable[str | None]) -> list:
     seen = set()
     out = []
     for name in usernames:
@@ -135,7 +135,7 @@ def schedule_post_miam_push(*, owner_id: int, post_id: int) -> None:
     )
 
 
-def should_send_version(*, owner_id: int, post_id: int, version: Optional[int]) -> bool:
+def should_send_version(*, owner_id: int, post_id: int, version: int | None) -> bool:
     """True si cette exécution de tâche est encore la plus récente."""
     if version is None:
         return True
@@ -152,7 +152,7 @@ def should_send_version(*, owner_id: int, post_id: int, version: Optional[int]) 
         return True
 
 
-def get_burst_since(*, owner_id: int, post_id: int) -> Optional[datetime]:
+def get_burst_since(*, owner_id: int, post_id: int) -> datetime | None:
     """Horodatage de début du burst courant (ou None si inconnu)."""
     client = _get_redis()
     if client is None:

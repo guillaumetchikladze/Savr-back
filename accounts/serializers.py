@@ -1,7 +1,8 @@
-from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.utils import timezone
-from .models import User, Follow, FollowRequest, Notification, LoyaltyCard, AllowedEmail
+from rest_framework import serializers
+
+from .models import AllowedEmail, Follow, LoyaltyCard, Notification, User
 from .privacy import can_view_dietary_preferences
 from .services.follow_service import get_follow_relation
 
@@ -163,8 +164,9 @@ class UserSerializer(serializers.ModelSerializer):
             return None
 
         try:
-            from savr_back.settings import build_presigned_get_url
             import re
+
+            from savr_back.settings import build_presigned_get_url
 
             url = obj.avatar_url
             if 'avatars/' in url:
@@ -214,8 +216,9 @@ class UserSearchResultSerializer(UserSerializer):
         # Si l'URL contient un chemin S3 (avatars/...), générer une presigned URL
         # Sinon, retourner l'URL telle quelle (peut être une URL externe)
         try:
-            from savr_back.settings import build_presigned_get_url
             import re
+
+            from savr_back.settings import build_presigned_get_url
 
             # Extraire le chemin depuis l'URL S3
             # Formats possibles:

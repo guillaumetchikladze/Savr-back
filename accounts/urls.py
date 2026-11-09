@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from . import views
-from . import views_billing
+
+from . import views, views_billing
 
 urlpatterns = [
     path('register/', views.register_view, name='register'),

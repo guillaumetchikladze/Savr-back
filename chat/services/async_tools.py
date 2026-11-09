@@ -1,9 +1,8 @@
 """Tools async exposés à l'agent — wrappers database_sync_to_async."""
 
+from agents import RunContextWrapper, function_tool
 from channels.db import database_sync_to_async
 from django.db import close_old_connections
-
-from agents import RunContextWrapper, function_tool
 
 from chat.services.agent_context import AgentContext
 from chat.services.tool_schemas import (
@@ -23,9 +22,11 @@ from recipes.services.invitation_service import (
 )
 from recipes.services.meal_plan_service import (
     add_recipes_to_meal_plan,
-    create_meal_plan_slot as create_meal_plan_slot_sync,
     get_meal_plans_for_user,
     propose_meal_deletion_data,
+)
+from recipes.services.meal_plan_service import (
+    create_meal_plan_slot as create_meal_plan_slot_sync,
 )
 from recipes.services.recipe_revision_service import propose_recipe_revision_data
 from recipes.services.recipe_search_service import search_recipes_for_user

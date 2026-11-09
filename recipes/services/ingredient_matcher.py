@@ -5,7 +5,7 @@ Les embeddings restent disponibles pour la recherche de recettes, pas pour fusio
 
 import logging
 import time
-from typing import List, Literal, Optional, Tuple
+from typing import Literal
 
 import requests
 from decouple import config
@@ -33,12 +33,12 @@ def normalize_ingredient_name(name: str) -> str:
 
 
 def get_batch_embeddings(
-    texts: List[str],
+    texts: list[str],
     *,
     input_type: Literal['query', 'passage'] = 'passage',
     dimensions: int | None = None,
     timeout: float | None = None,
-) -> List[Optional[list]]:
+) -> list[list | None]:
     """Récupère les embeddings de plusieurs textes en une seule requête (batch)."""
     if not EMBEDDING_API_SECRET:
         logger.warning('EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings')
@@ -89,7 +89,7 @@ def get_embedding(
     text: str,
     *,
     input_type: Literal['query', 'passage'] = 'passage',
-) -> Optional[list]:
+) -> list | None:
     """Récupère l'embedding d'un texte via l'API d'embedding."""
     if not EMBEDDING_API_SECRET:
         logger.warning('EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings')
@@ -128,7 +128,7 @@ def get_embedding(
         return None
 
 
-def find_ingredient_by_name(ingredient_name: str) -> Optional[Ingredient]:
+def find_ingredient_by_name(ingredient_name: str) -> Ingredient | None:
     """Recherche un ingrédient par correspondance exacte (casse) ou normalisée (lower, sans accents)."""
     normalized_name = normalize_ingredient_name(ingredient_name)
 
@@ -144,7 +144,7 @@ def find_ingredient_by_name(ingredient_name: str) -> Optional[Ingredient]:
 
 
 @transaction.atomic
-def get_or_create_ingredient(ingredient_name: str) -> Tuple[Ingredient, bool]:
+def get_or_create_ingredient(ingredient_name: str) -> tuple[Ingredient, bool]:
     """
     Récupère ou crée un ingrédient par correspondance textuelle exacte uniquement.
     Retourne (ingredient, created) où created=True si l'ingrédient a été créé.

@@ -3,16 +3,16 @@ Service pour importer des recettes depuis des URLs externes
 Supporte : Bergamot, Marmiton, Elle & Cuisine, etc.
 """
 
+import json
 import logging
 import re
-import json
-from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
+
 import requests
+from apify_client import ApifyClient
 from bs4 import BeautifulSoup
 from decouple import config
 from recipe_scrapers import SCRAPERS, scrape_html
-from apify_client import ApifyClient
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _is_recipe_scrapers_supported(url: str) -> bool:
     return False
 
 
-def _parse_first_int(val: object) -> Optional[int]:
+def _parse_first_int(val: object) -> int | None:
     if val is None:
         return None
     if isinstance(val, int):
@@ -78,7 +78,7 @@ def _normalize_multiline_steps(text: str) -> str:
     return '\n'.join([f'{i + 1}. {ln}' for i, ln in enumerate(lines)])
 
 
-def extract_with_recipe_scrapers(url: str) -> Optional[Dict]:
+def extract_with_recipe_scrapers(url: str) -> dict | None:
     """
     Extraction via `recipe-scrapers` (HTML parsing). On fetch nous-mêmes le HTML
     (headers, timeout) puis on appelle `scrape_html(..., wild_mode=True)` pour
@@ -234,7 +234,7 @@ def is_ingredients_suspicious(ingredients_text: str) -> tuple[bool, str]:
     return False, ''
 
 
-def detect_source_type(url: str) -> Optional[str]:
+def detect_source_type(url: str) -> str | None:
     """Détecte le type de source depuis l'URL"""
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
@@ -266,7 +266,7 @@ class InstagramImportError(Exception):
         super().__init__(self.message or code)
 
 
-def extract_instagram_recipe(url: str) -> Optional[Dict]:
+def extract_instagram_recipe(url: str) -> dict | None:
     """
     Extraction d'une recette depuis un post Instagram public en utilisant Apify.
     - Récupère la légende + premier commentaire
@@ -377,7 +377,7 @@ def extract_instagram_recipe(url: str) -> Optional[Dict]:
 
     description = (caption or full_text)[:600]
 
-    recipe_data: Dict[str, object] = {
+    recipe_data: dict[str, object] = {
         'title': title,
         'description': description,
         'ingredients_text': ingredients_text,
@@ -398,7 +398,7 @@ def extract_instagram_recipe(url: str) -> Optional[Dict]:
     return recipe_data
 
 
-def _extract_recipe_from_json_ld(data, title_fallback: str = '') -> Optional[Dict]:
+def _extract_recipe_from_json_ld(data, title_fallback: str = '') -> dict | None:
     """Extrait un dict recette depuis une structure JSON-LD si @type=Recipe"""
     if not data:
         return None
@@ -487,7 +487,7 @@ def _extract_recipe_from_json_ld(data, title_fallback: str = '') -> Optional[Dic
     }
 
 
-def _fallback_extract_from_soup(soup: BeautifulSoup, title_hint: str = '') -> Optional[Dict]:
+def _fallback_extract_from_soup(soup: BeautifulSoup, title_hint: str = '') -> dict | None:
     """Extraction heuristique sur HTML (ingrédients/instructions)"""
     title_elem = soup.find('h1') or soup.find('title')
     title = title_elem.get_text(strip=True) if title_elem else title_hint
@@ -554,7 +554,7 @@ def _fallback_extract_from_soup(soup: BeautifulSoup, title_hint: str = '') -> Op
     return None
 
 
-def extract_bergamot_recipe(url: str) -> Optional[Dict]:
+def extract_bergamot_recipe(url: str) -> dict | None:
     """Extrait une recette depuis Bergamot"""
     try:
         logger.info('[BergamotExtractor] Transforme url to api call : %s', url)
@@ -613,7 +613,7 @@ def extract_bergamot_recipe(url: str) -> Optional[Dict]:
         return None
 
 
-def extract_marmiton_recipe(url: str) -> Optional[Dict]:
+def extract_marmiton_recipe(url: str) -> dict | None:
     """Extrait une recette depuis Marmiton"""
     try:
         response = requests.get(
@@ -756,7 +756,7 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
         return None
 
 
-def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
+def extract_cuisineaz_recipe(url: str) -> dict | None:
     """Extrait une recette depuis CuisineAZ (JSON-LD prioritaire)"""
     try:
         response = requests.get(
@@ -840,7 +840,7 @@ def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
         return None
 
 
-def extract_jow_recipe(url: str) -> Optional[Dict]:
+def extract_jow_recipe(url: str) -> dict | None:
     """Extrait une recette depuis Jow.fr (JSON-LD prioritaire, fallback HTML ciblé)"""
     try:
         response = requests.get(
@@ -952,7 +952,7 @@ def extract_jow_recipe(url: str) -> Optional[Dict]:
         return None
 
 
-def extract_generic_recipe(url: str) -> Optional[Dict]:
+def extract_generic_recipe(url: str) -> dict | None:
     """Extraction générique pour les sites non supportés spécifiquement"""
     try:
         response = requests.get(
@@ -986,7 +986,7 @@ def extract_generic_recipe(url: str) -> Optional[Dict]:
         return None
 
 
-def extract_with_jina(url: str) -> Optional[Dict]:
+def extract_with_jina(url: str) -> dict | None:
     """Extraction via Jina Reader (fallback générique)"""
     token = config('JINA_API_TOKEN', default=None)
     if not token:
@@ -1041,7 +1041,7 @@ def extract_with_jina(url: str) -> Optional[Dict]:
 from ..utils import canonicalize_import_url
 
 
-def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
+def import_recipe_from_url(url: str) -> tuple[dict | None, str | None]:
     """
     Importe une recette depuis une URL
 

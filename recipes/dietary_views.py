@@ -3,14 +3,14 @@
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from accounts.permissions import IsValidated as IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.permissions import IsValidated as IsAuthenticated
 from accounts.privacy import are_complices_in_network
 
 from .dietary_filters import (
-    conflicting_recipe_ids_for_user,
     conflict_reasons_by_recipe_id,
+    conflicting_recipe_ids_for_user,
     hits_for_recipe_reasons,
 )
 from .models import Recipe

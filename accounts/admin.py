@@ -1,10 +1,10 @@
+from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils import timezone
-from django.conf import settings
 
-from .models import User, UserBlock, AllowedEmail
 from .billing import activate_premium_license
+from .models import AllowedEmail, User, UserBlock
 
 
 def _enqueue_access_granted_email(user):

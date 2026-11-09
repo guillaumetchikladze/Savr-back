@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, Any
+from typing import Any
+
 from django.db import transaction
 
 from ..models import (
@@ -42,7 +43,7 @@ def persistable_recipe_image_path(path: Any) -> str:
     return value
 
 
-def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user):
+def create_recipe_from_formalized(formalized_recipe, data: dict[str, Any], user):
     """
     Reprend l'ancienne logique synchronisée pour créer la recette
     à partir du résultat formalisé.

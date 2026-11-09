@@ -1,6 +1,5 @@
-import os
 import base64
-from typing import Tuple
+import os
 
 from cryptography.fernet import Fernet, InvalidToken
 from decouple import config as decouple_config
@@ -41,7 +40,7 @@ def _get_fernet() -> Fernet:
         return Fernet(derived)
 
 
-def encrypt_card_number(plain: str) -> Tuple[str, str]:
+def encrypt_card_number(plain: str) -> tuple[str, str]:
     """
     Chiffre le numéro de carte et retourne (ciphertext, last4).
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from django.conf import settings
 from django.contrib.postgres.search import TrigramSimilarity, TrigramWordSimilarity
 from django.db.models import Case, F, FloatField, Q, Value, When
@@ -12,7 +10,7 @@ from django.db.models.functions import Coalesce
 from pgvector.django import CosineDistance
 
 
-def hybrid_recipe_queryset(base_qs, query: str, query_vector: Optional[List[float]] = None):
+def hybrid_recipe_queryset(base_qs, query: str, query_vector: list[float] | None = None):
     """
     Hybride sémantique + trigram.
     - Titre : similarité classique (champ court).

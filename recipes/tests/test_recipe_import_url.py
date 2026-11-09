@@ -4,16 +4,15 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from recipes.models import Recipe, RecipeImportRequest
+from recipes.services.formalization_pipeline import persistable_recipe_image_path
 from recipes.services.recipe_importer import (
+    InstagramImportError,
+    extract_instagram_recipe,
     import_recipe_from_url,
     is_ingredients_suspicious,
-    extract_instagram_recipe,
-    InstagramImportError,
 )
-from recipes.utils import canonicalize_import_url
 from recipes.tasks import process_recipe_import_from_url
-from recipes.services.formalization_pipeline import persistable_recipe_image_path
-
+from recipes.utils import canonicalize_import_url
 
 SAMPLE_RECIPE = {
     'title': 'Pâtes au beurre',

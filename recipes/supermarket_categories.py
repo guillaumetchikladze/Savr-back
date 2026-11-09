@@ -7,12 +7,12 @@ spécifiques en tête dans chaque groupe).
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 # (slug_parent, nom_parent, display_order_parent, [
 #   (slug_enfant, nom_enfant, display_order_enfant, mots_clés),
 # ])
-SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Sequence[str]]]]] = (
+SUPERMARKET_TREE: Sequence[tuple[str, str, int, Sequence[tuple[str, str, int, Sequence[str]]]]] = (
     (
         'pole_frais_marche',
         'Pôle Frais & Marché',
@@ -908,9 +908,9 @@ SUPERMARKET_TREE: Sequence[Tuple[str, str, int, Sequence[Tuple[str, str, int, Se
 )
 
 
-def _flatten_keyword_rules() -> List[Tuple[str, str]]:
+def _flatten_keyword_rules() -> list[tuple[str, str]]:
     """(slug, keyword) triés par longueur de keyword décroissante pour prioriser les expressions."""
-    pairs: List[Tuple[str, str]] = []
+    pairs: list[tuple[str, str]] = []
     for _ps, _pn, _po, children in SUPERMARKET_TREE:
         for slug, _name, _co, keywords in children:
             for kw in keywords:
@@ -919,7 +919,7 @@ def _flatten_keyword_rules() -> List[Tuple[str, str]]:
     return pairs
 
 
-FLAT_KEYWORD_RULES: List[Tuple[str, str]] = _flatten_keyword_rules()
+FLAT_KEYWORD_RULES: list[tuple[str, str]] = _flatten_keyword_rules()
 
 # Anciennes catégories (avant refonte) → slug feuille par défaut ; le script de rattrapage
 # ré-applique ensuite les mots-clés pour affiner (ex. poisson).
@@ -960,7 +960,7 @@ def _keyword_matches(name_lower: str, kw: str) -> bool:
             is not None
         )
 
-    parts: List[str] = []
+    parts: list[str] = []
     for w in kw.split():
         if w in _MATCH_STOPWORDS or len(w) <= 2:
             parts.append(re.escape(w))
@@ -970,7 +970,7 @@ def _keyword_matches(name_lower: str, kw: str) -> bool:
     return re.search(pattern, name_lower, flags=re.UNICODE) is not None
 
 
-def match_leaf_slug_from_name(name: str) -> Optional[str]:
+def match_leaf_slug_from_name(name: str) -> str | None:
     """
     Retourne le slug de la feuille si un mot-clé matche, sinon None.
     """
@@ -983,8 +983,8 @@ def match_leaf_slug_from_name(name: str) -> Optional[str]:
     return None
 
 
-def all_leaf_slugs() -> List[str]:
-    out: List[str] = []
+def all_leaf_slugs() -> list[str]:
+    out: list[str] = []
     for _ps, _pn, _po, children in SUPERMARKET_TREE:
         for slug, _name, _co, _kws in children:
             out.append(slug)

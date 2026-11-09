@@ -1,36 +1,37 @@
-from rest_framework import serializers
+from decimal import Decimal
+
 from django.conf import settings
-from django.db import models, transaction
+from django.contrib.auth import get_user_model
+from django.db import transaction
+from rest_framework import serializers
+
 from .models import (
     Category,
-    Recipe,
-    Step,
+    Collection,
+    CollectionMember,
+    CollectionRecipe,
+    CookingProgress,
     Ingredient,
-    RecipeIngredient,
-    StepIngredient,
+    MealInvitation,
     MealPlan,
     MealPlanRecipeBatch,
-    MealInvitation,
-    CookingProgress,
-    Timer,
     Post,
-    PostPhoto,
     PostComment,
-    ShoppingList,
-    ShoppingListItem,
-    ShoppingListInvitation,
-    Collection,
-    CollectionRecipe,
-    CollectionMember,
-    RecipeImportRequest,
-    RecipeBatch,
     PostCommentLike,
+    PostPhoto,
     PostRepost,
+    Recipe,
+    RecipeBatch,
+    RecipeImportRequest,
+    RecipeIngredient,
+    ShoppingList,
+    ShoppingListInvitation,
+    ShoppingListItem,
+    Step,
+    StepIngredient,
+    Timer,
 )
-from django.contrib.auth import get_user_model
-from django.db.models import Q
 from .utils import get_accessible_meal_plan_filter, meal_plan_slot_api_fields
-from decimal import Decimal
 
 
 # Helpers
@@ -39,7 +40,7 @@ def compute_meal_plan_servings_with_ratio(meal_plan):
     Retourne (people_count, breakdown, people_count).
     breakdown : liste de { meal_plan_id, recipe_batch_id, base_servings, portions }.
     """
-    from .utils import get_meal_plan_people_count, get_batch_portions
+    from .utils import get_batch_portions, get_meal_plan_people_count
 
     people_count = get_meal_plan_people_count(meal_plan)
     try:
@@ -110,8 +111,9 @@ class UserLightSerializer(serializers.ModelSerializer):
         # Si l'URL contient un chemin S3 (avatars/...), générer une presigned URL
         # Sinon, retourner l'URL telle quelle (peut être une URL externe)
         try:
-            from savr_back.settings import build_presigned_get_url
             import re
+
+            from savr_back.settings import build_presigned_get_url
 
             # Extraire le chemin depuis l'URL S3
             # Formats possibles:
@@ -883,7 +885,6 @@ class MealPlanSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        from decimal import Decimal, ROUND_HALF_UP
 
         validated_data['user'] = self.context['request'].user
 
@@ -946,7 +947,6 @@ class MealPlanSerializer(serializers.ModelSerializer):
         return meal_plan
 
     def update(self, instance, validated_data):
-        from decimal import Decimal, ROUND_HALF_UP
 
         entries = validated_data.pop('entries', None)
         batch_ids = validated_data.pop('batch_ids', None)
@@ -1368,7 +1368,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
 
     def get_is_guest(self, obj: MealPlan):
         if hasattr(obj, 'is_guest_annot'):
-            return bool(getattr(obj, 'is_guest_annot'))
+            return bool(obj.is_guest_annot)
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
             return False
@@ -1378,7 +1378,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
 
     def get_has_published_post(self, obj: MealPlan):
         if hasattr(obj, 'has_published_post_annot'):
-            return bool(getattr(obj, 'has_published_post_annot'))
+            return bool(obj.has_published_post_annot)
         from .models import Post
 
         return Post.objects.filter(meal_plan=obj, is_published=True).exists()
@@ -1394,7 +1394,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
             return cached
         skip = bool(self.context.get('skip_presign'))
         previews = _meal_plan_recipe_previews(obj, skip_presign=skip, context=self.context)
-        setattr(obj, '_timeline_recipe_previews_cache', previews)
+        obj._timeline_recipe_previews_cache = previews
         return previews
 
     def get_recipe_thumbs(self, obj: MealPlan):
@@ -1532,7 +1532,7 @@ class MealPlanTimelineForInvitationSerializer(serializers.ModelSerializer):
             return cached
         skip = bool(self.context.get('skip_presign'))
         previews = _meal_plan_recipe_previews(obj, skip_presign=skip, context=self.context)
-        setattr(obj, '_timeline_recipe_previews_cache', previews)
+        obj._timeline_recipe_previews_cache = previews
         return previews
 
     def get_recipe_thumbs(self, obj: MealPlan):
@@ -1806,7 +1806,7 @@ class MealPlanMinimalListSerializer(serializers.ModelSerializer):
 
     def get_is_guest(self, obj: MealPlan):
         if hasattr(obj, 'is_guest_annot'):
-            return bool(getattr(obj, 'is_guest_annot'))
+            return bool(obj.is_guest_annot)
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
             return False
@@ -2214,6 +2214,7 @@ class PostPhotoSerializer(serializers.ModelSerializer):
             return None
 
         from django.conf import settings
+
         from savr_back.settings import build_presigned_get_url
 
         # Si pas de configuration S3, retourner l'URL directe
@@ -2260,7 +2261,7 @@ class PostPhotoSerializer(serializers.ModelSerializer):
             return False
 
         if obj.recipe_batch_id:
-            from .models import RecipeBatch, MealPlan
+            from .models import MealPlan, RecipeBatch
 
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
             has_access = RecipeBatch.objects.filter(
@@ -2314,8 +2315,9 @@ class RepostFieldsMixin(serializers.Serializer):
         return PostRepost.objects.filter(original_post=obj).count()
 
     def get_co_cooked_users(self, obj):
-        from .services.repost_service import get_co_cooked_users
         from accounts.services.follow_service import get_follow_relation
+
+        from .services.repost_service import get_co_cooked_users
 
         users = get_co_cooked_users(obj)
         data = UserLightSerializer(users, many=True, context=self.context).data
@@ -2524,6 +2526,7 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
         if not obj.image_path:
             return None
         from django.conf import settings
+
         from savr_back.settings import build_presigned_get_url
 
         if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.AWS_BUCKET:
@@ -2725,7 +2728,7 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
                 ]
         else:
             # Fallback : faire une requête si les données ne sont pas préchargées
-            from .models import MealPlanRecipeBatch, MealPlan
+            from .models import MealPlan, MealPlanRecipeBatch
 
             meal_plan_ids = list(
                 MealPlanRecipeBatch.objects.filter(recipe_batch=batch).values_list('meal_plan_id', flat=True)

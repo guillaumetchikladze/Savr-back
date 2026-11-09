@@ -1,135 +1,136 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from accounts.permissions import IsValidated as IsAuthenticated
-from django.db.models import Q, Count, Min, Max, Case, When, IntegerField, Prefetch, Exists, OuterRef, F
-from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime, date, timedelta, time
+import logging
+import random
+import re
+import traceback
+import uuid
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from time import perf_counter
+
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import connection, transaction
+from django.db.models import Case, Count, Exists, F, IntegerField, Max, Min, OuterRef, Prefetch, Q, When
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from urllib.parse import urlparse
 from pydantic_ai.exceptions import UserError as PydanticAIUserError
-from typing import Optional
-import re
-import uuid
-import logging
-import traceback
-import random
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
-from savr_back.settings import build_s3_client, build_s3_url, build_presigned_get_url
-from .services.ingredient_matcher import get_batch_embeddings
-from .services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryset
-from .services.recipe_search_index import schedule_recipe_search_reindex
-from .services.meal_plan_service import (
-    create_composer_slot,
-    discard_composer_slot,
-    relink_composer_photos_to_meal_plan,
-    update_composer_slot,
-    add_recipes_to_meal_plan,
-    infer_meal_time_from_hour,
-    complete_recipe_batch_workflow,
-    complete_meal_plan_batches_for_publish,
-)
-from .services.repost_service import create_post_repost, delete_post_repost, user_can_repost_post
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from accounts.models import Follow, LoyaltyCard, Notification, PushDevice
+from accounts.permissions import IsValidated as IsAuthenticated
+from savr_back.settings import build_presigned_get_url, build_s3_client
+
 from .models import (
     Category,
-    Recipe,
-    Step,
-    Ingredient,
-    RecipeIngredient,
-    StepIngredient,
-    MealPlan,
-    MealInvitation,
+    Collection,
+    CollectionFollower,
+    CollectionMember,
+    CollectionRecipe,
     CookingProgress,
-    Timer,
+    Ingredient,
+    MealInvitation,
+    MealPlan,
+    MealPlanRecipeBatch,
     Post,
-    PostPhoto,
-    PostCookie,
     PostComment,
+    PostCommentLike,
+    PostCookie,
+    PostPhoto,
     PostReport,
+    PostRepost,
+    Recipe,
+    RecipeBatch,
+    RecipeImportRequest,
+    RecipeIngredient,
     ShoppingList,
-    ShoppingListMember,
     ShoppingListBatch,
-    ShoppingListLoyaltyCard,
+    ShoppingListInvitation,
     ShoppingListItem,
     ShoppingListItemQuantity,
-    ShoppingListInvitation,
-    Collection,
-    CollectionRecipe,
-    CollectionMember,
-    CollectionFollower,
-    RecipeImportRequest,
-    RecipeBatch,
-    MealPlanRecipeBatch,
-    PostCommentLike,
-    PostRepost,
+    ShoppingListLoyaltyCard,
+    ShoppingListMember,
+    Step,
+    StepIngredient,
+    Timer,
 )
-from accounts.models import Follow, Notification, LoyaltyCard, PushDevice
-from django.contrib.auth import get_user_model
+from .services.ingredient_matcher import get_batch_embeddings
+from .services.meal_plan_service import (
+    add_recipes_to_meal_plan,
+    complete_meal_plan_batches_for_publish,
+    complete_recipe_batch_workflow,
+    create_composer_slot,
+    discard_composer_slot,
+    infer_meal_time_from_hour,
+    relink_composer_photos_to_meal_plan,
+    update_composer_slot,
+)
+from .services.recipe_search import fuzzy_recipe_queryset, hybrid_recipe_queryset
+from .services.recipe_search_index import schedule_recipe_search_reindex
+from .services.repost_service import create_post_repost, delete_post_repost, user_can_repost_post
 
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
-from .serializers import (
-    RecipeSerializer,
-    RecipeDetailSerializer,
-    RecipeCreateSerializer,
-    RecipeLightSerializer,
-    StepSerializer,
-    IngredientSerializer,
-    CategorySerializer,
-    MealPlanSerializer,
-    MealPlanDetailSerializer,
-    MealInvitationSerializer,
-    MealInvitationListSerializer,
-    MealPlanListSerializer,
-    MealPlanRangeListSerializer,
-    MealPlanByDateSerializer,
-    MealPlanMinimalListSerializer,
-    CookingProgressSerializer,
-    CookingProgressCreateUpdateSerializer,
-    TimerSerializer,
-    TimerCreateSerializer,
-    PostSerializer,
-    PostCreateUpdateSerializer,
-    PostPhotoSerializer,
-    PostCommentSerializer,
-    PostCommentCreateSerializer,
-    ShoppingListSerializer,
-    ShoppingListItemSerializer,
-    CollectionSerializer,
-    CollectionCreateSerializer,
-    CollectionUpdateSerializer,
-    CollectionRecipeSerializer,
-    CollectionMemberSerializer,
-    RecipeFormalizeSerializer,
-    RecipeGenerateFromIdeaSerializer,
-    RecipeImportRequestSerializer,
-    RecipeImportRequestLightSerializer,
-    RecipeBatchLightSerializer,
-    UserLightSerializer,
-    PostMiamUserSerializer,
-)
 from accounts.serializers import LoyaltyCardSerializer
 from accounts.services.expo_push import send_expo_push_notifications
-from .tasks import process_recipe_import
-from accounts.tasks import send_timer_almost_finished_push, send_meal_time_photo_reminder_push
+from accounts.tasks import send_meal_time_photo_reminder_push, send_timer_almost_finished_push
 from savr_back.celery import app as celery_app
+
+from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
+from .serializers import (
+    CategorySerializer,
+    CollectionCreateSerializer,
+    CollectionRecipeSerializer,
+    CollectionSerializer,
+    CollectionUpdateSerializer,
+    CookingProgressCreateUpdateSerializer,
+    CookingProgressSerializer,
+    IngredientSerializer,
+    MealInvitationListSerializer,
+    MealInvitationSerializer,
+    MealPlanByDateSerializer,
+    MealPlanDetailSerializer,
+    MealPlanListSerializer,
+    MealPlanMinimalListSerializer,
+    MealPlanRangeListSerializer,
+    MealPlanSerializer,
+    PostCommentCreateSerializer,
+    PostCommentSerializer,
+    PostCreateUpdateSerializer,
+    PostMiamUserSerializer,
+    PostPhotoSerializer,
+    PostSerializer,
+    RecipeBatchLightSerializer,
+    RecipeCreateSerializer,
+    RecipeDetailSerializer,
+    RecipeFormalizeSerializer,
+    RecipeGenerateFromIdeaSerializer,
+    RecipeImportRequestLightSerializer,
+    RecipeImportRequestSerializer,
+    RecipeLightSerializer,
+    RecipeSerializer,
+    ShoppingListItemSerializer,
+    ShoppingListSerializer,
+    StepSerializer,
+    TimerCreateSerializer,
+    TimerSerializer,
+    UserLightSerializer,
+)
+from .tasks import process_recipe_import
 from .utils import (
     get_accessible_meal_plan_filter,
     get_accessible_meal_plans_queryset,
     get_invited_recipe_filter,
+    meal_plan_slot_api_fields,
     merge_date_bounds,
     shopping_list_item_quantity_is_stale,
-    meal_plan_slot_api_fields,
 )
-from .dietary_filters import apply_dietary_exclusion, conflict_reasons_by_recipe_id
-
 
 logger = logging.getLogger(__name__)
+User = get_user_model()
 
 
 class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
@@ -777,9 +778,9 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'], url_path='apply-to-dates')
     def apply_to_dates(self, request, pk=None):
         """Appliquer un batch à plusieurs dates en créant les meal plans nécessaires."""
-        from django.db import transaction
-        from decimal import Decimal
         from datetime import datetime
+
+        from django.db import transaction
 
         batch = self.get_object()
 
@@ -1105,8 +1106,9 @@ class RecipeViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         """Log détaillé pour diagnostiquer les lenteurs"""
         if settings.DEBUG:
-            from django.db import reset_queries
             from time import perf_counter
+
+            from django.db import reset_queries
 
             reset_queries()
             t0 = perf_counter()
@@ -1218,7 +1220,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
                         # Insérer les suggestions de batches au début de la liste
                         data = list(batch_suggestions) + list(data)
-                    except (ValueError, TypeError) as e:
+                    except (ValueError, TypeError):
                         # Si la date est invalide, ignorer les meal plans proches
                         pass
 
@@ -1271,10 +1273,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
     def _get_nearby_meal_plans(self, user, target_date, current_slot_key, max_days=4, limit=10):
         """Récupérer les meal plans non cuisinés des jours proches, sauf le créneau courant (slot_key)."""
-        from django.db.models import Prefetch, Q
-        from .models import MealPlanRecipeBatch
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.db.models import Prefetch
+
+        from .models import MealPlanRecipeBatch
 
         # Calculer la plage de dates : 4 jours en arrière et 4 jours en avant
         date_start = target_date - timedelta(days=max_days)
@@ -1615,8 +1618,10 @@ class RecipeViewSet(viewsets.ModelViewSet):
     def revise(self, request, pk=None):
         """Révision IA d'une recette existante (sans persistance)."""
         from asgiref.sync import async_to_sync
-        from accounts.entitlements import user_has_feature, feature_locked_payload
-        from .services.ai_service import revise_recipe, formalized_to_response_dict
+
+        from accounts.entitlements import feature_locked_payload, user_has_feature
+
+        from .services.ai_service import formalized_to_response_dict, revise_recipe
 
         if not user_has_feature(request.user, 'ai'):
             return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
@@ -1642,7 +1647,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             return Response(formalized_to_response_dict(revised))
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
+        except Exception:
             logger = logging.getLogger(__name__)
             logger.exception('revise recipe failed')
             return Response({'error': 'Révision IA impossible.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1764,7 +1769,8 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Endpoint pour formaliser une recette brute avec l'IA et la créer en DB
         """
         import logging
-        from accounts.entitlements import user_has_feature, feature_locked_payload
+
+        from accounts.entitlements import feature_locked_payload, user_has_feature
 
         logger = logging.getLogger(__name__)
 
@@ -1816,9 +1822,6 @@ class RecipeViewSet(viewsets.ModelViewSet):
         except (BrokenPipeError, ConnectionResetError) as e:
             logger.warning('[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s', e)
             return Response({'error': 'Client disconnected during processing.'}, status=status.HTTP_400_BAD_REQUEST)
-        except (BrokenPipeError, ConnectionResetError) as e:
-            logger.warning('[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s', e)
-            return Response({'error': 'Client disconnected during processing.'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.error(f'Erreur lors de la formalisation de la recette: {e}', exc_info=True)
             return Response(
@@ -1842,7 +1845,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         """
         Génère une recette via IA à partir d'une idée libre (asynchrone via Celery).
         """
-        from accounts.entitlements import user_has_feature, feature_locked_payload
+        from accounts.entitlements import feature_locked_payload, user_has_feature
 
         logger = logging.getLogger(__name__)
         if not user_has_feature(request.user, 'ai'):
@@ -1900,7 +1903,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Avant de lancer un nouvel import, on vérifie si une recette importée depuis
         la même URL (normalisée) existe déjà et est accessible pour l'utilisateur.
         """
-        from accounts.entitlements import user_has_feature, feature_locked_payload
+        from accounts.entitlements import feature_locked_payload, user_has_feature
 
         logger = logging.getLogger(__name__)
         if not user_has_feature(request.user, 'ai'):
@@ -2197,7 +2200,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         - Filtrer côté DB avec date__gte/date__lte si fournis
         - Éviter les N+1 queries via select_related/prefetch_related
         """
-        from django.db.models import Case, When, IntegerField
+        from django.db.models import Case, IntegerField, When
 
         # Filtres de date (format YYYY-MM-DD) — appliqués tôt pour accès index-friendly
         date_gte = self.request.query_params.get('date__gte')
@@ -2238,7 +2241,8 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
         # Chargement optimisé des relations utilisées par le serializer
         from django.db.models import Prefetch
-        from .models import MealPlanRecipeBatch, StepIngredient
+
+        from .models import MealPlanRecipeBatch
 
         # Détecter le mode minimal
         is_minimal = self.request.query_params.get('minimal', '').lower() == 'true'
@@ -2380,7 +2384,6 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             days = 7
         days = max(1, min(days, 30))
 
-        now = timezone.localtime(timezone.now())
         today = timezone.localdate()
         start_date = today - timedelta(days=days)
 
@@ -2551,48 +2554,6 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
         return Response(result, status=status.HTTP_200_OK)
 
-    def list(self, request, *args, **kwargs):
-        """
-        Log détaillé des temps pour diagnostiquer lenteurs:
-        - construction/évaluation du queryset
-        - sérialisation
-        """
-        if settings.DEBUG:
-            from django.db import reset_queries
-
-            reset_queries()
-            t0 = perf_counter()
-
-        queryset = self.get_queryset()
-
-        if settings.DEBUG:
-            t_qs_start = perf_counter()
-            # Forcer l'évaluation pour mesurer le temps DB
-            objects = list(queryset)
-            t_qs_end = perf_counter()
-            db_queries = len(connection.queries)
-            db_time_ms = sum(float(q.get('time', 0)) for q in connection.queries) * 1000
-        else:
-            objects = list(queryset)
-
-        # Le calcul de total_servings est maintenant fait dans le serializer
-        # en sommant les servings de chaque recette (groupée ou non)
-        # On n'a plus besoin de pré-calculer ici
-
-        serializer = self.get_serializer(objects, many=True)
-
-        if settings.DEBUG:
-            t_ser_end = perf_counter()
-            total_ms = (t_ser_end - t0) * 1000
-            qs_ms = (t_qs_end - t_qs_start) * 1000 if 't_qs_end' in locals() else 0
-            ser_ms = (t_ser_end - (t_qs_end if 't_qs_end' in locals() else t0)) * 1000
-            print(
-                f'[MealPlanViewSet.list] items={len(objects)} qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} '
-                f'db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}'
-            )
-
-        return Response(serializer.data)
-
     @action(detail=False, methods=['get'], url_path='timeline-bounds')
     def timeline_bounds(self, request):
         """
@@ -2678,7 +2639,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Remplace le Promise.all meal-plans + meal-invitations côté jump / hydrate.
         Params requis: date__gte, date__lte (YYYY-MM-DD).
         """
-        from .serializers import MealPlanTimelineSerializer, MealInvitationTimelineListSerializer
+        from .serializers import MealInvitationTimelineListSerializer, MealPlanTimelineSerializer
 
         date_gte = (request.query_params.get('date__gte') or '').strip()
         date_lte = (request.query_params.get('date__lte') or '').strip()
@@ -2768,7 +2729,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Retourner les batches cuisinés de l'utilisateur (ancien endpoint meal_plans).
         Un batch est "cuisiné" si is_cooked=True
         """
-        from django.core.paginator import Paginator, EmptyPage
+        from django.core.paginator import EmptyPage, Paginator
         from django.db.models import Prefetch, Q
 
         # Filtrer les batches cuisinés de l'utilisateur :
@@ -3026,8 +2987,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             return Response({'error': 'No recipe found for this meal plan'}, status=status.HTTP_404_NOT_FOUND)
 
         # Charger les steps avec leurs step_ingredients depuis la recette
-        from .models import Step, StepIngredient
         from django.db.models import Prefetch
+
+        from .models import Step, StepIngredient
 
         steps = (
             Step.objects.filter(recipe=recipe)
@@ -3057,8 +3019,8 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             return Response({'error': 'No recipe found for this meal plan'}, status=status.HTTP_404_NOT_FOUND)
 
         # Charger les recipe_ingredients
+
         from .models import RecipeIngredient
-        from django.db.models import Prefetch
 
         ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient')
 
@@ -3127,6 +3089,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         self._grouped_dates_by_batch_id = {}
         if batch_ids:
             from collections import defaultdict
+
             from .models import MealPlanRecipeBatch
 
             # Une seule requête pour toutes les dates par batch
@@ -3851,12 +3814,11 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             "ratio": 1.0  # optionnel, défaut 1.0
         }
         """
+
         from django.db import transaction
-        from decimal import Decimal
 
         recipe_id = request.data.get('recipe_id')
         dates = request.data.get('dates', [])
-        ratio = request.data.get('ratio', 1.0)
 
         if not recipe_id:
             return Response({'error': 'recipe_id is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3969,8 +3931,8 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='apply-to-dates')
     def apply_to_dates(self, request, pk=None):
         """Appliquer un meal plan à plusieurs dates (batches)."""
+
         from django.db import transaction
-        from decimal import Decimal
 
         source_meal_plan = self.get_object()
 
@@ -4311,6 +4273,7 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         view_mode = (params.get('view') or '').strip().lower()
         if view_mode == 'timeline':
             from django.db.models import Prefetch
+
             from .models import MealPlanRecipeBatch
 
             mprb_qs = (
@@ -4481,8 +4444,9 @@ class CookingProgressViewSet(viewsets.ModelViewSet):
         if existing_progress:
             # Mettre à jour la progression existante au lieu d'en créer une nouvelle
             # Vérifier si on reprend après une longue pause (plus de 1 heure)
-            from django.utils import timezone
             from datetime import timedelta
+
+            from django.utils import timezone
 
             time_since_start = timezone.now() - existing_progress.started_at
             # Si plus d'1 heure s'est écoulée, réinitialiser le temps de départ
@@ -4549,8 +4513,9 @@ class TimerViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
 
         # Inclure les timers actifs ou expirés depuis moins d'1 heure
         now = timezone.now()
@@ -4564,8 +4529,9 @@ class TimerViewSet(viewsets.ModelViewSet):
         return TimerSerializer
 
     def perform_create(self, serializer):
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
 
         timer = serializer.save(user=self.request.user)
 
@@ -4745,8 +4711,9 @@ class PostViewSet(viewsets.ModelViewSet):
                 profile_user_id = int(user_id)
                 viewer = self.request.user
                 if viewer.is_authenticated and profile_user_id != viewer.id:
-                    from accounts.privacy import can_view_profile_content
                     from django.contrib.auth import get_user_model
+
+                    from accounts.privacy import can_view_profile_content
 
                     profile_user = get_user_model().objects.filter(id=profile_user_id).first()
                     if not profile_user or not can_view_profile_content(viewer, profile_user):
@@ -4993,7 +4960,7 @@ class PostViewSet(viewsets.ModelViewSet):
             bucket_name = settings.AWS_BUCKET
             region = settings.AWS_S3_REGION_NAME
 
-            print(f'🔍 S3 Config check:')
+            print('🔍 S3 Config check:')
             print(f'  - AWS_ACCESS_KEY_ID: {"✅ Set" if aws_access_key else "❌ Missing"}')
             print(f'  - AWS_SECRET_ACCESS_KEY: {"✅ Set" if aws_secret_key else "❌ Missing"}')
             print(f'  - AWS_BUCKET: {bucket_name if bucket_name else "❌ Missing"}')
@@ -5040,7 +5007,7 @@ class PostViewSet(viewsets.ModelViewSet):
                     },
                     ExpiresIn=300,  # 5 minutes
                 )
-                print(f'✅ Presigned URL generated successfully')
+                print('✅ Presigned URL generated successfully')
             except Exception as url_error:
                 print(f'❌ Error generating presigned URL: {url_error}')
                 # Essayer sans ContentType si ça échoue
@@ -5052,7 +5019,7 @@ class PostViewSet(viewsets.ModelViewSet):
                     },
                     ExpiresIn=300,
                 )
-                print(f'✅ Presigned URL generated (without ContentType)')
+                print('✅ Presigned URL generated (without ContentType)')
 
             # Retourner le chemin relatif (image_path) au lieu de l'URL complète
             return Response(
@@ -6381,6 +6348,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         """Inviter des utilisateurs à collaborer sur une liste de courses"""
         from django.contrib.auth import get_user_model
         from django.db import transaction
+
         from accounts.models import Follow, Notification
 
         User = get_user_model()
@@ -6457,6 +6425,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         """Ajouter des membres directement à la liste (sans validation). Ils voient la liste dans leurs listes."""
         from django.contrib.auth import get_user_model
         from django.db import transaction
+
         from accounts.models import Follow, Notification
 
         User = get_user_model()
@@ -6772,7 +6741,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         if not shopping_list_id:
             return Response({'error': 'shopping_list_id required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        from .models import MealPlan, MealPlanRecipeBatch, PostPhoto
+        from .models import MealPlanRecipeBatch, PostPhoto
         from .serializers import RecipeLightSerializer
 
         try:
@@ -7233,7 +7202,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED if item_created else status.HTTP_200_OK,
         )
 
-    def _categorize_ingredient(self, ingredient_name: str, ingredient: Ingredient) -> Optional[Category]:
+    def _categorize_ingredient(self, ingredient_name: str, ingredient: Ingredient) -> Category | None:
         from .services.ingredient_categorization import resolve_category_for_ingredient
 
         return resolve_category_for_ingredient(ingredient_name, ingredient)
@@ -7267,8 +7236,9 @@ class CollectionViewSet(viewsets.ModelViewSet):
             try:
                 owner_id_int = int(owner_id)
                 if owner_id_int != user.id:
-                    from accounts.privacy import can_view_profile_content
                     from django.contrib.auth import get_user_model
+
+                    from accounts.privacy import can_view_profile_content
 
                     owner_user = get_user_model().objects.filter(id=owner_id_int).first()
                     if not owner_user or not can_view_profile_content(user, owner_user):

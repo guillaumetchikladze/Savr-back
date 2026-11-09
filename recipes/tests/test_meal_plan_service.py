@@ -5,7 +5,7 @@ from datetime import date
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from recipes.models import MealPlan, PostPhoto, Recipe, RecipeBatch, MealPlanRecipeBatch
+from recipes.models import MealPlan, MealPlanRecipeBatch, PostPhoto, Recipe, RecipeBatch
 from recipes.services.meal_plan_service import (
     add_recipes_to_meal_plan,
     create_composer_slot,
@@ -67,7 +67,7 @@ class MealPlanServiceTests(TestCase):
 
     def test_propose_meal_deletion_data(self):
         batch = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
-        mprb = MealPlanRecipeBatch.objects.create(meal_plan=self.meal_plan, recipe_batch=batch, order=1)
+        MealPlanRecipeBatch.objects.create(meal_plan=self.meal_plan, recipe_batch=batch, order=1)
         proposal = propose_meal_deletion_data(self.user, self.meal_plan.id, batch.id)
         self.assertEqual(proposal.card_type, 'meal_deletion')
         self.assertEqual(proposal.details['recipe_batch_id'], batch.id)
