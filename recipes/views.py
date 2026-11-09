@@ -10,7 +10,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Case, Count, Exists, F, IntegerField, Max, Min, OuterRef, Prefetch, Q, When
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -49,6 +49,7 @@ from .models import (
     ShoppingListBatch,
     ShoppingListInvitation,
     ShoppingListItem,
+    ShoppingListItemClientRef,
     ShoppingListItemQuantity,
     ShoppingListLoyaltyCard,
     ShoppingListMember,
@@ -93,6 +94,7 @@ PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 from accounts.serializers import LoyaltyCardSerializer
 from accounts.tasks import send_meal_time_photo_reminder_push, send_timer_almost_finished_push
+from core.idempotency import idempotent
 from notifications.services import notify
 from notifications.text import quoted
 from savr_back.celery import app as celery_app
@@ -6111,7 +6113,9 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         recipe_batch_id = self.request.query_params.get('recipe_batch_id')
 
         qs = ShoppingList.objects.filter(members__user=self.request.user).distinct()
-        if include_archived != 'true':
+        # Les listes archivées ne sont masquées que de la liste (`include_archived=true` pour les voir) :
+        # une action de détail (ouvrir, désarchiver…) doit atteindre une liste archivée.
+        if self.action == 'list' and include_archived != 'true':
             qs = qs.filter(is_archived=False)
         if recipe_batch_id:
             try:
@@ -6125,14 +6129,39 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
             Prefetch('batches', queryset=ShoppingListBatch.objects.select_related('recipe_batch__recipe')),
         ).order_by('-updated_at', '-created_at')
 
-    @action(detail=True, methods=['post'])
-    def archive(self, request, pk=None):
-        """Archiver ou désarchiver une liste"""
+    @idempotent
+    def update(self, request, *args, **kwargs):
+        # PUT et PATCH (`partial_update` passe par `update`) : renommer, couleur.
+        return super().update(request, *args, **kwargs)
+
+    def _set_archived(self, request, archived: bool | None):
+        """`archived=None` = bascule historique (app 1.0.9). Pas d'écriture si l'état est déjà le bon."""
         shopping_list = self.get_object()
-        shopping_list.is_archived = not shopping_list.is_archived
-        shopping_list.save()
-        serializer = self.get_serializer(shopping_list)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        target = (not shopping_list.is_archived) if archived is None else archived
+        if shopping_list.is_archived != target:
+            shopping_list.is_archived = target
+            shopping_list.save(update_fields=['is_archived', 'updated_at'])
+        return Response(self.get_serializer(shopping_list).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    @idempotent
+    def archive(self, request, pk=None):
+        """
+        Archiver une liste. Corps `{"is_archived": true}` → archive (idempotent) ; `false` → désarchive.
+        Sans corps : bascule archivée ⇄ active (DÉPRÉCIÉ, gardé pour l'app 1.0.9 ; utiliser `unarchive/`).
+        """
+        raw = request.data.get('is_archived') if hasattr(request.data, 'get') else None
+        if raw is None or raw == '':
+            return self._set_archived(request, None)
+        if isinstance(raw, str):
+            raw = raw.strip().lower() in ('1', 'true', 'yes', 'on')
+        return self._set_archived(request, bool(raw))
+
+    @action(detail=True, methods=['post'])
+    @idempotent
+    def unarchive(self, request, pk=None):
+        """Désarchiver une liste (idempotent)."""
+        return self._set_archived(request, False)
 
     @action(detail=True, methods=['post'])
     def generate_items(self, request, pk=None):
@@ -6988,18 +7017,26 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         return Response(result, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
+    @idempotent
     def check(self, request, pk=None):
-        """Cocher la totalité restante (V1) pour cette ligne."""
+        """
+        Cocher la totalité restante (V1) pour cette ligne. Sémantique « mettre à coché » (jamais une bascule) :
+        une ligne déjà entièrement cochée n'est pas réécrite (le premier qui a coché reste `checked_by`).
+        """
         item = self.get_object()
         with transaction.atomic():
             # total remaining = sum(q.quantity - q.checked_quantity) - pantry
             pantry = Decimal(str(item.pantry_quantity or 0))
-            qs = item.quantities.select_for_update().all()
+            qs = list(item.quantities.select_for_update().all())
             # remaining before pantry
             remaining_total = sum((Decimal(str(q.quantity or 0)) - Decimal(str(q.checked_quantity or 0))) for q in qs)
             remaining_after_pantry = remaining_total - pantry
             if remaining_after_pantry < 0:
                 remaining_after_pantry = Decimal('0')
+            if remaining_after_pantry == 0 and item.checked_at is not None:
+                return Response(
+                    ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK
+                )
 
             # Cocher tout le restant, réparti proportionnellement (simple: cocher chaque q à fond tant qu'il reste)
             to_allocate = remaining_after_pantry
@@ -7025,8 +7062,9 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
+    @idempotent
     def uncheck(self, request, pk=None):
-        """Décocher (restore full) : remet checked_quantity à 0 sur toutes les quantités."""
+        """Décocher (restore full) : remet checked_quantity à 0 sur toutes les quantités (« mettre à décoché ».)"""
         item = self.get_object()
         with transaction.atomic():
             item.quantities.update(checked_quantity=0, checked_at=None, checked_by=None)
@@ -7039,6 +7077,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='set_manual_quantity')
+    @idempotent
     def set_manual_quantity(self, request, pk=None):
         """Définir la quantité manuelle (recipe_batch=None) pour cet item. Crée la ligne si besoin."""
         item = self.get_object()
@@ -7063,6 +7102,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         return Response(ShoppingListItemSerializer(item, context={'request': request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='change_unit')
+    @idempotent
     def change_unit(self, request, pk=None):
         """
         Change l'unité d'affichage d'une ligne de liste.
@@ -7203,10 +7243,38 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             return ShoppingListItemCreateSerializer
         return ShoppingListItemSerializer
 
+    @idempotent
+    def update(self, request, *args, **kwargs):
+        # PUT et PATCH (`partial_update` passe par `update`) : quantité « dans les placards ».
+        return super().update(request, *args, **kwargs)
+
+    @idempotent
+    def destroy(self, request, *args, **kwargs):
+        """
+        Supprimer une ligne. Idempotent : une ligne qui n'existe plus → 204 (déjà supprimée) ;
+        une ligne existante d'une liste dont on n'est pas membre → 404.
+        """
+        try:
+            item_id = int(kwargs.get(self.lookup_url_kwarg or self.lookup_field))
+        except (TypeError, ValueError):
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        item = ShoppingListItem.objects.filter(id=item_id).select_related('shopping_list').first()
+        if item is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        if not ShoppingListMember.objects.filter(shopping_list_id=item.shopping_list_id, user=request.user).exists():
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        shopping_list = item.shopping_list
+        item.delete()
+        shopping_list.save(update_fields=['updated_at'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @idempotent
     def create(self, request, *args, **kwargs):
         """
         Créer un item de liste de courses manuellement.
         Crée l'ingrédient s'il n'existe pas et détermine la catégorie automatiquement.
+        `client_id` optionnel (unique par liste) : un ajout rejoué renvoie la ligne existante (200) sans
+        ré-additionner la quantité.
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -7216,6 +7284,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         quantity = serializer.validated_data.get('quantity', 1.0)
         unit = serializer.validated_data.get('unit', 'piece')
         category_id = serializer.validated_data.get('category_id')
+        client_id = (serializer.validated_data.get('client_id') or '').strip()
 
         # Vérifier que l'utilisateur a accès à la liste
         try:
@@ -7224,6 +7293,26 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Shopping list not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
 
         with transaction.atomic():
+            client_ref = None
+            if client_id:
+                # Réserver le client_id d'abord : un doublon concurrent attend puis lit la ligne existante.
+                try:
+                    with transaction.atomic():
+                        client_ref = ShoppingListItemClientRef.objects.create(
+                            shopping_list=shopping_list, client_id=client_id
+                        )
+                except IntegrityError:
+                    existing = (
+                        ShoppingListItemClientRef.objects.filter(shopping_list=shopping_list, client_id=client_id)
+                        .select_related('item')
+                        .first()
+                    )
+                    if existing is not None and existing.item is not None:
+                        return Response(
+                            ShoppingListItemSerializer(existing.item, context={'request': request}).data,
+                            status=status.HTTP_200_OK,
+                        )
+
             # Récupérer ou créer l'ingrédient
             from .services.ingredient_matcher import get_or_create_ingredient
 
@@ -7273,6 +7362,10 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             if not qty_created:
                 quantity_obj.quantity = Decimal(str(quantity_obj.quantity)) + Decimal(str(canonical_qty))
                 quantity_obj.save(update_fields=['quantity', 'updated_at'])
+
+            if client_ref is not None:
+                client_ref.item = item
+                client_ref.save(update_fields=['item'])
 
             # Touch la liste pour que updated_at reflète bien la dernière modification
             shopping_list.updated_at = timezone.now()

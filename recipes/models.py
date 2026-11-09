@@ -1380,6 +1380,29 @@ class ShoppingListItem(models.Model):
         return f'{self.shopping_list} - {self.ingredient.name} ({self.unit_group})'
 
 
+class ShoppingListItemClientRef(models.Model):
+    """
+    `client_id` (généré par le front) d'un ajout d'article : un ajout rejoué renvoie la ligne existante
+    au lieu de ré-additionner la quantité. Table séparée car plusieurs ajouts fusionnent dans une même ligne.
+    `item` est nul seulement pendant l'ajout (réservation de l'id avant l'écriture).
+    """
+
+    shopping_list = models.ForeignKey(ShoppingList, on_delete=models.CASCADE, related_name='client_refs')
+    client_id = models.CharField(max_length=64)
+    item = models.ForeignKey(
+        ShoppingListItem, null=True, blank=True, on_delete=models.CASCADE, related_name='client_refs'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['shopping_list', 'client_id'], name='shoplist_client_id_uniq'),
+        ]
+
+    def __str__(self):
+        return f'{self.shopping_list_id} [{self.client_id}] → {self.item_id}'
+
+
 class ShoppingListItemQuantity(models.Model):
     """Quantité nécessaire (et cochée) pour un ingrédient, par batch. recipe_batch=None = ajout manuel."""
 

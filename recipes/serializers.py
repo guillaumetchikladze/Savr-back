@@ -3140,6 +3140,13 @@ class ShoppingListItemCreateSerializer(serializers.Serializer):
         allow_null=True,
         help_text='ID de catégorie (optionnel, sera déterminé automatiquement si non fourni)',
     )
+    client_id = serializers.CharField(
+        max_length=64,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Id généré par le client, unique par liste : un ajout rejoué renvoie l'article existant",
+    )
 
     def validate_unit(self, value):
         """Valider que l'unité est valide"""
