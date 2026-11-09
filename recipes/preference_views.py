@@ -208,4 +208,3 @@ def preference_mapping_validate(request):
     m.status = 'validated'
     m.save(update_fields=['status', 'updated_at'])
     return Response({'id': m.id, 'status': m.status})
-

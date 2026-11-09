@@ -31,13 +31,13 @@ def _gemini_model_name() -> str:
 def _format_prompt(recipe) -> str:
     ingredient_names = [ri.ingredient.name for ri in recipe.recipe_ingredients.all()]
     lines = [
-        f"Titre: {recipe.title}",
-        f"Description: {recipe.description or ''}",
-        f"Résumé: {recipe.steps_summary or ''}",
-        f"Type repas: {recipe.meal_type}",
-        f"Difficulté: {recipe.difficulty}",
-        f"Temps prép/cuisson: {recipe.prep_time}/{recipe.cook_time} min",
-        f"Ingrédients: {', '.join(ingredient_names)}",
+        f'Titre: {recipe.title}',
+        f'Description: {recipe.description or ""}',
+        f'Résumé: {recipe.steps_summary or ""}',
+        f'Type repas: {recipe.meal_type}',
+        f'Difficulté: {recipe.difficulty}',
+        f'Temps prép/cuisson: {recipe.prep_time}/{recipe.cook_time} min',
+        f'Ingrédients: {", ".join(ingredient_names)}',
     ]
     return '\n'.join(lines)
 

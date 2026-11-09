@@ -32,9 +32,7 @@ class MessageListView(generics.ListAPIView):
 
     def get_queryset(self):
         conversation_id = self.kwargs['conversation_id']
-        conv = Conversation.objects.filter(
-            id=conversation_id, user=self.request.user
-        ).first()
+        conv = Conversation.objects.filter(id=conversation_id, user=self.request.user).first()
         if not conv:
             return Message.objects.none()
         return Message.objects.filter(conversation=conv).order_by('created_at')
@@ -48,7 +46,7 @@ class MessageListView(generics.ListAPIView):
         page_size = min(int(request.query_params.get('page_size', 50)), 100)
         offset = max(int(request.query_params.get('offset', 0)), 0)
         total = queryset.count()
-        items = queryset[offset:offset + page_size]
+        items = queryset[offset : offset + page_size]
         feedback_map = {
             fb.message_id: fb
             for fb in MessageFeedback.objects.filter(
@@ -61,12 +59,14 @@ class MessageListView(generics.ListAPIView):
             many=True,
             context={**self.get_serializer_context(), 'user_feedback_map': feedback_map},
         )
-        return Response({
-            'count': total,
-            'offset': offset,
-            'page_size': page_size,
-            'results': serializer.data,
-        })
+        return Response(
+            {
+                'count': total,
+                'offset': offset,
+                'page_size': page_size,
+                'results': serializer.data,
+            }
+        )
 
 
 class MessageFeedbackView(APIView):
@@ -101,8 +101,10 @@ class MessageFeedbackView(APIView):
             user=request.user,
             defaults={'rating': rating},
         )
-        return Response({
-            'rating': feedback.rating,
-            'created_at': feedback.created_at.isoformat(),
-            'updated_at': feedback.updated_at.isoformat(),
-        })
+        return Response(
+            {
+                'rating': feedback.rating,
+                'created_at': feedback.created_at.isoformat(),
+                'updated_at': feedback.updated_at.isoformat(),
+            }
+        )

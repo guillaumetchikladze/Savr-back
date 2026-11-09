@@ -17,16 +17,16 @@ def _get_fernet() -> Fernet:
         print(Fernet.generate_key().decode())
     """
     # 1) Essayer dans les variables d'environnement classiques
-    raw_key = os.environ.get("LOYALTY_CARD_SECRET_KEY")
+    raw_key = os.environ.get('LOYALTY_CARD_SECRET_KEY')
     # 2) Sinon, utiliser python-decouple qui lit le fichier .env
     if not raw_key:
-        raw_key = decouple_config("LOYALTY_CARD_SECRET_KEY", default=None)
+        raw_key = decouple_config('LOYALTY_CARD_SECRET_KEY', default=None)
     if not raw_key:
-        raise RuntimeError("LOYALTY_CARD_SECRET_KEY is not configured")
+        raise RuntimeError('LOYALTY_CARD_SECRET_KEY is not configured')
 
     # Accepter soit une clé déjà encodée base64 (clé Fernet standard),
     # soit une chaîne brute qu'on convertit en bytes et qu'on re-base64 si besoin.
-    key_bytes = str(raw_key).encode("utf-8")
+    key_bytes = str(raw_key).encode('utf-8')
     try:
         # Si c'est déjà une clé Fernet valide, ceci ne lève pas d'erreur
         base64.urlsafe_b64decode(key_bytes)
@@ -49,14 +49,14 @@ def encrypt_card_number(plain: str) -> Tuple[str, str]:
     - `last4` contient les 4 derniers caractères pour l'affichage (non sensible)
     """
     if plain is None:
-        raise ValueError("Card number cannot be None")
+        raise ValueError('Card number cannot be None')
 
     plain_str = str(plain).strip()
     if not plain_str:
-        raise ValueError("Card number cannot be empty")
+        raise ValueError('Card number cannot be empty')
 
     f = _get_fernet()
-    token = f.encrypt(plain_str.encode("utf-8")).decode("utf-8")
+    token = f.encrypt(plain_str.encode('utf-8')).decode('utf-8')
     last4 = plain_str[-4:] if len(plain_str) >= 4 else plain_str
     return token, last4
 
@@ -68,13 +68,12 @@ def decrypt_card_number(ciphertext: str) -> str:
     Lève InvalidToken si la clé a changé ou si les données sont corrompues.
     """
     if not ciphertext:
-        raise ValueError("Ciphertext is empty")
+        raise ValueError('Ciphertext is empty')
 
     f = _get_fernet()
     try:
-        value = f.decrypt(ciphertext.encode("utf-8"))
+        value = f.decrypt(ciphertext.encode('utf-8'))
     except InvalidToken as exc:
         # Ne jamais logger la valeur chiffrée ni la valeur potentielle en clair.
-        raise InvalidToken("Unable to decrypt loyalty card number") from exc
-    return value.decode("utf-8")
-
+        raise InvalidToken('Unable to decrypt loyalty card number') from exc
+    return value.decode('utf-8')

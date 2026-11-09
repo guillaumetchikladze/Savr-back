@@ -13,11 +13,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_message_preview']
 
     def get_last_message_preview(self, obj):
-        msg = (
-            Message.objects.filter(conversation=obj)
-            .order_by('-created_at')
-            .first()
-        )
+        msg = Message.objects.filter(conversation=obj).order_by('-created_at').first()
         if not msg:
             return ''
         if msg.role == Message.ROLE_USER:
@@ -67,10 +63,7 @@ class MessageSerializer(serializers.ModelSerializer):
     def get_pending_action(self, obj):
         if obj.message_type != Message.TYPE_MUTATION_PROPOSAL:
             return None
-        action = (
-            PendingAction.objects.filter(message=obj, status=PendingAction.STATUS_PENDING)
-            .first()
-        )
+        action = PendingAction.objects.filter(message=obj, status=PendingAction.STATUS_PENDING).first()
         if not action:
             return None
         action.mark_expired_if_needed()

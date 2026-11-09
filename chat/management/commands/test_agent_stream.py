@@ -63,7 +63,7 @@ class Command(BaseCommand):
             t0 = time.perf_counter()
             result = Runner.run_streamed(
                 agent,
-                input=[{'role': 'user', 'content': f'[stream {idx}] Combien d\'utilisateurs ? Utilise le tool.'}],
+                input=[{'role': 'user', 'content': f"[stream {idx}] Combien d'utilisateurs ? Utilise le tool."}],
                 context=ctx,
             )
             deltas = []
@@ -84,11 +84,7 @@ class Command(BaseCommand):
                 self.stderr.write(self.style.ERROR(f'FAILED: {r}'))
             else:
                 idx, deltas, elapsed = r
-                self.stdout.write(
-                    self.style.SUCCESS(f'Stream {idx}: {deltas} deltas in {elapsed:.2f}s')
-                )
+                self.stdout.write(self.style.SUCCESS(f'Stream {idx}: {deltas} deltas in {elapsed:.2f}s'))
 
         agent = create_planning_agent()
-        self.stdout.write(self.style.SUCCESS(
-            f'Planning agent OK — {len(agent.tools)} tools registered'
-        ))
+        self.stdout.write(self.style.SUCCESS(f'Planning agent OK — {len(agent.tools)} tools registered'))

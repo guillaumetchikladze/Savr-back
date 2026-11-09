@@ -83,19 +83,16 @@ EMBEDDING_API_URL = config('EMBEDDING_API_URL', default='http://localhost:8001')
 
 # Faire une requête
 response = requests.post(
-    f"{EMBEDDING_API_URL}/embed",
-    headers={"X-API-Key": EMBEDDING_API_SECRET},
-    json={
-        "text": "Votre texte à transformer",
-        "normalize": True
-    }
+    f'{EMBEDDING_API_URL}/embed',
+    headers={'X-API-Key': EMBEDDING_API_SECRET},
+    json={'text': 'Votre texte à transformer', 'normalize': True},
 )
 
 if response.status_code == 200:
-    embedding = response.json()["embedding"]
-    print(f"Embedding généré: {len(embedding)} dimensions")
+    embedding = response.json()['embedding']
+    print(f'Embedding généré: {len(embedding)} dimensions')
 else:
-    print(f"Erreur: {response.status_code} - {response.text}")
+    print(f'Erreur: {response.status_code} - {response.text}')
 ```
 
 ## 📋 Checklist

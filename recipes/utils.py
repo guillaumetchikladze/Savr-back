@@ -12,6 +12,7 @@ def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
     """
     if group_meal_plans and len(group_meal_plans) > 1:
         from .models import MealPlan
+
         total_guest_count = sum(mp.guest_count or 0 for mp in group_meal_plans)
         all_participants = []
         for mp in group_meal_plans:
@@ -21,15 +22,23 @@ def get_meal_plan_people_count(meal_plan, group_meal_plans=None):
         active_participants_by_user = {}
         for p in all_participants:
             if p.get('status') in ['accepted', 'pending']:
-                user_id = p['user'].id if hasattr(p['user'], 'id') else p['user']['id'] if isinstance(p['user'], dict) else None
+                user_id = (
+                    p['user'].id
+                    if hasattr(p['user'], 'id')
+                    else p['user']['id']
+                    if isinstance(p['user'], dict)
+                    else None
+                )
                 if user_id:
                     existing = active_participants_by_user.get(user_id)
                     if not existing or (p.get('status') == 'accepted' and existing != 'accepted'):
                         active_participants_by_user[user_id] = p.get('status')
         return len(group_meal_plans) + len(active_participants_by_user) + total_guest_count
-    participants_count = meal_plan.invitations.filter(
-        status__in=['accepted', 'pending']
-    ).count() if hasattr(meal_plan, 'invitations') else 0
+    participants_count = (
+        meal_plan.invitations.filter(status__in=['accepted', 'pending']).count()
+        if hasattr(meal_plan, 'invitations')
+        else 0
+    )
     guest_count = meal_plan.guest_count or 0
     return 1 + participants_count + guest_count
 
@@ -84,9 +93,7 @@ def get_accessible_meal_plans_queryset(user, date_gte=None, date_lte=None):
     if date_lte:
         invited_qs = invited_qs.filter(meal_plan__date__lte=date_lte)
 
-    qs = MealPlan.objects.filter(
-        Q(user=user) | Q(id__in=invited_qs.values('meal_plan_id'))
-    )
+    qs = MealPlan.objects.filter(Q(user=user) | Q(id__in=invited_qs.values('meal_plan_id')))
     if date_gte:
         qs = qs.filter(date__gte=date_gte)
     if date_lte:
@@ -155,7 +162,7 @@ def canonicalize_import_url(url: str) -> str:
         if len(segments) >= 2:
             # Unifier toutes les variantes (/reel/, /p/, /tv/, ...) vers /p/{id}
             slug = segments[1]
-            path = f"/p/{slug}"
+            path = f'/p/{slug}'
 
     # Supprimer le slash final sauf pour '/'
     if path != '/' and path.endswith('/'):
@@ -224,4 +231,3 @@ def meal_plan_slot_api_fields(meal_plan):
         'custom_label': custom or None,
         'meal_time_display': display,
     }
-

@@ -107,7 +107,7 @@ def normalize_model_for_gemini_openai_compat(raw: str) -> str:
     """
     name = sanitize_model_string(raw).strip().strip('\'"')
     if name.startswith('models/'):
-        name = name[len('models/'):]
+        name = name[len('models/') :]
     return name
 
 

@@ -1,4 +1,5 @@
 """Logique métier des demandes de suivi et relations d'ami."""
+
 from __future__ import annotations
 
 import random
@@ -100,12 +101,12 @@ def _create_notification(
 
 def _notify_follow_request(requester: User, target: User):
     titles = [
-        'Nouvelle demande d\'ami',
-        'Quelqu\'un veut te rejoindre',
+        "Nouvelle demande d'ami",
+        "Quelqu'un veut te rejoindre",
     ]
     messages = [
         f'{requester.username} souhaite devenir ton ami.',
-        f'{requester.username} t\'a envoyé une demande d\'ami.',
+        f"{requester.username} t'a envoyé une demande d'ami.",
     ]
     _create_notification(
         user=target,
@@ -123,7 +124,7 @@ def _notify_new_follower(follower: User, following: User):
         'Tu as gagné un nouvel ami',
     ]
     messages = [
-        f'{follower.username} t\'a ajouté comme ami.',
+        f"{follower.username} t'a ajouté comme ami.",
         f'{follower.username} a commencé à te suivre.',
     ]
     _create_notification(
@@ -139,10 +140,10 @@ def _notify_new_follower(follower: User, following: User):
 def _notify_request_accepted(accepter: User, requester: User):
     titles = [
         'Demande acceptée',
-        'C\'est validé',
+        "C'est validé",
     ]
     messages = [
-        f'{accepter.username} a accepté ta demande d\'ami.',
+        f"{accepter.username} a accepté ta demande d'ami.",
         f'{accepter.username} et toi êtes maintenant connectés.',
     ]
     _create_notification(
@@ -172,9 +173,7 @@ def _resolve_pending_request(requester: User, target: User, *, new_status: str):
 
 def _clear_follow_requests(user_a: User, user_b: User):
     """Supprime les demandes entre deux utilisateurs (plus de pending fantôme)."""
-    FollowRequest.objects.filter(
-        Q(requester=user_a, target=user_b) | Q(requester=user_b, target=user_a)
-    ).delete()
+    FollowRequest.objects.filter(Q(requester=user_a, target=user_b) | Q(requester=user_b, target=user_a)).delete()
 
 
 def _accept_request(request: FollowRequest, *, notify_requester: bool = True) -> Follow:
@@ -190,12 +189,8 @@ def _establish_mutual(requester: User, target: User, incoming_request: Optional[
     """Accepte la demande entrante et crée le suivi retour sans nouvelle validation."""
     if incoming_request:
         _accept_request(incoming_request, notify_requester=True)
-    elif FollowRequest.objects.filter(
-        requester=target, target=requester, status='pending'
-    ).exists():
-        req = FollowRequest.objects.select_for_update().get(
-            requester=target, target=requester, status='pending'
-        )
+    elif FollowRequest.objects.filter(requester=target, target=requester, status='pending').exists():
+        req = FollowRequest.objects.select_for_update().get(requester=target, target=requester, status='pending')
         _accept_request(req, notify_requester=True)
 
     _create_follow(requester, target, notify=False)
@@ -240,9 +235,7 @@ def request_follow(requester: User, target: User) -> dict:
         }
 
     incoming = (
-        FollowRequest.objects.select_for_update()
-        .filter(requester=target, target=requester, status='pending')
-        .first()
+        FollowRequest.objects.select_for_update().filter(requester=target, target=requester, status='pending').first()
     )
     if incoming:
         _establish_mutual(requester, target, incoming)

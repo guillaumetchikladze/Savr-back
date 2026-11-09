@@ -5,18 +5,21 @@ from django.conf import settings
 
 class User(AbstractUser):
     """Custom User model"""
+
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True)
     avatar_url = models.URLField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     # Gamification fields
     level = models.IntegerField(default=1)
     experience_points = models.IntegerField(default=0)
-    
+
     # Shopping list preferences
-    default_shopping_list_days = models.IntegerField(default=7, help_text="Nombre de jours par défaut pour la liste de courses")
+    default_shopping_list_days = models.IntegerField(
+        default=7, help_text='Nombre de jours par défaut pour la liste de courses'
+    )
 
     # Préférences alimentaires (listes de libellés, ex. tags)
     food_dislikes = models.JSONField(default=list, blank=True)
@@ -26,7 +29,7 @@ class User(AbstractUser):
     regimes = models.JSONField(default=list, blank=True)
     is_vegetarian = models.BooleanField(
         default=False,
-        help_text="Régime végétarien (repérage viande/poisson côté recettes, en complément des listes).",
+        help_text='Régime végétarien (repérage viande/poisson côté recettes, en complément des listes).',
     )
     onboarding_completed = models.BooleanField(default=False)
 
@@ -52,15 +55,12 @@ class User(AbstractUser):
 
     # Favorite recipes
     favorite_recipes = models.ManyToManyField(
-        'recipes.Recipe',
-        related_name='favorited_by',
-        blank=True,
-        help_text="Recettes favorites de l'utilisateur"
+        'recipes.Recipe', related_name='favorited_by', blank=True, help_text="Recettes favorites de l'utilisateur"
     )
-    
+
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
-    
+
     def __str__(self):
         return self.email
 
@@ -77,12 +77,12 @@ class User(AbstractUser):
                 return True
             return self.plan == self.PLAN_PREMIUM
         return False
-    
+
     @property
     def followers_count(self):
         """Nombre d'amis (followers)"""
         return self.followers.count()
-    
+
     @property
     def following_count(self):
         """Nombre d'utilisateurs suivis"""
@@ -151,64 +151,47 @@ class FollowRequest(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.requester.username} → {self.target.username} ({self.status})"
+        return f'{self.requester.username} → {self.target.username} ({self.status})'
 
 
 class Follow(models.Model):
     """Relation de suivi entre utilisateurs (devenir ami)"""
-    follower = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='following',
-        verbose_name='Ami'
-    )
-    following = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='followers',
-        verbose_name='Suivi'
-    )
+
+    follower = models.ForeignKey(User, on_delete=models.CASCADE, related_name='following', verbose_name='Ami')
+    following = models.ForeignKey(User, on_delete=models.CASCADE, related_name='followers', verbose_name='Suivi')
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         unique_together = ['follower', 'following']
         ordering = ['-created_at']
-        verbose_name = 'Relation d\'ami'
-        verbose_name_plural = 'Relations d\'amis'
-    
+        verbose_name = "Relation d'ami"
+        verbose_name_plural = "Relations d'amis"
+
     def __str__(self):
-        return f"{self.follower.username} suit {self.following.username}"
+        return f'{self.follower.username} suit {self.following.username}'
 
 
 class Notification(models.Model):
     """Notifications pour les utilisateurs"""
+
     NOTIFICATION_TYPES = [
         ('follow', 'Nouvel ami'),
-        ('follow_request', 'Demande d\'ami'),
+        ('follow_request', "Demande d'ami"),
         ('recipe_reminder', 'Rappel de recette'),
         ('recipe_shared', 'Recette partagée'),
         ('achievement', 'Nouveau succès'),
         ('meal_invitation', 'Invitation à un repas'),
         ('photo_during_cooking', 'Photo pendant la cuisine'),
         ('photo_after_cooking', 'Photo après la cuisine'),
-        ('photo_at_meal_time', 'Photo à l\'heure du repas'),
+        ('photo_at_meal_time', "Photo à l'heure du repas"),
         ('post_miam', 'Miam sur votre post'),
         ('post_comment', 'Commentaire sur votre post'),
         ('post_comment_mention', 'Vous êtes mentionné dans un commentaire'),
         ('post_repost', 'Repost de votre post'),
     ]
-    
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='notifications',
-        verbose_name='Utilisateur'
-    )
-    notification_type = models.CharField(
-        max_length=50,
-        choices=NOTIFICATION_TYPES,
-        verbose_name='Type de notification'
-    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', verbose_name='Utilisateur')
+    notification_type = models.CharField(max_length=50, choices=NOTIFICATION_TYPES, verbose_name='Type de notification')
     title = models.CharField(max_length=200, verbose_name='Titre')
     message = models.TextField(verbose_name='Message')
     related_user = models.ForeignKey(
@@ -217,12 +200,12 @@ class Notification(models.Model):
         related_name='sent_notifications',
         blank=True,
         null=True,
-        verbose_name='Utilisateur lié'
+        verbose_name='Utilisateur lié',
     )
     is_read = models.BooleanField(default=False, verbose_name='Lu')
     related_post_id = models.IntegerField(null=True, blank=True, verbose_name='ID du post lié')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Créé le')
-    
+
     class Meta:
         ordering = ['-created_at']
         verbose_name = 'Notification'
@@ -231,13 +214,14 @@ class Notification(models.Model):
             models.Index(fields=['user', 'created_at'], name='notif_user_created_at_idx'),
             models.Index(fields=['user', 'is_read'], name='notif_user_is_read_idx'),
         ]
-    
+
     def __str__(self):
-        return f"{self.title} - {self.user.username}"
+        return f'{self.title} - {self.user.username}'
 
 
 class PushDevice(models.Model):
     """Appareil capable de recevoir des notifications push Expo."""
+
     PLATFORM_CHOICES = [
         ('android', 'Android'),
         ('ios', 'iOS'),
@@ -262,7 +246,7 @@ class PushDevice(models.Model):
         verbose_name_plural = 'Appareils push'
 
     def __str__(self):
-        return f"{self.user.email} - {self.platform} - {self.expo_push_token}"
+        return f'{self.user.email} - {self.platform} - {self.expo_push_token}'
 
 
 class UserBlock(models.Model):
@@ -293,7 +277,7 @@ class UserBlock(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.blocker.username} bloque {self.blocked.username}"
+        return f'{self.blocker.username} bloque {self.blocked.username}'
 
 
 class LoyaltyCard(models.Model):
@@ -316,7 +300,7 @@ class LoyaltyCard(models.Model):
         max_length=16,
         blank=True,
         verbose_name='Emoji',
-        help_text="Petit emoji pour identifier la carte dans l’UI",
+        help_text='Petit emoji pour identifier la carte dans l’UI',
     )
     barcode_type = models.CharField(
         max_length=32,
@@ -326,13 +310,13 @@ class LoyaltyCard(models.Model):
     )
     encrypted_number = models.TextField(
         verbose_name='Numéro chiffré',
-        help_text="Numéro de carte chiffré avec une clé serveur (non lisible en base).",
+        help_text='Numéro de carte chiffré avec une clé serveur (non lisible en base).',
     )
     number_last4 = models.CharField(
         max_length=8,
         blank=True,
         verbose_name='4 derniers chiffres',
-        help_text="4 derniers chiffres pour affichage (non sensible).",
+        help_text='4 derniers chiffres pour affichage (non sensible).',
     )
     is_active = models.BooleanField(default=True, verbose_name='Active')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -347,6 +331,5 @@ class LoyaltyCard(models.Model):
         ]
 
     def __str__(self):
-        suffix = f" • ••••{self.number_last4}" if self.number_last4 else ""
-        return f"{self.name}{suffix} ({self.owner.email})"
-
+        suffix = f' • ••••{self.number_last4}' if self.number_last4 else ''
+        return f'{self.name}{suffix} ({self.owner.email})'

@@ -51,10 +51,9 @@ def get_support_email() -> str:
 
 
 def get_web_checkout_base_url() -> str:
-    return (
-        (getattr(settings, 'BILLING_WEB_CHECKOUT_BASE_URL', '') or '').strip().rstrip('/')
-        or 'https://tchikook.fr/licence'
-    )
+    return (getattr(settings, 'BILLING_WEB_CHECKOUT_BASE_URL', '') or '').strip().rstrip(
+        '/'
+    ) or 'https://tchikook.fr/licence'
 
 
 def get_license_offer() -> dict:

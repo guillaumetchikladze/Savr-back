@@ -60,6 +60,7 @@ ALLOWED_HOSTS = ['*']
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
+
 def _build_csrf_trusted_origins():
     """Origines autorisées pour POST admin / formulaires (scheme obligatoire)."""
     raw = config('CSRF_TRUSTED_ORIGINS', default='').strip()
@@ -102,9 +103,7 @@ if not DEBUG:
 # Distance cosinus pgvector : 0 = identique, 2 = opposé. Plus la valeur est basse, plus c’est strict.
 DIETARY_SEMANTIC_MATCHING = config('DIETARY_SEMANTIC_MATCHING', default=True, cast=bool)
 DIETARY_SEMANTIC_MAX_DISTANCE = config('DIETARY_SEMANTIC_MAX_DISTANCE', default=0.42, cast=float)
-DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL = config(
-    'DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', default=120, cast=int
-)
+DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL = config('DIETARY_SEMANTIC_MAX_INGREDIENTS_PER_LABEL', default=120, cast=int)
 
 # Recherche recettes sémantique (nomic 512d + hybride pg_trgm/pgvector)
 EMBEDDING_DIMENSION = config('EMBEDDING_DIMENSION', default=512, cast=int)
@@ -264,18 +263,14 @@ BILLING_LICENSE_PRICE_LABEL = config('BILLING_LICENSE_PRICE_LABEL', default='39,
 
 # REST Framework settings
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ),
+    'DEFAULT_AUTHENTICATION_CLASSES': ('rest_framework_simplejwt.authentication.JWTAuthentication',),
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
     'DEFAULT_PAGINATION_CLASS': 'recipes.pagination.CustomPageNumberPagination',
     'PAGE_SIZE': 20,
     # Éviter le coût du Browsable API par défaut
-    'DEFAULT_RENDERER_CLASSES': (
-        'rest_framework.renderers.JSONRenderer',
-    ),
+    'DEFAULT_RENDERER_CLASSES': ('rest_framework.renderers.JSONRenderer',),
 }
 
 # JWT Settings
@@ -295,10 +290,10 @@ if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
     CORS_ALLOWED_ORIGINS = [
-        "http://localhost:19006",
-        "http://127.0.0.1:19006",
-        "http://localhost:8081",
-        "http://127.0.0.1:8081",
+        'http://localhost:19006',
+        'http://127.0.0.1:19006',
+        'http://localhost:8081',
+        'http://127.0.0.1:8081',
     ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -364,12 +359,12 @@ MEAL_TIME_PHOTO_REMINDER_DELAY_SECONDS = config(
 
 CELERY_TASK_QUEUES = (
     # default
-    __import__("kombu").Queue("savr_default", routing_key="savr.default"),
+    __import__('kombu').Queue('savr_default', routing_key='savr.default'),
     # emails
-    __import__("kombu").Queue("emails_urgent", routing_key="emails.urgent"),
-    __import__("kombu").Queue("emails_high", routing_key="emails.high"),
-    __import__("kombu").Queue("emails_normal", routing_key="emails.normal"),
-    __import__("kombu").Queue("emails_low", routing_key="emails.low"),
+    __import__('kombu').Queue('emails_urgent', routing_key='emails.urgent'),
+    __import__('kombu').Queue('emails_high', routing_key='emails.high'),
+    __import__('kombu').Queue('emails_normal', routing_key='emails.normal'),
+    __import__('kombu').Queue('emails_low', routing_key='emails.low'),
 )
 
 # Microsoft Graph (app-only)
@@ -402,34 +397,34 @@ CHANNEL_LAYERS = {
 def build_s3_url(image_path):
     """
     Construire l'URL complète d'une image à partir de son chemin relatif dans S3.
-    
+
     Args:
         image_path: Chemin relatif (ex: 'meal_plans/70/6096a520a71247229f1cae315fc2bd84.jpg')
-    
+
     Returns:
         URL complète de l'image
     """
     if not image_path:
         return None
-    
+
     # Nettoyer le chemin (enlever le préfixe s3:/ si présent)
     clean_path = image_path.replace('s3:/', '').lstrip('/')
-    
+
     if AWS_ENDPOINT and AWS_USE_PATH_STYLE_ENDPOINT:
         # Format path-style: http://localhost:9000/bucket/key
         protocol = 'https' if AWS_ENDPOINT.startswith('https://') else 'http'
         endpoint_host = AWS_ENDPOINT.replace('http://', '').replace('https://', '')
-        return f"{protocol}://{endpoint_host}/{AWS_BUCKET}/{clean_path}"
+        return f'{protocol}://{endpoint_host}/{AWS_BUCKET}/{clean_path}'
     elif AWS_ENDPOINT:
         # Format virtual-hosted avec endpoint personnalisé
-        return f"{AWS_ENDPOINT}/{AWS_BUCKET}/{clean_path}"
+        return f'{AWS_ENDPOINT}/{AWS_BUCKET}/{clean_path}'
     elif AWS_S3_CUSTOM_DOMAIN:
         # Format avec custom domain
         protocol = 'https' if not AWS_ENDPOINT or AWS_ENDPOINT.startswith('https://') else 'http'
-        return f"{protocol}://{AWS_S3_CUSTOM_DOMAIN}/{clean_path}"
+        return f'{protocol}://{AWS_S3_CUSTOM_DOMAIN}/{clean_path}'
     else:
         # Format AWS standard
-        return f"https://{AWS_BUCKET}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/{clean_path}"
+        return f'https://{AWS_BUCKET}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/{clean_path}'
 
 
 _S3_CLIENT = None
@@ -468,6 +463,7 @@ def build_presigned_get_url(image_path, expires_in=3600):
         return build_s3_url(clean_path)
 
     import time
+
     cache_key = (clean_path, expires_in)
     now = time.time()
     cached = _PRESIGNED_URL_CACHE.get(cache_key)
@@ -486,4 +482,3 @@ def build_presigned_get_url(image_path, expires_in=3600):
         return url
     except Exception:
         return build_s3_url(clean_path)
-

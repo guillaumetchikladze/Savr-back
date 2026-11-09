@@ -15,7 +15,10 @@ from .services.image_uploader import download_and_upload_image
 
 logger = logging.getLogger(__name__)
 
-def _update_import_progress(import_request: RecipeImportRequest, step: str, percent: int, *, used_source: str | None = None):
+
+def _update_import_progress(
+    import_request: RecipeImportRequest, step: str, percent: int, *, used_source: str | None = None
+):
     payload = import_request.payload or {}
     payload['import_progress'] = {
         'step': step,
@@ -32,14 +35,14 @@ def process_recipe_import(self, request_id: str):
     try:
         import_request = RecipeImportRequest.objects.select_related('user').get(id=request_id)
     except RecipeImportRequest.DoesNotExist:
-        logger.error("[RecipeImportTask] Request %s not found", request_id)
+        logger.error('[RecipeImportTask] Request %s not found', request_id)
         return
 
     if import_request.status not in [RecipeImportRequest.STATUS_PENDING, RecipeImportRequest.STATUS_PROCESSING]:
-        logger.info("[RecipeImportTask] Request %s already processed (%s)", request_id, import_request.status)
+        logger.info('[RecipeImportTask] Request %s already processed (%s)', request_id, import_request.status)
         return
 
-    logger.info("[RecipeImportTask] Processing request %s", request_id)
+    logger.info('[RecipeImportTask] Processing request %s', request_id)
     import_request.status = RecipeImportRequest.STATUS_PROCESSING
     import_request.error_message = ''
     import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -66,10 +69,11 @@ def process_recipe_import(self, request_id: str):
         import_request.recipe = recipe
         import_request.save(update_fields=['status', 'recipe', 'updated_at'])
         from chat.services.recipe_job_notify import notify_chat_recipe_job_completed
+
         notify_chat_recipe_job_completed(import_request)
-        logger.info("[RecipeImportTask] Request %s completed", request_id)
+        logger.info('[RecipeImportTask] Request %s completed', request_id)
     except Exception as exc:  # pragma: no cover
-        logger.exception("[RecipeImportTask] Request %s failed: %s", request_id, exc)
+        logger.exception('[RecipeImportTask] Request %s failed: %s', request_id, exc)
         import_request.status = RecipeImportRequest.STATUS_ERROR
         import_request.error_message = str(exc)
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -85,14 +89,14 @@ def process_recipe_import_from_url(self, request_id: str):
     try:
         import_request = RecipeImportRequest.objects.select_related('user').get(id=request_id)
     except RecipeImportRequest.DoesNotExist:
-        logger.error("[RecipeImportURLTask] Request %s not found", request_id)
+        logger.error('[RecipeImportURLTask] Request %s not found', request_id)
         return
 
     if import_request.status not in [RecipeImportRequest.STATUS_PENDING, RecipeImportRequest.STATUS_PROCESSING]:
-        logger.info("[RecipeImportURLTask] Request %s already processed (%s)", request_id, import_request.status)
+        logger.info('[RecipeImportURLTask] Request %s already processed (%s)', request_id, import_request.status)
         return
 
-    logger.info("[RecipeImportURLTask] Processing request %s", request_id)
+    logger.info('[RecipeImportURLTask] Processing request %s', request_id)
     import_request.status = RecipeImportRequest.STATUS_PROCESSING
     import_request.error_message = ''
     import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -103,44 +107,44 @@ def process_recipe_import_from_url(self, request_id: str):
 
     if not url:
         import_request.status = RecipeImportRequest.STATUS_ERROR
-        import_request.error_message = "URL manquante dans le payload"
+        import_request.error_message = 'URL manquante dans le payload'
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
         return
 
     try:
         # Étape 1 : Extraire la recette depuis l'URL
-        logger.info("[RecipeImportURLTask] Step 1/5: Extracting recipe from URL: %s", url)
+        logger.info('[RecipeImportURLTask] Step 1/5: Extracting recipe from URL: %s', url)
         try:
             raw_recipe_data, used_source = import_recipe_from_url(url)
         except InstagramImportError as ie:
             used_source = 'instagram'
             logger.warning(
-                "[RecipeImportURLTask] Instagram import failed early for url=%s (code=%s, message=%s)",
+                '[RecipeImportURLTask] Instagram import failed early for url=%s (code=%s, message=%s)',
                 url,
                 ie.code,
                 ie.message,
             )
             if ie.code in {'apify_not_configured', 'apify_failed', 'post_not_found'}:
                 error_msg = (
-                    "Nous n’arrivons pas à accéder à ce post Instagram pour le moment. "
-                    "Le profil est peut-être privé, le contenu n’est plus disponible "
-                    "ou notre service d’import est temporairement indisponible."
+                    'Nous n’arrivons pas à accéder à ce post Instagram pour le moment. '
+                    'Le profil est peut-être privé, le contenu n’est plus disponible '
+                    'ou notre service d’import est temporairement indisponible.'
                 )
             elif ie.code in {'no_recipe', 'no_recipe_text'}:
                 error_msg = (
-                    "Ce post Instagram ne semble pas contenir de recette détaillée "
-                    "(ingrédients et étapes) exploitable automatiquement. "
-                    "Essayez avec un autre lien."
+                    'Ce post Instagram ne semble pas contenir de recette détaillée '
+                    '(ingrédients et étapes) exploitable automatiquement. '
+                    'Essayez avec un autre lien.'
                 )
             elif ie.code == 'no_ingredients':
                 error_msg = (
-                    "Nous n’avons pas réussi à identifier une liste d’ingrédients suffisamment claire "
-                    "à partir de ce post Instagram. Les informations sont trop vagues."
+                    'Nous n’avons pas réussi à identifier une liste d’ingrédients suffisamment claire '
+                    'à partir de ce post Instagram. Les informations sont trop vagues.'
                 )
             else:
                 error_msg = (
-                    "Une erreur est survenue lors de l’import depuis Instagram. "
-                    "Réessayez plus tard ou avec un autre lien."
+                    'Une erreur est survenue lors de l’import depuis Instagram. '
+                    'Réessayez plus tard ou avec un autre lien.'
                 )
 
             import_request.status = RecipeImportRequest.STATUS_ERROR
@@ -150,19 +154,19 @@ def process_recipe_import_from_url(self, request_id: str):
             return
 
         _update_import_progress(import_request, step='EXTRACTED', percent=25, used_source=used_source)
-        
+
         logger.info(
-            "[RecipeImportURLTask] Extraction result - source=%s, has_data=%s, title=%s",
+            '[RecipeImportURLTask] Extraction result - source=%s, has_data=%s, title=%s',
             used_source,
             bool(raw_recipe_data),
-            raw_recipe_data.get('title', 'N/A') if raw_recipe_data else 'N/A'
+            raw_recipe_data.get('title', 'N/A') if raw_recipe_data else 'N/A',
         )
-        
+
         if not raw_recipe_data:
             if used_source == 'instagram':
                 error_msg = (
-                    "Nous n’avons pas pu extraire de recette exploitable depuis ce lien Instagram. "
-                    "Le contenu ne semble pas contenir suffisamment d’informations pour reconstruire une recette."
+                    'Nous n’avons pas pu extraire de recette exploitable depuis ce lien Instagram. '
+                    'Le contenu ne semble pas contenir suffisamment d’informations pour reconstruire une recette.'
                 )
             else:
                 error_msg = (
@@ -170,7 +174,7 @@ def process_recipe_import_from_url(self, request_id: str):
                     "Vérifiez que l'URL est valide et accessible."
                 )
 
-            logger.warning("[RecipeImportURLTask] Extraction failed: %s", error_msg)
+            logger.warning('[RecipeImportURLTask] Extraction failed: %s', error_msg)
             import_request.status = RecipeImportRequest.STATUS_ERROR
             import_request.error_message = error_msg
             import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -182,16 +186,13 @@ def process_recipe_import_from_url(self, request_id: str):
         if suspicious:
             if used_source == 'instagram':
                 error_msg = (
-                    "Nous n’avons pas pu reconstruire une liste d’ingrédients suffisamment complète "
-                    "à partir de ce post Instagram. Les quantités ou les ingrédients sont trop vagues."
+                    'Nous n’avons pas pu reconstruire une liste d’ingrédients suffisamment complète '
+                    'à partir de ce post Instagram. Les quantités ou les ingrédients sont trop vagues.'
                 )
             else:
-                error_msg = (
-                    "Import bloqué: impossible de garantir la complétude des ingrédients. "
-                    f"Raison: {reason}"
-                )
+                error_msg = f'Import bloqué: impossible de garantir la complétude des ingrédients. Raison: {reason}'
             logger.warning(
-                "[RecipeImportURLTask] Ingredient completeness check failed (source=%s): %s",
+                '[RecipeImportURLTask] Ingredient completeness check failed (source=%s): %s',
                 used_source,
                 error_msg,
             )
@@ -203,22 +204,27 @@ def process_recipe_import_from_url(self, request_id: str):
 
         # Étape 3 : Les données d'import sont déjà structurées, pas besoin de prétraitement
         # On met juste à jour le payload avec les données extraites
-        logger.info("[RecipeImportURLTask] Step 3/5: Using extracted data directly (no preprocessing needed): %s", raw_recipe_data.get('title', ''))
-        
+        logger.info(
+            '[RecipeImportURLTask] Step 3/5: Using extracted data directly (no preprocessing needed): %s',
+            raw_recipe_data.get('title', ''),
+        )
+
         # Sauvegarder l'URL externe de l'image temporairement
         external_image_url = raw_recipe_data.get('image_path', '')
-        
-        payload.update({
-            **raw_recipe_data,
-            'import_source_url': url,
-            'source_type': used_source or payload.get('source_type') or 'generic',
-        })
+
+        payload.update(
+            {
+                **raw_recipe_data,
+                'import_source_url': url,
+                'source_type': used_source or payload.get('source_type') or 'generic',
+            }
+        )
         import_request.payload = payload
         import_request.save(update_fields=['payload'])
         _update_import_progress(import_request, step='READY_FOR_AI', percent=35, used_source=used_source)
 
         # Étape 4 : Formaliser avec l'IA (données déjà structurées)
-        logger.info("[RecipeImportURLTask] Step 4/5: Formalizing recipe with AI: %s", raw_recipe_data.get('title', ''))
+        logger.info('[RecipeImportURLTask] Step 4/5: Formalizing recipe with AI: %s', raw_recipe_data.get('title', ''))
         _update_import_progress(import_request, step='FORMALIZING', percent=55, used_source=used_source)
         formalized_recipe = asyncio.run(
             formalize_recipe(
@@ -233,46 +239,43 @@ def process_recipe_import_from_url(self, request_id: str):
         )
 
         # Étape 5 : Créer la recette en DB
-        logger.info("[RecipeImportURLTask] Step 5/5: Creating recipe in database")
+        logger.info('[RecipeImportURLTask] Step 5/5: Creating recipe in database')
         _update_import_progress(import_request, step='SAVING', percent=80, used_source=used_source)
         recipe = create_recipe_from_formalized(formalized_recipe, payload, import_request.user)
-        
+
         # Étape 6 : Télécharger et uploader l'image vers S3 si elle existe
         if external_image_url and external_image_url.startswith('http'):
-            logger.info("[RecipeImportURLTask] Step 6/6: Downloading and uploading image to S3: %s", external_image_url)
+            logger.info('[RecipeImportURLTask] Step 6/6: Downloading and uploading image to S3: %s', external_image_url)
             _update_import_progress(import_request, step='UPLOADING_IMAGE', percent=90, used_source=used_source)
-            s3_image_path = download_and_upload_image(
-                external_image_url,
-                import_request.user.id,
-                recipe.id
-            )
+            s3_image_path = download_and_upload_image(external_image_url, import_request.user.id, recipe.id)
             if s3_image_path:
                 recipe.image_path = s3_image_path
                 recipe.save(update_fields=['image_path'])
-                logger.info("[RecipeImportURLTask] Image successfully uploaded to S3: %s", s3_image_path)
+                logger.info('[RecipeImportURLTask] Image successfully uploaded to S3: %s', s3_image_path)
             else:
                 logger.warning(
-                    "[RecipeImportURLTask] Failed to upload image, leaving image_path empty "
-                    "(external CDN URLs exceed Recipe.image_path max_length=500)"
+                    '[RecipeImportURLTask] Failed to upload image, leaving image_path empty '
+                    '(external CDN URLs exceed Recipe.image_path max_length=500)'
                 )
         else:
-            logger.info("[RecipeImportURLTask] Step 6/6: No external image URL to download")
+            logger.info('[RecipeImportURLTask] Step 6/6: No external image URL to download')
 
         import_request.status = RecipeImportRequest.STATUS_SUCCESS
         import_request.recipe = recipe
         import_request.save(update_fields=['status', 'recipe', 'updated_at'])
         _update_import_progress(import_request, step='DONE', percent=100, used_source=used_source)
         from chat.services.recipe_job_notify import notify_chat_recipe_job_completed
+
         notify_chat_recipe_job_completed(import_request)
         logger.info(
             "[RecipeImportURLTask] Request %s completed successfully - recipe_id=%s, title='%s'",
             request_id,
             recipe.id,
-            recipe.title
+            recipe.title,
         )
-        
+
     except Exception as exc:
-        logger.exception("[RecipeImportURLTask] Request %s failed: %s", request_id, exc)
+        logger.exception('[RecipeImportURLTask] Request %s failed: %s', request_id, exc)
         import_request.status = RecipeImportRequest.STATUS_ERROR
         import_request.error_message = str(exc)
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -286,18 +289,18 @@ def process_recipe_generate_from_idea(self, request_id: str):
     try:
         import_request = RecipeImportRequest.objects.select_related('user').get(id=request_id)
     except RecipeImportRequest.DoesNotExist:
-        logger.error("[RecipeGenerateTask] Request %s not found", request_id)
+        logger.error('[RecipeGenerateTask] Request %s not found', request_id)
         return
 
     if import_request.status not in [RecipeImportRequest.STATUS_PENDING, RecipeImportRequest.STATUS_PROCESSING]:
         logger.info(
-            "[RecipeGenerateTask] Request %s already processed (%s)",
+            '[RecipeGenerateTask] Request %s already processed (%s)',
             request_id,
             import_request.status,
         )
         return
 
-    logger.info("[RecipeGenerateTask] Processing request %s", request_id)
+    logger.info('[RecipeGenerateTask] Processing request %s', request_id)
     import_request.status = RecipeImportRequest.STATUS_PROCESSING
     import_request.error_message = ''
     import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -307,15 +310,13 @@ def process_recipe_generate_from_idea(self, request_id: str):
     idea_text = (payload.get('idea_text') or '').strip()
     if not idea_text:
         import_request.status = RecipeImportRequest.STATUS_ERROR
-        import_request.error_message = "Idée de recette manquante dans le payload"
+        import_request.error_message = 'Idée de recette manquante dans le payload'
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
         return
 
     try:
         _update_import_progress(import_request, step='GENERATING', percent=40, used_source='ai_generated')
-        formalized_recipe = asyncio.run(
-            generate_recipe_from_idea(idea_text, payload.get('servings'))
-        )
+        formalized_recipe = asyncio.run(generate_recipe_from_idea(idea_text, payload.get('servings')))
 
         _update_import_progress(import_request, step='SAVING', percent=80, used_source='ai_generated')
         recipe_data = {
@@ -330,6 +331,7 @@ def process_recipe_generate_from_idea(self, request_id: str):
         import_request.save(update_fields=['status', 'recipe', 'updated_at'])
         _update_import_progress(import_request, step='DONE', percent=100, used_source='ai_generated')
         from chat.services.recipe_job_notify import notify_chat_recipe_job_completed
+
         notify_chat_recipe_job_completed(import_request)
         logger.info(
             "[RecipeGenerateTask] Request %s completed - recipe_id=%s title='%s'",
@@ -338,7 +340,7 @@ def process_recipe_generate_from_idea(self, request_id: str):
             recipe.title,
         )
     except Exception as exc:
-        logger.exception("[RecipeGenerateTask] Request %s failed: %s", request_id, exc)
+        logger.exception('[RecipeGenerateTask] Request %s failed: %s', request_id, exc)
         import_request.status = RecipeImportRequest.STATUS_ERROR
         import_request.error_message = str(exc)
         import_request.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -358,4 +360,3 @@ def reindex_recipe_search(self, recipe_id: int, force: bool = False):
     except Exception as exc:
         logger.exception('[ReindexRecipeSearch] recipe %s: %s', recipe_id, exc)
         raise self.retry(exc=exc)
-

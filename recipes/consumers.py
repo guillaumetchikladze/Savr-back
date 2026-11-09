@@ -16,9 +16,9 @@ class ShoppingListConsumer(AsyncJsonWebsocketConsumer):
 
     async def connect(self):
         # Expect a JWT access token in the query string (?token=...)
-        query_string = self.scope.get("query_string", b"").decode("utf-8")
+        query_string = self.scope.get('query_string', b'').decode('utf-8')
         query_params = parse_qs(query_string)
-        tokens = query_params.get("token") or []
+        tokens = query_params.get('token') or []
         token = tokens[0] if tokens else None
 
         if not token:
@@ -31,7 +31,7 @@ class ShoppingListConsumer(AsyncJsonWebsocketConsumer):
             return
 
         # Attach user to the scope for later use
-        self.scope["user"] = user
+        self.scope['user'] = user
         self.list_groups = set()
 
         await self.accept()
@@ -49,18 +49,18 @@ class ShoppingListConsumer(AsyncJsonWebsocketConsumer):
         - {"action": "join_list", "list_id": 123}
         - {"action": "leave_list", "list_id": 123}
         """
-        action = content.get("action")
-        list_id = content.get("list_id")
+        action = content.get('action')
+        list_id = content.get('list_id')
 
         if not action or list_id is None:
             return
 
-        group_name = f"shopping_list_{list_id}"
+        group_name = f'shopping_list_{list_id}'
 
-        if action == "join_list":
+        if action == 'join_list':
             await self.channel_layer.group_add(group_name, self.channel_name)
             self.list_groups.add(group_name)
-        elif action == "leave_list":
+        elif action == 'leave_list':
             await self.channel_layer.group_discard(group_name, self.channel_name)
             self.list_groups.discard(group_name)
 
@@ -71,9 +71,9 @@ class ShoppingListConsumer(AsyncJsonWebsocketConsumer):
         """
         await self.send_json(
             {
-                "type": "shopping_list_item_updated",
-                "item": event.get("item"),
-                "updated_by_user_id": event.get("updated_by_user_id"),
+                'type': 'shopping_list_item_updated',
+                'item': event.get('item'),
+                'updated_by_user_id': event.get('updated_by_user_id'),
             }
         )
 
@@ -83,12 +83,11 @@ class ShoppingListConsumer(AsyncJsonWebsocketConsumer):
         """
         await self.send_json(
             {
-                "type": "shopping_list_conflict_notice",
-                "shopping_list_id": event.get("shopping_list_id"),
-                "actor_user_id": event.get("actor_user_id"),
-                "actor_username": event.get("actor_username"),
-                "target_user_ids": event.get("target_user_ids") or [],
-                "items": event.get("items") or [],
+                'type': 'shopping_list_conflict_notice',
+                'shopping_list_id': event.get('shopping_list_id'),
+                'actor_user_id': event.get('actor_user_id'),
+                'actor_username': event.get('actor_username'),
+                'target_user_ids': event.get('target_user_ids') or [],
+                'items': event.get('items') or [],
             }
         )
-

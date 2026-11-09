@@ -32,6 +32,7 @@ from django.db.models import Q
 from .utils import get_accessible_meal_plan_filter, meal_plan_slot_api_fields
 from decimal import Decimal
 
+
 # Helpers
 def compute_meal_plan_servings_with_ratio(meal_plan):
     """
@@ -39,6 +40,7 @@ def compute_meal_plan_servings_with_ratio(meal_plan):
     breakdown : liste de { meal_plan_id, recipe_batch_id, base_servings, portions }.
     """
     from .utils import get_meal_plan_people_count, get_batch_portions
+
     people_count = get_meal_plan_people_count(meal_plan)
     try:
         mprbs = meal_plan.meal_plan_recipe_batches.all()
@@ -47,21 +49,28 @@ def compute_meal_plan_servings_with_ratio(meal_plan):
     breakdown = []
     for mprb in mprbs:
         portions = get_batch_portions(meal_plan, mprb, people_count=people_count)
-        breakdown.append({
-            'meal_plan_id': meal_plan.id,
-            'recipe_batch_id': mprb.recipe_batch_id,
-            'base_servings': people_count,
-            'portions': portions,
-        })
+        breakdown.append(
+            {
+                'meal_plan_id': meal_plan.id,
+                'recipe_batch_id': mprb.recipe_batch_id,
+                'base_servings': people_count,
+                'portions': portions,
+            }
+        )
     if not breakdown:
-        breakdown.append({
-            'meal_plan_id': meal_plan.id,
-            'recipe_batch_id': None,
-            'base_servings': people_count,
-            'portions': people_count,
-        })
+        breakdown.append(
+            {
+                'meal_plan_id': meal_plan.id,
+                'recipe_batch_id': None,
+                'base_servings': people_count,
+                'portions': people_count,
+            }
+        )
     return people_count, breakdown, people_count
+
+
 User = get_user_model()
+
 
 class UserLightSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
@@ -92,24 +101,24 @@ class UserLightSerializer(serializers.ModelSerializer):
         if em and '@' in em:
             return em.split('@', 1)[0]
         return f'#{obj.pk}'
-    
+
     def get_avatar_url(self, obj):
         """Retourner l'URL de l'avatar avec presigned URL si disponible"""
         if not obj.avatar_url:
             return None
-        
+
         # Si l'URL contient un chemin S3 (avatars/...), générer une presigned URL
         # Sinon, retourner l'URL telle quelle (peut être une URL externe)
         try:
             from savr_back.settings import build_presigned_get_url
             import re
-            
+
             # Extraire le chemin depuis l'URL S3
             # Formats possibles:
             # - http://host/bucket/avatars/2/file.jpg
             # - https://bucket.s3.region.amazonaws.com/avatars/2/file.jpg
             # - http://192.168.1.51:9000/savr/avatars/2/file.jpg
-            
+
             if 'avatars/' in obj.avatar_url:
                 # Chercher le pattern /bucket/avatars/... ou /avatars/...
                 # On cherche après le dernier / qui précède "avatars"
@@ -119,7 +128,7 @@ class UserLightSerializer(serializers.ModelSerializer):
                     presigned_url = build_presigned_get_url(image_path)
                     if presigned_url:
                         return presigned_url
-                
+
                 # Si la regex ne fonctionne pas, essayer de trouver directement "avatars/"
                 idx = obj.avatar_url.find('avatars/')
                 if idx != -1:
@@ -127,18 +136,19 @@ class UserLightSerializer(serializers.ModelSerializer):
                     presigned_url = build_presigned_get_url(image_path)
                     if presigned_url:
                         return presigned_url
-            
+
             # Si c'est une URL externe (pas S3, pas d'avatars), retourner telle quelle
             if obj.avatar_url.startswith('http') and 'avatars/' not in obj.avatar_url:
                 return obj.avatar_url
-            
+
             # Par défaut, essayer de générer une presigned URL avec l'URL complète
             # (peut fonctionner si c'est déjà un chemin relatif)
             return build_presigned_get_url(obj.avatar_url) if obj.avatar_url else None
         except Exception as e:
             # En cas d'erreur, retourner l'URL originale
             import traceback
-            print(f"Error generating presigned URL for avatar in UserLightSerializer: {e}")
+
+            print(f'Error generating presigned URL for avatar in UserLightSerializer: {e}')
             print(traceback.format_exc())
             return obj.avatar_url
 
@@ -173,13 +183,9 @@ class CategorySerializer(serializers.ModelSerializer):
 class IngredientSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     category_id = serializers.PrimaryKeyRelatedField(
-        queryset=Category.objects.all(),
-        source='category',
-        write_only=True,
-        required=False,
-        allow_null=True
+        queryset=Category.objects.all(), source='category', write_only=True, required=False, allow_null=True
     )
-    
+
     class Meta:
         model = Ingredient
         fields = ['id', 'name', 'category', 'category_id']
@@ -188,12 +194,10 @@ class IngredientSerializer(serializers.ModelSerializer):
 class RecipeIngredientSerializer(serializers.ModelSerializer):
     ingredient = IngredientSerializer(read_only=True)
     ingredient_id = serializers.PrimaryKeyRelatedField(
-        queryset=Ingredient.objects.all(),
-        source='ingredient',
-        write_only=True
+        queryset=Ingredient.objects.all(), source='ingredient', write_only=True
     )
     unit_display = serializers.CharField(source='get_unit_display', read_only=True)
-    
+
     class Meta:
         model = RecipeIngredient
         fields = ['id', 'ingredient', 'ingredient_id', 'quantity', 'unit', 'unit_display']
@@ -202,7 +206,7 @@ class RecipeIngredientSerializer(serializers.ModelSerializer):
 class StepIngredientSerializer(serializers.ModelSerializer):
     ingredient = IngredientSerializer(read_only=True)
     unit_display = serializers.CharField(source='get_unit_display', read_only=True)
-    
+
     class Meta:
         model = StepIngredient
         fields = ['id', 'ingredient', 'quantity', 'unit', 'unit_display']
@@ -210,7 +214,7 @@ class StepIngredientSerializer(serializers.ModelSerializer):
 
 class StepSerializer(serializers.ModelSerializer):
     step_ingredients = StepIngredientSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = Step
         fields = ['id', 'order', 'title', 'instruction', 'tip', 'has_timer', 'timer_duration', 'step_ingredients']
@@ -221,6 +225,7 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
     Serializer léger pour retrieve - charge seulement les données essentielles
     Les steps et ingrédients détaillés sont chargés via des endpoints séparés
     """
+
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
@@ -229,28 +234,46 @@ class RecipeDetailSerializer(serializers.ModelSerializer):
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
-    
+
     class Meta:
         model = Recipe
         fields = [
-            'id', 'title', 'description', 'steps_summary', 'meal_type', 'meal_type_display',
-            'difficulty', 'difficulty_display', 'prep_time', 'cook_time',
-            'servings', 'image_path', 'image_url', 'created_by', 'created_by_username',
-            'is_public', 'source_type', 'source_type_display', 'import_source_url',
-            'created_at', 'updated_at', 'is_favorited', 'is_author'
+            'id',
+            'title',
+            'description',
+            'steps_summary',
+            'meal_type',
+            'meal_type_display',
+            'difficulty',
+            'difficulty_display',
+            'prep_time',
+            'cook_time',
+            'servings',
+            'image_path',
+            'image_url',
+            'created_by',
+            'created_by_username',
+            'is_public',
+            'source_type',
+            'source_type_display',
+            'import_source_url',
+            'created_at',
+            'updated_at',
+            'is_favorited',
+            'is_author',
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
-    
+
     def get_image_url(self, obj):
         return obj.image_url
-    
+
     def get_is_favorited(self, obj):
         """Vérifier si l'utilisateur connecté a favorisé cette recette"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(id=request.user.id).exists()
         return False
-    
+
     def get_is_author(self, obj):
         """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
         request = self.context.get('request')
@@ -269,28 +292,48 @@ class RecipeSerializer(serializers.ModelSerializer):
     is_favorited = serializers.SerializerMethodField()
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Recipe
         fields = [
-            'id', 'title', 'description', 'steps_summary', 'meal_type', 'meal_type_display',
-            'difficulty', 'difficulty_display', 'prep_time', 'cook_time',
-            'servings', 'image_path', 'image_url', 'created_by', 'created_by_username',
-            'is_public', 'source_type', 'source_type_display', 'import_source_url',
-            'created_at', 'updated_at', 'steps', 'recipe_ingredients', 'is_favorited', 'is_author'
+            'id',
+            'title',
+            'description',
+            'steps_summary',
+            'meal_type',
+            'meal_type_display',
+            'difficulty',
+            'difficulty_display',
+            'prep_time',
+            'cook_time',
+            'servings',
+            'image_path',
+            'image_url',
+            'created_by',
+            'created_by_username',
+            'is_public',
+            'source_type',
+            'source_type_display',
+            'import_source_url',
+            'created_at',
+            'updated_at',
+            'steps',
+            'recipe_ingredients',
+            'is_favorited',
+            'is_author',
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at', 'image_url']
-    
+
     def get_image_url(self, obj):
         return obj.image_url
-    
+
     def get_is_favorited(self, obj):
         """Vérifier si l'utilisateur connecté a favorisé cette recette"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(id=request.user.id).exists()
         return False
-    
+
     def get_is_author(self, obj):
         """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
         request = self.context.get('request')
@@ -306,10 +349,7 @@ def _resolve_ingredient_from_payload(item):
 
     ingredient_id = item.get('ingredient_id') or (item.get('ingredient') or {}).get('id')
     ingredient_name = (
-        item.get('ingredient_name')
-        or (item.get('ingredient') or {}).get('name')
-        or item.get('name')
-        or ''
+        item.get('ingredient_name') or (item.get('ingredient') or {}).get('name') or item.get('name') or ''
     )
 
     ingredient_obj = None
@@ -318,10 +358,12 @@ def _resolve_ingredient_from_payload(item):
 
     if not ingredient_obj and isinstance(ingredient_name, str) and ingredient_name.strip():
         from .services.ingredient_matcher import get_or_create_ingredient
+
         ingredient_obj, _ = get_or_create_ingredient(ingredient_name.strip())
 
     if ingredient_obj:
         from .services.ingredient_categorization import ensure_ingredient_category
+
         ensure_ingredient_category(ingredient_obj)
 
     return ingredient_obj
@@ -329,11 +371,7 @@ def _resolve_ingredient_from_payload(item):
 
 class RecipeCreateSerializer(serializers.ModelSerializer):
     steps = StepSerializer(many=True, required=False)
-    ingredients = serializers.ListField(
-        child=serializers.DictField(),
-        write_only=True,
-        required=False
-    )
+    ingredients = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
     prep_time = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     cook_time = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     servings = serializers.IntegerField(required=False, allow_null=True, min_value=1)
@@ -341,10 +379,21 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Recipe
         fields = [
-            'id', 'title', 'description', 'steps_summary', 'meal_type', 'difficulty',
-            'prep_time', 'cook_time', 'servings', 'image_path',
-            'is_public', 'source_type', 'import_source_url',
-            'steps', 'ingredients'
+            'id',
+            'title',
+            'description',
+            'steps_summary',
+            'meal_type',
+            'difficulty',
+            'prep_time',
+            'cook_time',
+            'servings',
+            'image_path',
+            'is_public',
+            'source_type',
+            'import_source_url',
+            'steps',
+            'ingredients',
         ]
         read_only_fields = ['id']
 
@@ -404,18 +453,31 @@ class RecipeLightSerializer(serializers.ModelSerializer):
     is_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     total_time = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Recipe
         fields = [
-            'id', 'title', 'image_path', 'image_url', 'meal_type', 'meal_type_display',
-            'difficulty', 'difficulty_display', 'prep_time', 'cook_time', 'servings',
+            'id',
+            'title',
+            'image_path',
+            'image_url',
+            'meal_type',
+            'meal_type_display',
+            'difficulty',
+            'difficulty_display',
+            'prep_time',
+            'cook_time',
+            'servings',
             'total_time',
-            'source_type', 'source_type_display', 'import_source_url',
-            'created_by', 'created_by_username', 'created_at',
-            'is_author'
+            'source_type',
+            'source_type_display',
+            'import_source_url',
+            'created_by',
+            'created_by_username',
+            'created_at',
+            'is_author',
         ]
-    
+
     def get_image_url(self, obj):
         return obj.image_url
 
@@ -428,7 +490,7 @@ class RecipeLightSerializer(serializers.ModelSerializer):
             return total if total > 0 else None
         except Exception:
             return None
-    
+
     def get_is_author(self, obj):
         """Vérifier si l'utilisateur connecté est l'auteur de la recette"""
         request = self.context.get('request')
@@ -449,41 +511,47 @@ class RecipeBatchLightSerializer(serializers.ModelSerializer):
     meals = serializers.ListField(child=serializers.DictField(), read_only=True)
     steps = StepSerializer(many=True, read_only=True)
     is_cooked = serializers.BooleanField(read_only=True)
-    
+
     class Meta:
         model = RecipeBatch
         fields = [
-            'id', 'name', 'recipe', 'created_by',
-            'total_servings_batch', 'servings_breakdown',
-            'total_servings_batch_accessible', 'servings_breakdown_accessible',
+            'id',
+            'name',
+            'recipe',
+            'created_by',
+            'total_servings_batch',
+            'servings_breakdown',
+            'total_servings_batch_accessible',
+            'servings_breakdown_accessible',
             'groupedDates',
-            'meal_plan_ids', 'meals', 'is_cooked',
+            'meal_plan_ids',
+            'meals',
+            'is_cooked',
             'shopping_done',
-            'steps', 'photo_step_orders',
-            'created_at', 'updated_at'
+            'steps',
+            'photo_step_orders',
+            'created_at',
+            'updated_at',
         ]
 
 
 class RecipeMinimalSerializer(serializers.ModelSerializer):
     """Serializer ultra-léger pour les recettes en mode minimal (seulement id, title, image_url)"""
+
     image_url = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Recipe
         fields = ['id', 'title', 'image_url']
-    
+
     def get_image_url(self, obj):
         return obj.image_url
 
 
 class RecipeBatchSerializer(serializers.ModelSerializer):
     recipe = RecipeLightSerializer(read_only=True)
-    recipe_id = serializers.PrimaryKeyRelatedField(
-        queryset=Recipe.objects.all(),
-        source='recipe',
-        write_only=True
-    )
-    
+    recipe_id = serializers.PrimaryKeyRelatedField(queryset=Recipe.objects.all(), source='recipe', write_only=True)
+
     class Meta:
         model = RecipeBatch
         fields = ['id', 'name', 'notes', 'recipe', 'recipe_id', 'photo_step_orders', 'created_at', 'updated_at']
@@ -495,6 +563,7 @@ class RecipeBatchMealPlanStatusSerializer(serializers.ModelSerializer):
     Serializer très léger pour les écrans MealPlan (statuts + association liste).
     Objectif: éviter N calls /shopping-lists/ côté front.
     """
+
     shopping_list = serializers.SerializerMethodField()
 
     class Meta:
@@ -546,20 +615,17 @@ class MealPlanRecipeSerializer(serializers.ModelSerializer):
     """
     Serializer pour la relation MealPlan-RecipeBatch avec portions.
     """
+
     recipe = RecipeLightSerializer(source='recipe_batch.recipe', read_only=True)
     recipe_batch = RecipeBatchMealPlanStatusSerializer(read_only=True)
     recipe_batch_id = serializers.PrimaryKeyRelatedField(
-        queryset=RecipeBatch.objects.all(),
-        source='recipe_batch',
-        write_only=True,
-        required=False,
-        allow_null=True
+        queryset=RecipeBatch.objects.all(), source='recipe_batch', write_only=True, required=False, allow_null=True
     )
     portions = serializers.SerializerMethodField()
     is_portions_overridden = serializers.BooleanField(read_only=True)
     groupedDates = serializers.SerializerMethodField()
     group_id = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = MealPlanRecipeBatch
         fields = [
@@ -573,18 +639,19 @@ class MealPlanRecipeSerializer(serializers.ModelSerializer):
             'group_id',
             'groupedDates',
             'created_at',
-            'updated_at'
+            'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'recipe', 'recipe_batch']
-    
+
     def get_portions(self, obj):
         from .utils import get_batch_portions, get_meal_plan_people_count
+
         return get_batch_portions(obj.meal_plan, obj, people_count=get_meal_plan_people_count(obj.meal_plan))
-    
+
     def get_group_id(self, obj):
         # Utiliser l'id du batch comme identifiant de groupe
         return obj.recipe_batch_id if obj.recipe_batch_id else None
-    
+
     def get_groupedDates(self, obj):
         """Dates de tous les meal plans liés au même batch."""
         if not obj.recipe_batch_id:
@@ -593,9 +660,11 @@ class MealPlanRecipeSerializer(serializers.ModelSerializer):
         mapping = ctx.get('grouped_dates_by_batch_id') or {}
         if obj.recipe_batch_id in mapping:
             return mapping.get(obj.recipe_batch_id) or [obj.meal_plan.date.isoformat()]
-        meal_plans = MealPlan.objects.filter(
-            meal_plan_recipe_batches__recipe_batch_id=obj.recipe_batch_id
-        ).distinct().order_by('date', 'meal_time')
+        meal_plans = (
+            MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch_id=obj.recipe_batch_id)
+            .distinct()
+            .order_by('date', 'meal_time')
+        )
         dates = [mp.date.isoformat() for mp in meal_plans]
         return dates or [obj.meal_plan.date.isoformat()]
 
@@ -605,6 +674,7 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
     Serializer léger pour retrieve - charge seulement les données essentielles
     Les steps et ingrédients détaillés sont chargés via des endpoints séparés
     """
+
     recipe = RecipeLightSerializer(read_only=True)  # Utiliser RecipeLightSerializer au lieu de RecipeSerializer
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
     meal_time_display = serializers.SerializerMethodField()
@@ -615,15 +685,32 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
     total_participants = serializers.SerializerMethodField()
     total_servings = serializers.SerializerMethodField()
     servings_breakdown = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'recipe', 'recipes',
-            'user', 'participants', 'confirmed', 'guest_count', 'dining_alone',
-            'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
-            'created_at', 'updated_at'
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'recipe',
+            'recipes',
+            'user',
+            'participants',
+            'confirmed',
+            'guest_count',
+            'dining_alone',
+            'total_guest_count',
+            'total_participants',
+            'total_servings',
+            'servings_breakdown',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at']
 
@@ -633,30 +720,35 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
             if label:
                 return label
         return obj.get_meal_time_display()
-    
+
     def get_participants(self, obj):
         from .models import MealInvitation
-        invitations = obj.invitations.all() if hasattr(obj, 'invitations') else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+
+        invitations = (
+            obj.invitations.all()
+            if hasattr(obj, 'invitations')
+            else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+        )
         # Log pour debug (uniquement en mode DEBUG)
         if settings.DEBUG:
             import logging
+
             logger = logging.getLogger(__name__)
-            logger.debug(f"[MealPlanDetailSerializer] get_participants for meal plan {obj.id}: {len(invitations)} invitations")
+            logger.debug(
+                f'[MealPlanDetailSerializer] get_participants for meal plan {obj.id}: {len(invitations)} invitations'
+            )
             for inv in invitations:
-                logger.debug(f"  - Invitation {inv.id}: user_id={inv.invitee_id}, status={inv.status}")
+                logger.debug(f'  - Invitation {inv.id}: user_id={inv.invitee_id}, status={inv.status}')
         return [
-            {
-                'user': UserLightSerializer(inv.invitee, context=self.context).data,
-                'status': inv.status
-            }
+            {'user': UserLightSerializer(inv.invitee, context=self.context).data, 'status': inv.status}
             for inv in invitations
         ]
-    
+
     def get_total_guest_count(self, obj: MealPlan):
         if hasattr(obj, '_total_guest_count'):
             return obj._total_guest_count
         return obj.guest_count or 0
-    
+
     def get_total_participants(self, obj: MealPlan):
         if hasattr(obj, '_total_participants'):
             precedence = {'accepted': 3, 'pending': 2, 'declined': 1}
@@ -671,17 +763,19 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
                     }
             return list(by_user_id.values())
         return self.get_participants(obj)
-    
+
     def get_total_servings(self, obj: MealPlan):
         if hasattr(obj, '_total_servings'):
             return obj._total_servings
-        participants = obj.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(obj, 'invitations') else 0
+        participants = (
+            obj.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(obj, 'invitations') else 0
+        )
         guest_count = obj.guest_count or 0
         return 1 + participants + guest_count
 
     def get_servings_breakdown(self, obj: MealPlan):
         return []
-    
+
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
         dates = set()
@@ -692,15 +786,12 @@ class MealPlanDetailSerializer(serializers.ModelSerializer):
             else:
                 dates.add(obj.date.isoformat())
         return sorted(list(dates)) if dates else [obj.date.isoformat()]
-    
+
+
 class MealPlanSerializer(serializers.ModelSerializer):
     recipe = RecipeSerializer(read_only=True)  # Garder pour compatibilité (utilisé pour create/update)
     recipe_id = serializers.PrimaryKeyRelatedField(
-        queryset=Recipe.objects.all(),
-        source='recipe',
-        write_only=True,
-        required=False,
-        allow_null=True
+        queryset=Recipe.objects.all(), source='recipe', write_only=True, required=False, allow_null=True
     )
     # Rendre ces champs optionnels pour permettre les updates partiels
     date = serializers.DateField(required=False)
@@ -712,13 +803,13 @@ class MealPlanSerializer(serializers.ModelSerializer):
         child=serializers.IntegerField(),
         write_only=True,
         required=False,
-        help_text="Liste des IDs de recipe_batch à associer au meal plan (append)"
+        help_text='Liste des IDs de recipe_batch à associer au meal plan (append)',
     )
     recipe_ids = serializers.ListField(
         child=serializers.IntegerField(),
         write_only=True,
         required=False,
-        help_text="(Compat) Liste d'IDs de recettes pour créer des batches à la volée"
+        help_text="(Compat) Liste d'IDs de recettes pour créer des batches à la volée",
     )
     meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
@@ -734,27 +825,49 @@ class MealPlanSerializer(serializers.ModelSerializer):
         child=serializers.DictField(),
         write_only=True,
         required=False,
-        help_text="Liste unifiée {recipe_id, batch_id, portions, order}"
+        help_text='Liste unifiée {recipe_id, batch_id, portions, order}',
     )
     entry_portions = serializers.DictField(
         child=serializers.IntegerField(),
         write_only=True,
         required=False,
-        help_text="Dictionnaire {recipe_batch_id: portions} pour mettre à jour les portions sans recréer de batches"
+        help_text='Dictionnaire {recipe_batch_id: portions} pour mettre à jour les portions sans recréer de batches',
     )
     servings_breakdown = serializers.SerializerMethodField()
     is_guest = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'recipe', 'recipe_id',
-            'recipes', 'batch_ids', 'recipe_ids',
-            'entries', 'entry_portions', 'recipes_entries',
-            'user', 'participants', 'confirmed', 'guest_count', 'dining_alone',
-            'total_guest_count', 'total_participants', 'total_servings', 'servings_breakdown',
-            'is_guest', 'created_at', 'updated_at'
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'recipe',
+            'recipe_id',
+            'recipes',
+            'batch_ids',
+            'recipe_ids',
+            'entries',
+            'entry_portions',
+            'recipes_entries',
+            'user',
+            'participants',
+            'confirmed',
+            'guest_count',
+            'dining_alone',
+            'total_guest_count',
+            'total_participants',
+            'total_servings',
+            'servings_breakdown',
+            'is_guest',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['user', 'participants', 'created_at', 'updated_at', 'recipes', 'recipe']
 
@@ -762,25 +875,25 @@ class MealPlanSerializer(serializers.ModelSerializer):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
             return obj.custom_label
         return obj.get_meal_time_display()
-    
+
     def validate(self, attrs):
         # Si update partiel avec entries/recipe_ids/batch_ids, ne pas exiger date/meal_time/meal_type
         if self.instance and ('recipe_ids' in attrs or 'batch_ids' in attrs or 'entries' in attrs):
             return attrs
         return attrs
-    
+
     def create(self, validated_data):
         from decimal import Decimal, ROUND_HALF_UP
-        
+
         validated_data['user'] = self.context['request'].user
-        
+
         entries = validated_data.pop('entries', None)
         batch_ids = validated_data.pop('batch_ids', None)
         recipe_ids = validated_data.pop('recipe_ids', None)
         validated_data.pop('recipe_ratios', None)
-        
+
         meal_plan = super().create(validated_data)
-        
+
         if entries:
             for order, item in enumerate(entries):
                 recipe_id = item.get('recipe_id')
@@ -799,7 +912,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         recipe_batch_id=batch_id,
                         portions=portions,
                         is_portions_overridden=portions is not None,
-                        order=order_value
+                        order=order_value,
                     )
                 elif recipe_id:
                     batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
@@ -808,10 +921,10 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         recipe_batch=batch,
                         portions=portions,
                         is_portions_overridden=portions is not None,
-                        order=order_value
+                        order=order_value,
                     )
             return meal_plan
-        
+
         if batch_ids:
             for order, batch_id in enumerate(batch_ids):
                 MealPlanRecipeBatch.objects.create(
@@ -819,39 +932,33 @@ class MealPlanSerializer(serializers.ModelSerializer):
                     recipe_batch_id=batch_id,
                     portions=None,
                     is_portions_overridden=False,
-                    order=order
+                    order=order,
                 )
             return meal_plan
-        
+
         if recipe_ids:
             for order, recipe_id in enumerate(recipe_ids):
                 batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
                 MealPlanRecipeBatch.objects.create(
-                    meal_plan=meal_plan,
-                    recipe_batch=batch,
-                    portions=None,
-                    is_portions_overridden=False,
-                    order=order
+                    meal_plan=meal_plan, recipe_batch=batch, portions=None, is_portions_overridden=False, order=order
                 )
-        
+
         return meal_plan
-    
+
     def update(self, instance, validated_data):
         from decimal import Decimal, ROUND_HALF_UP
-        
+
         entries = validated_data.pop('entries', None)
         batch_ids = validated_data.pop('batch_ids', None)
         recipe_ids = validated_data.pop('recipe_ids', None)
         entry_portions = validated_data.pop('entry_portions', None)
         validated_data.pop('recipe_ratios', None)
         validated_data.pop('entry_ratios', None)
-        
+
         meal_plan = super().update(instance, validated_data)
-        
+
         if entries is not None:
-            existing_mprbs = list(
-                meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe')
-            )
+            existing_mprbs = list(meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe'))
             existing_batch_by_recipe_id = {}
             for mprb in existing_mprbs:
                 if mprb.recipe_batch and mprb.recipe_batch.recipe_id:
@@ -875,7 +982,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         recipe_batch_id=batch_id,
                         portions=portions,
                         is_portions_overridden=portions is not None,
-                        order=order_value
+                        order=order_value,
                     )
                 elif recipe_id:
                     reused_batch_id = existing_batch_by_recipe_id.get(recipe_id)
@@ -885,7 +992,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
                             recipe_batch_id=reused_batch_id,
                             portions=portions,
                             is_portions_overridden=portions is not None,
-                            order=order_value
+                            order=order_value,
                         )
                     else:
                         batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
@@ -894,10 +1001,10 @@ class MealPlanSerializer(serializers.ModelSerializer):
                             recipe_batch=batch,
                             portions=portions,
                             is_portions_overridden=portions is not None,
-                            order=order_value
+                            order=order_value,
                         )
             return meal_plan
-        
+
         if batch_ids is not None:
             meal_plan.meal_plan_recipe_batches.all().delete()
             for order, batch_id in enumerate(batch_ids or []):
@@ -906,15 +1013,17 @@ class MealPlanSerializer(serializers.ModelSerializer):
                     recipe_batch_id=batch_id,
                     portions=None,
                     is_portions_overridden=False,
-                    order=order
+                    order=order,
                 )
             return meal_plan
-        
+
         if recipe_ids is not None:
-            existing_mprbs = list(
-                meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe')
-            )
-            existing_batch_by_recipe_id = {mprb.recipe_batch.recipe_id: mprb.recipe_batch_id for mprb in existing_mprbs if mprb.recipe_batch and mprb.recipe_batch.recipe_id}
+            existing_mprbs = list(meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe'))
+            existing_batch_by_recipe_id = {
+                mprb.recipe_batch.recipe_id: mprb.recipe_batch_id
+                for mprb in existing_mprbs
+                if mprb.recipe_batch and mprb.recipe_batch.recipe_id
+            }
 
             meal_plan.meal_plan_recipe_batches.all().delete()
             for order, recipe_id in enumerate(recipe_ids):
@@ -925,7 +1034,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         recipe_batch_id=reused_batch_id,
                         portions=None,
                         is_portions_overridden=False,
-                        order=order
+                        order=order,
                     )
                 else:
                     batch = RecipeBatch.objects.create(recipe_id=recipe_id, created_by=meal_plan.user)
@@ -934,10 +1043,10 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         recipe_batch=batch,
                         portions=None,
                         is_portions_overridden=False,
-                        order=order
+                        order=order,
                     )
             return meal_plan
-        
+
         if entry_portions is not None:
             for key, portions_value in entry_portions.items():
                 try:
@@ -956,36 +1065,41 @@ class MealPlanSerializer(serializers.ModelSerializer):
                 mprb.portions = p
                 mprb.is_portions_overridden = True
                 mprb.save(update_fields=['portions', 'is_portions_overridden', 'updated_at'])
-        
+
         return meal_plan
 
     def get_recipes_entries(self, obj: MealPlan):
         """Retourne une liste unifiée {recipe_id, batch_id, portions, order} pour sérialisation."""
         from .utils import get_batch_portions, get_meal_plan_people_count
+
         people = get_meal_plan_people_count(obj)
         entries = []
         for mprb in obj.meal_plan_recipe_batches.all().order_by('order', 'id'):
-            entries.append({
-                'recipe_id': mprb.recipe_batch.recipe_id if mprb.recipe_batch else None,
-                'batch_id': mprb.recipe_batch_id,
-                'portions': get_batch_portions(obj, mprb, people_count=people),
-                'order': mprb.order,
-            })
+            entries.append(
+                {
+                    'recipe_id': mprb.recipe_batch.recipe_id if mprb.recipe_batch else None,
+                    'batch_id': mprb.recipe_batch_id,
+                    'portions': get_batch_portions(obj, mprb, people_count=people),
+                    'order': mprb.order,
+                }
+            )
         return entries
-    
+
     def get_participants(self, obj):
         from .models import MealInvitation
+
         # Utiliser le prefetch si disponible (via Prefetch), sinon faire une requête
         # obj.invitations.all() utilisera automatiquement le cache si prefetch est fait
-        invitations = obj.invitations.all() if hasattr(obj, 'invitations') else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+        invitations = (
+            obj.invitations.all()
+            if hasattr(obj, 'invitations')
+            else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+        )
         return [
-            {
-                'user': UserLightSerializer(inv.invitee, context=self.context).data,
-                'status': inv.status
-            }
+            {'user': UserLightSerializer(inv.invitee, context=self.context).data, 'status': inv.status}
             for inv in invitations
         ]
-    
+
     def get_total_guest_count(self, obj: MealPlan):
         """
         Retourne le total_guest_count pré-calculé si disponible.
@@ -994,7 +1108,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
         if hasattr(obj, '_total_guest_count'):
             return obj._total_guest_count
         return obj.guest_count or 0
-    
+
     def get_total_participants(self, obj: MealPlan):
         """
         Retourne les participants groupés pré-calculés si disponibles.
@@ -1012,15 +1126,16 @@ class MealPlanSerializer(serializers.ModelSerializer):
                         'status': p['status'],
                     }
             return list(by_user_id.values())
-        
+
         # Fallback : utiliser get_participants normal
         return self.get_participants(obj)
-    
+
     def _calculate_recipe_group_servings(self, meal_plan_recipe_batch):
         """
         Calcule le total de portions pour ce batch (tous meal plans confondus).
         """
         from .utils import get_batch_portions
+
         batch_id = meal_plan_recipe_batch.recipe_batch_id
         if not batch_id:
             return get_batch_portions(meal_plan_recipe_batch.meal_plan, meal_plan_recipe_batch)
@@ -1028,13 +1143,15 @@ class MealPlanSerializer(serializers.ModelSerializer):
         for mprb in MealPlanRecipeBatch.objects.filter(recipe_batch_id=batch_id).select_related('meal_plan'):
             total += get_batch_portions(mprb.meal_plan, mprb)
         return total
-    
+
     def get_total_servings(self, obj: MealPlan):
         # Les totals de meal plan ne doivent pas être affectés par les ratios (vue meal plan)
         if hasattr(obj, '_total_servings'):
             return obj._total_servings
         # Base = 1 + participants actifs + guests
-        participants = obj.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(obj, 'invitations') else 0
+        participants = (
+            obj.invitations.filter(status__in=['accepted', 'pending']).count() if hasattr(obj, 'invitations') else 0
+        )
         return 1 + participants + (obj.guest_count or 0)
 
     def get_servings_breakdown(self, obj: MealPlan):
@@ -1045,7 +1162,7 @@ class MealPlanSerializer(serializers.ModelSerializer):
         de batch (RecipeBatchViewSet, RecipeSummaryModal, etc.).
         """
         return []
-    
+
     def get_is_guest(self, obj: MealPlan):
         """
         Vérifie si l'utilisateur actuel a une invitation acceptée pour ce meal plan.
@@ -1053,14 +1170,12 @@ class MealPlanSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
             return False
-        
+
         from .models import MealInvitation
-        return MealInvitation.objects.filter(
-            meal_plan=obj,
-            invitee=request.user,
-            status='accepted'
-        ).exists()
-    
+
+        return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
+
+
 class MealPlanListSerializer(serializers.ModelSerializer):
     user = UserLightSerializer(read_only=True)
     recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
@@ -1074,16 +1189,27 @@ class MealPlanListSerializer(serializers.ModelSerializer):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
             return obj.custom_label
         return obj.get_meal_time_display()
-    
+
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'confirmed',
-            'recipe', 'user', 'recipes', 'groupedDates',
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'confirmed',
+            'recipe',
+            'user',
+            'recipes',
+            'groupedDates',
             'is_guest',
         ]
-    
+
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
         dates = set()
@@ -1103,6 +1229,7 @@ class MealPlanListSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated:
             return False
         from .models import MealInvitation
+
         return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
 
 
@@ -1111,6 +1238,7 @@ class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
     Serializer ultra-léger pour meal_plan dans la liste d'invitations.
     Pas de recipes, participants, ni SerializerMethodField coûteux.
     """
+
     meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     user = UserLightSerializer(read_only=True)
@@ -1123,8 +1251,16 @@ class MealPlanLightForInvitationSerializer(serializers.ModelSerializer):
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'user',
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'user',
         ]
 
 
@@ -1174,10 +1310,12 @@ def _meal_plan_recipe_previews(meal_plan, limit=3, skip_presign=False, context=N
                         image_url = path
                 if path_cache is not None:
                     path_cache[path] = image_url
-        previews.append({
-            'image_url': image_url,
-            'title': title,
-        })
+        previews.append(
+            {
+                'image_url': image_url,
+                'title': title,
+            }
+        )
         if len(previews) >= limit:
             break
     return previews
@@ -1190,6 +1328,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
     - pas de `participants` détaillés
     - uniquement thumbs + preview avatars + compteurs
     """
+
     meal_time_display = serializers.SerializerMethodField()
     is_guest = serializers.SerializerMethodField()
     has_published_post = serializers.SerializerMethodField()
@@ -1234,12 +1373,14 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated:
             return False
         from .models import MealInvitation
+
         return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
 
     def get_has_published_post(self, obj: MealPlan):
         if hasattr(obj, 'has_published_post_annot'):
             return bool(getattr(obj, 'has_published_post_annot'))
         from .models import Post
+
         return Post.objects.filter(meal_plan=obj, is_published=True).exists()
 
     def get_workflow_status(self, obj: MealPlan):
@@ -1327,12 +1468,7 @@ class MealPlanTimelineSerializer(serializers.ModelSerializer):
                 data = UserLightSerializer(u, context=self.context).data
             except Exception:
                 data = {}
-            name = (
-                data.get('display_name')
-                or data.get('username')
-                or getattr(u, 'email', None)
-                or 'Utilisateur'
-            )
+            name = data.get('display_name') or data.get('username') or getattr(u, 'email', None) or 'Utilisateur'
             avatar = (
                 data.get('avatar_url')
                 or getattr(u, 'avatar', None)
@@ -1432,6 +1568,7 @@ class MealInvitationListSerializer(serializers.ModelSerializer):
     Serializer léger pour la liste des invitations (GET /meal-invitations/).
     Évite MealPlanSerializer (recettes, participants, etc.) et UserSerializer (is_following, etc.).
     """
+
     inviter = UserLightSerializer(read_only=True)
     invitee = UserLightSerializer(read_only=True)
     meal_plan = MealPlanLightForInvitationSerializer(read_only=True)
@@ -1440,18 +1577,25 @@ class MealInvitationListSerializer(serializers.ModelSerializer):
     class Meta:
         model = MealInvitation
         fields = [
-            'id', 'inviter', 'invitee', 'meal_plan', 'status', 'status_display',
-            'created_at', 'updated_at',
+            'id',
+            'inviter',
+            'invitee',
+            'meal_plan',
+            'status',
+            'status_display',
+            'created_at',
+            'updated_at',
         ]
 
 
 class MealInvitationSerializer(serializers.ModelSerializer):
     from accounts.serializers import UserSerializer
+
     inviter = UserSerializer(read_only=True)
     invitee = UserSerializer(read_only=True)
     meal_plan = MealPlanSerializer(read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    
+
     class Meta:
         model = MealInvitation
         fields = [
@@ -1466,11 +1610,13 @@ class MealInvitationSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'inviter', 'invitee', 'meal_plan', 'status_display']
 
+
 class MealPlanRangeListSerializer(serializers.ModelSerializer):
     """
     Lightweight list serializer for ranged listing:
     - removes user/shared_with to reduce payload
     """
+
     user = UserLightSerializer(read_only=True)
     recipe = RecipeLightSerializer(read_only=True)  # Garder pour compatibilité
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
@@ -1487,18 +1633,31 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
             return (obj.custom_label or '').strip() or obj.get_meal_time_display()
         return obj.get_meal_time_display()
-    
+
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'confirmed',
-            'user', 'participants',
-            'recipe', 'recipes', 'total_guest_count', 'total_participants', 'total_servings',
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'confirmed',
+            'user',
+            'participants',
+            'recipe',
+            'recipes',
+            'total_guest_count',
+            'total_participants',
+            'total_servings',
             'groupedDates',
             'is_guest',
         ]
-    
+
     def get_participants(self, obj):
         """
         Participants pour la timeline (léger):
@@ -1515,10 +1674,12 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
                 u = getattr(inv, 'invitee', None)
                 if not u:
                     continue
-                out.append({
-                    'user': UserLightSerializer(u, context=self.context).data,
-                    'status': inv.status,
-                })
+                out.append(
+                    {
+                        'user': UserLightSerializer(u, context=self.context).data,
+                        'status': inv.status,
+                    }
+                )
             return out
         except Exception:
             return []
@@ -1531,7 +1692,7 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
         if hasattr(obj, '_total_guest_count'):
             return obj._total_guest_count
         return obj.guest_count or 0
-    
+
     def get_total_participants(self, obj: MealPlan):
         """
         Retourne les participants groupés pré-calculés si disponibles.
@@ -1549,10 +1710,10 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
                         'status': p['status'],
                     }
             return list(by_user_id.values())
-        
+
         # Fallback : retourner une liste vide pour les meal plans non groupés
         return []
-    
+
     def get_total_servings(self, obj: MealPlan):
         """
         Calcule le nombre total de personnes pour ce meal plan.
@@ -1562,7 +1723,7 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
         # Si on a un total_servings pré-calculé (meal plan groupé), l'utiliser
         if hasattr(obj, '_total_servings'):
             return obj._total_servings
-        
+
         # Sinon, calculer pour un meal plan simple
         # Utiliser total_participants si disponible (groupé), sinon participants
         participants_to_use = None
@@ -1571,18 +1732,17 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
         else:
             # Pour MealPlanRangeListSerializer, on n'a pas get_participants, donc utiliser une liste vide
             participants_to_use = []
-        
+
         # Compter uniquement les participants actifs (accepted ou pending)
         active_participants_count = sum(
-            1 for p in participants_to_use
-            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
+            1 for p in participants_to_use if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
         )
-        
+
         # Utiliser total_guest_count si disponible (groupé), sinon guest_count
         guest_count_to_use = self.get_total_guest_count(obj)
-        
+
         return 1 + active_participants_count + guest_count_to_use
-    
+
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
         ctx = getattr(self, 'context', {}) or {}
@@ -1608,6 +1768,7 @@ class MealPlanRangeListSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated:
             return False
         from .models import MealInvitation
+
         return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
 
 
@@ -1617,6 +1778,7 @@ class MealPlanMinimalListSerializer(serializers.ModelSerializer):
     - champs agenda seulement (pas de user / avatar / inviter → zéro N+1 / presign)
     - is_guest via annotation Exists (is_guest_annot) côté queryset
     """
+
     meal_time_display = serializers.SerializerMethodField()
     meal_type_display = serializers.CharField(source='get_meal_type_display', read_only=True)
     is_guest = serializers.SerializerMethodField()
@@ -1629,8 +1791,17 @@ class MealPlanMinimalListSerializer(serializers.ModelSerializer):
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'confirmed', 'is_guest',
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'confirmed',
+            'is_guest',
         ]
 
     def get_is_guest(self, obj: MealPlan):
@@ -1640,6 +1811,7 @@ class MealPlanMinimalListSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated:
             return False
         from .models import MealInvitation
+
         return MealInvitation.objects.filter(
             meal_plan=obj,
             invitee=request.user,
@@ -1651,6 +1823,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
     """
     Detailed list for by_date: include host and participants with status.
     """
+
     host = UserLightSerializer(source='user', read_only=True)
     recipes = MealPlanRecipeSerializer(source='meal_plan_recipe_batches', many=True, read_only=True)
     meal_time_display = serializers.SerializerMethodField()
@@ -1662,22 +1835,37 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
     groupedDates = serializers.SerializerMethodField()
     is_guest = serializers.SerializerMethodField()
     inviter_name = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = MealPlan
         fields = [
-            'id', 'date', 'meal_time', 'meal_time_display', 'slot_key', 'custom_label', 'scheduled_time',
-            'meal_type', 'meal_type_display', 'confirmed',
-            'recipes', 'host', 'participants', 'guest_count', 
-            'total_guest_count', 'total_participants', 'total_servings',
-            'groupedDates', 'is_guest', 'inviter_name',
+            'id',
+            'date',
+            'meal_time',
+            'meal_time_display',
+            'slot_key',
+            'custom_label',
+            'scheduled_time',
+            'meal_type',
+            'meal_type_display',
+            'confirmed',
+            'recipes',
+            'host',
+            'participants',
+            'guest_count',
+            'total_guest_count',
+            'total_participants',
+            'total_servings',
+            'groupedDates',
+            'is_guest',
+            'inviter_name',
         ]
 
     def get_meal_time_display(self, obj: MealPlan):
         if obj.meal_time == 'other' and getattr(obj, 'custom_label', None):
             return obj.custom_label
         return obj.get_meal_time_display()
-    
+
     def get_is_guest(self, obj: MealPlan):
         """
         Vérifie si l'utilisateur actuel a une invitation acceptée pour ce meal plan.
@@ -1685,14 +1873,11 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
             return False
-        
+
         from .models import MealInvitation
-        return MealInvitation.objects.filter(
-            meal_plan=obj,
-            invitee=request.user,
-            status='accepted'
-        ).exists()
-    
+
+        return MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted').exists()
+
     def get_inviter_name(self, obj: MealPlan):
         """
         Retourne le nom de l'inviteur si l'utilisateur actuel est invité.
@@ -1700,23 +1885,29 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
             return None
-        
+
         from .models import MealInvitation
-        invitation = MealInvitation.objects.filter(
-            meal_plan=obj,
-            invitee=request.user,
-            status='accepted'
-        ).select_related('inviter').first()
-        
+
+        invitation = (
+            MealInvitation.objects.filter(meal_plan=obj, invitee=request.user, status='accepted')
+            .select_related('inviter')
+            .first()
+        )
+
         if invitation and invitation.inviter:
             return invitation.inviter.username or invitation.inviter.email
         return None
-    
+
     def get_participants(self, obj: MealPlan):
         from .models import MealInvitation
+
         # Utiliser le prefetch si disponible (via Prefetch), sinon faire une requête
         # obj.invitations.all() utilisera automatiquement le cache si prefetch est fait
-        invitations = obj.invitations.all() if hasattr(obj, 'invitations') else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+        invitations = (
+            obj.invitations.all()
+            if hasattr(obj, 'invitations')
+            else MealInvitation.objects.filter(meal_plan=obj).select_related('invitee')
+        )
         # Uniq par user avec priorité accepted > pending > declined
         precedence = {'accepted': 3, 'pending': 2, 'declined': 1}
         by_user_id = {}
@@ -1729,7 +1920,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
                     'status': inv.status,
                 }
         return list(by_user_id.values())
-    
+
     def get_total_guest_count(self, obj: MealPlan):
         """
         Retourne le total_guest_count pré-calculé dans by_date.
@@ -1738,7 +1929,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
         if hasattr(obj, '_total_guest_count'):
             return obj._total_guest_count
         return obj.guest_count or 0
-    
+
     def get_total_participants(self, obj: MealPlan):
         """
         Retourne les participants groupés pré-calculés dans by_date.
@@ -1756,10 +1947,10 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
                         'status': p['status'],
                     }
             return list(by_user_id.values())
-        
+
         # Fallback : utiliser get_participants normal
         return self.get_participants(obj)
-    
+
     def get_total_servings(self, obj: MealPlan):
         """
         Calcule le nombre total de personnes pour ce meal plan.
@@ -1769,7 +1960,7 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
         # Si on a un total_servings pré-calculé (meal plan groupé), l'utiliser
         if hasattr(obj, '_total_servings'):
             return obj._total_servings
-        
+
         # Sinon, calculer pour un meal plan simple
         # Utiliser total_participants si disponible (groupé), sinon participants
         participants_to_use = None
@@ -1777,18 +1968,17 @@ class MealPlanByDateSerializer(serializers.ModelSerializer):
             participants_to_use = obj._total_participants
         else:
             participants_to_use = self.get_participants(obj)
-        
+
         # Compter uniquement les participants actifs (accepted ou pending)
         active_participants_count = sum(
-            1 for p in participants_to_use
-            if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
+            1 for p in participants_to_use if isinstance(p, dict) and p.get('status') in ['accepted', 'pending']
         )
-        
+
         # Utiliser total_guest_count si disponible (groupé), sinon guest_count
         guest_count_to_use = self.get_total_guest_count(obj)
-        
+
         return 1 + active_participants_count + guest_count_to_use
-    
+
     def get_groupedDates(self, obj: MealPlan):
         """Calculer groupedDates en agrégeant les dates de toutes les recettes groupées."""
         dates = set()
@@ -1805,29 +1995,35 @@ class CookingProgressSerializer(serializers.ModelSerializer):
     recipe_title = serializers.CharField(source='recipe_batch.recipe.title', read_only=True)
     recipe_image_url = serializers.URLField(source='recipe_batch.recipe.image_url', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    
+
     class Meta:
         model = CookingProgress
         fields = [
-            'id', 'user', 'recipe_batch', 'recipe_title', 'recipe_image_url',
-            'current_step_index', 'status', 'status_display',
-            'started_at', 'completed_at', 'total_time_minutes',
-            'created_at', 'updated_at'
+            'id',
+            'user',
+            'recipe_batch',
+            'recipe_title',
+            'recipe_image_url',
+            'current_step_index',
+            'status',
+            'status_display',
+            'started_at',
+            'completed_at',
+            'total_time_minutes',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['user', 'started_at', 'created_at', 'updated_at']
 
 
 class CookingProgressCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer pour créer/mettre à jour une progression"""
-    
+
     class Meta:
         model = CookingProgress
-        fields = [
-            'recipe_batch', 'current_step_index', 'status',
-            'completed_at', 'total_time_minutes'
-        ]
+        fields = ['recipe_batch', 'current_step_index', 'status', 'completed_at', 'total_time_minutes']
         read_only_fields = []
-    
+
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
@@ -1840,7 +2036,7 @@ class TimerSerializer(serializers.ModelSerializer):
     # Identifiants pratiques pour le front
     recipe = serializers.IntegerField(source='recipe_batch.recipe_id', read_only=True)
     meal_plan = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Timer
         fields = [
@@ -1875,9 +2071,7 @@ class TimerSerializer(serializers.ModelSerializer):
             return None
 
         mprb = (
-            MealPlanRecipeBatch.objects.filter(
-                recipe_batch=obj.recipe_batch
-            )
+            MealPlanRecipeBatch.objects.filter(recipe_batch=obj.recipe_batch)
             .select_related('meal_plan')
             .order_by('id')
             .first()
@@ -1887,25 +2081,22 @@ class TimerSerializer(serializers.ModelSerializer):
 
 class TimerCreateSerializer(serializers.ModelSerializer):
     """Serializer pour créer un minuteur"""
-    
+
     class Meta:
         model = Timer
-        fields = [
-            'cooking_progress', 'step', 'recipe_batch', 'duration_minutes', 'remaining_seconds'
-        ]
-    
+        fields = ['cooking_progress', 'step', 'recipe_batch', 'duration_minutes', 'remaining_seconds']
+
     def validate(self, attrs):
         """
         Empêche la création de timers sans batch.
         """
         if not attrs.get('recipe_batch'):
-            raise serializers.ValidationError(
-                {'recipe_batch': 'Un recipe_batch est requis pour créer un minuteur.'}
-            )
+            raise serializers.ValidationError({'recipe_batch': 'Un recipe_batch est requis pour créer un minuteur.'})
         return super().validate(attrs)
 
     def create(self, validated_data):
         from django.utils import timezone
+
         validated_data['user'] = self.context['request'].user
         # Calculer expires_at basé sur remaining_seconds
         remaining_seconds = validated_data.get('remaining_seconds', validated_data.get('duration_minutes', 0) * 60)
@@ -1917,14 +2108,15 @@ class TimerCreateSerializer(serializers.ModelSerializer):
 
 class PostPhotoLightSerializer(serializers.ModelSerializer):
     """Serializer léger pour la galerie de photos (endpoint /meal-plans/{id}/photos/)"""
+
     presigned_url = serializers.SerializerMethodField()
     captured_label = serializers.SerializerMethodField()
     time_display = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = PostPhoto
         fields = ['id', 'photo_type', 'presigned_url', 'captured_label', 'time_display']
-    
+
     def get_presigned_url(self, obj):
         """Générer une URL pré-signée (client S3 partagé + cache)."""
         if not obj.image_path:
@@ -1933,11 +2125,12 @@ class PostPhotoLightSerializer(serializers.ModelSerializer):
             return obj.image_path
         try:
             from savr_back.settings import build_presigned_get_url
+
             return build_presigned_get_url(obj.image_path)
         except Exception as e:
-            print(f"⚠️ Error generating presigned URL: {e}")
+            print(f'⚠️ Error generating presigned URL: {e}')
             return None
-    
+
     def get_captured_label(self, obj):
         base_labels = {
             'during_cooking': 'Pendant la recette',
@@ -1949,9 +2142,9 @@ class PostPhotoLightSerializer(serializers.ModelSerializer):
         label = base_labels.get(obj.photo_type, obj.photo_type)
         step = getattr(obj, 'step', None)
         if step is not None and getattr(step, 'order', None) is not None:
-            label += f" • Étape {step.order}"
+            label += f' • Étape {step.order}'
         return label
-    
+
     def get_time_display(self, obj):
         if not obj.created_at:
             return None
@@ -1972,45 +2165,61 @@ class PostPhotoSerializer(serializers.ModelSerializer):
     uploaded_by_username = serializers.CharField(source='uploaded_by.username', read_only=True, allow_null=True)
     image_url = serializers.SerializerMethodField()
     presigned_url = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = PostPhoto
         fields = [
-            'id', 'photo_type', 'photo_type_display', 'image_path', 'image_url', 'presigned_url',
-            'step', 'step_order', 'step_title', 'captured_label',
-            'time_display', 'recipe_batch_id', 'post_id', 'uploaded_by_id', 'uploaded_by_username',
-            'editable', 'order', 'is_draft', 'created_at'
+            'id',
+            'photo_type',
+            'photo_type_display',
+            'image_path',
+            'image_url',
+            'presigned_url',
+            'step',
+            'step_order',
+            'step_title',
+            'captured_label',
+            'time_display',
+            'recipe_batch_id',
+            'post_id',
+            'uploaded_by_id',
+            'uploaded_by_username',
+            'editable',
+            'order',
+            'is_draft',
+            'created_at',
         ]
         read_only_fields = ['created_at']
-    
+
     def get_image_url(self, obj):
         """Construire l'URL complète à partir du chemin relatif"""
         from savr_back.settings import build_s3_url
+
         if not obj.image_path:
             return None
         return build_s3_url(obj.image_path)
-    
+
     def get_presigned_url(self, obj):
         """
         Générer une URL pré-signée pour l'image.
-        
+
         IMPORTANT : Les presigned URLs sont NÉCESSAIRES si le bucket S3 n'est pas public.
         Ne pas désactiver cette fonctionnalité même pour optimiser les performances.
         """
         # Option pour sauter la génération des presigned URLs (optimisation liste)
         if self.context.get('skip_presign'):
             return self.get_image_url(obj)
-        
+
         if not obj.image_path:
             return None
-        
+
         from django.conf import settings
         from savr_back.settings import build_presigned_get_url
-        
+
         # Si pas de configuration S3, retourner l'URL directe
         if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.AWS_BUCKET:
             return self.get_image_url(obj)
-        
+
         try:
             # TOUJOURS générer une presigned URL pour garantir l'accès aux images
             # Même si cela prend un peu de temps, c'est essentiel pour la sécurité
@@ -2018,9 +2227,9 @@ class PostPhotoSerializer(serializers.ModelSerializer):
             return presigned_url
         except Exception as e:
             # En cas d'erreur, retourner l'URL directe en espérant que le bucket est public
-            print(f"⚠️ Error generating presigned URL: {e}")
+            print(f'⚠️ Error generating presigned URL: {e}')
             return self.get_image_url(obj)
-    
+
     def get_captured_label(self, obj):
         base_labels = {
             'during_cooking': 'Pendant la recette',
@@ -2031,14 +2240,14 @@ class PostPhotoSerializer(serializers.ModelSerializer):
         }
         label = base_labels.get(obj.photo_type, obj.photo_type)
         if obj.step and obj.step.order is not None:
-            label += f" • Étape {obj.step.order}"
+            label += f' • Étape {obj.step.order}'
         return label
-    
+
     def get_time_display(self, obj):
         if not obj.created_at:
             return None
         return obj.created_at.strftime('%d %b • %H:%M')
-    
+
     def get_editable(self, obj):
         request = self.context.get('request')
         if not request or request.user.is_anonymous:
@@ -2052,21 +2261,19 @@ class PostPhotoSerializer(serializers.ModelSerializer):
 
         if obj.recipe_batch_id:
             from .models import RecipeBatch, MealPlan
+
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
             has_access = RecipeBatch.objects.filter(
                 id=obj.recipe_batch_id,
-                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                    accessible_meal_plan_filter
-                )
+                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter),
             ).exists()
             return has_access
 
         if getattr(obj, 'meal_plan_id', None):
             from .models import MealPlan
+
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-            return MealPlan.objects.filter(id=obj.meal_plan_id).filter(
-                accessible_meal_plan_filter
-            ).exists()
+            return MealPlan.objects.filter(id=obj.meal_plan_id).filter(accessible_meal_plan_filter).exists()
 
         return False
 
@@ -2095,6 +2302,7 @@ class RepostFieldsMixin(serializers.Serializer):
         if not request or not request.user.is_authenticated:
             return False
         from .services.repost_service import user_can_repost_post
+
         return user_can_repost_post(request.user, obj)
 
     def get_reposts_count(self, obj):
@@ -2108,6 +2316,7 @@ class RepostFieldsMixin(serializers.Serializer):
     def get_co_cooked_users(self, obj):
         from .services.repost_service import get_co_cooked_users
         from accounts.services.follow_service import get_follow_relation
+
         users = get_co_cooked_users(obj)
         data = UserLightSerializer(users, many=True, context=self.context).data
         request = self.context.get('request')
@@ -2139,12 +2348,28 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     class Meta:
         model = Post
         fields = [
-            'id', 'user', 'recipe_batch', 'meal_plan',
-            'comment', 'cooking_time_minutes', 'is_published', 'recipe_meta', 'recipe', 'recipes',
-            'photos', 'photos_count', 'has_all_photos',
-            'cookies_count', 'has_cookie_from_user', 'comments_count',
-            'has_reposted_by_me', 'can_repost', 'reposts_count', 'co_cooked_users',
-            'created_at', 'updated_at'
+            'id',
+            'user',
+            'recipe_batch',
+            'meal_plan',
+            'comment',
+            'cooking_time_minutes',
+            'is_published',
+            'recipe_meta',
+            'recipe',
+            'recipes',
+            'photos',
+            'photos_count',
+            'has_all_photos',
+            'cookies_count',
+            'has_cookie_from_user',
+            'comments_count',
+            'has_reposted_by_me',
+            'can_repost',
+            'reposts_count',
+            'co_cooked_users',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
 
@@ -2157,6 +2382,7 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             author = getattr(instance, 'user', None)
             if viewer and getattr(viewer, 'is_authenticated', False) and author:
                 from accounts.services.follow_service import get_follow_relation
+
                 nested.update(get_follow_relation(viewer, author))
         return data
 
@@ -2172,7 +2398,7 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'meal_type_display': mp.get_meal_type_display(),
             **meal_plan_slot_api_fields(mp),
         }
-    
+
     def get_recipe(self, obj):
         """Retourner les infos de base de la recette pour compatibilité avec PostDetailModal"""
         recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
@@ -2208,11 +2434,13 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             if not recipe or not recipe.id:
                 return
             seen_batch_ids.add(batch.id)
-            entries.append({
-                'recipe_batch_id': batch.id,
-                'order': order if order is not None else len(entries),
-                'recipe': recipe_payload(recipe),
-            })
+            entries.append(
+                {
+                    'recipe_batch_id': batch.id,
+                    'order': order if order is not None else len(entries),
+                    'recipe': recipe_payload(recipe),
+                }
+            )
 
         if obj.meal_plan_id and obj.meal_plan:
             mprbs = obj.meal_plan.meal_plan_recipe_batches.all()
@@ -2228,7 +2456,7 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
 
         entries.sort(key=lambda item: item.get('order', 0))
         return entries
-    
+
     def get_recipe_meta(self, obj):
         recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
         if not recipe:
@@ -2248,14 +2476,14 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'servings': servings,
             'shared_with': shared_with,
         }
-    
+
     def get_cookies_count(self, obj):
         """Nombre total de cookies sur le post - utilise les données préchargées"""
         # Si les cookies sont déjà préchargés, utiliser len() au lieu de count()
         if hasattr(obj, '_prefetched_objects_cache') and 'cookies' in obj._prefetched_objects_cache:
             return len(obj._prefetched_objects_cache['cookies'])
         return obj.cookies.count()
-    
+
     def get_has_cookie_from_user(self, obj):
         """Vérifie si l'utilisateur actuel a donné un cookie à ce post - utilise les données préchargées"""
         request = self.context.get('request')
@@ -2274,20 +2502,22 @@ class PostSerializer(RepostFieldsMixin, serializers.ModelSerializer):
 
 class PostPhotoListSerializer(serializers.ModelSerializer):
     """Version allégée pour la liste de posts (uniquement les URLs)."""
+
     image_url = serializers.SerializerMethodField()
     presigned_url = serializers.SerializerMethodField()
     recipe_batch_id = serializers.IntegerField(read_only=True, allow_null=True)
-    
+
     class Meta:
         model = PostPhoto
         fields = ['id', 'photo_type', 'image_url', 'presigned_url', 'order', 'recipe_batch_id']
-    
+
     def get_image_url(self, obj):
         from savr_back.settings import build_s3_url
+
         if not obj.image_path:
             return None
         return build_s3_url(obj.image_path)
-    
+
     def get_presigned_url(self, obj):
         if self.context.get('skip_presign'):
             return self.get_image_url(obj)
@@ -2295,6 +2525,7 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
             return None
         from django.conf import settings
         from savr_back.settings import build_presigned_get_url
+
         if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.AWS_BUCKET:
             return self.get_image_url(obj)
         try:
@@ -2305,6 +2536,7 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
 
 class PostCommentSerializer(serializers.ModelSerializer):
     """Serializer pour les commentaires sur un post"""
+
     user = UserLightSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
     has_like_from_user = serializers.SerializerMethodField()
@@ -2347,6 +2579,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
 
 class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     """Serializer minimal pour la liste des posts (feed)."""
+
     user = UserLightSerializer(read_only=True)
     photos = PostPhotoListSerializer(many=True, read_only=True)
     recipe = serializers.SerializerMethodField()
@@ -2356,17 +2589,27 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
     has_cookie_from_user = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     author_is_following = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Post
         fields = [
-            'id', 'user',
-            'comment', 'cooking_time_minutes', 'is_published',
+            'id',
+            'user',
+            'comment',
+            'cooking_time_minutes',
+            'is_published',
             'photos',
-            'cookies_count', 'has_cookie_from_user', 'comments_count',
-            'recipe', 'recipe_batch', 'meal_plan',
+            'cookies_count',
+            'has_cookie_from_user',
+            'comments_count',
+            'recipe',
+            'recipe_batch',
+            'meal_plan',
             'author_is_following',
-            'has_reposted_by_me', 'can_repost', 'reposts_count', 'co_cooked_users',
+            'has_reposted_by_me',
+            'can_repost',
+            'reposts_count',
+            'co_cooked_users',
             'created_at',
         ]
         read_only_fields = ['user', 'created_at']
@@ -2394,9 +2637,8 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
         if annotated is not None:
             return bool(annotated)
         from accounts.models import Follow
-        return Follow.objects.filter(
-            follower_id=request.user.id, following_id=obj.user_id
-        ).exists()
+
+        return Follow.objects.filter(follower_id=request.user.id, following_id=obj.user_id).exists()
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -2404,20 +2646,15 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
         nested = data.get('user')
         if isinstance(nested, dict):
             nested['is_following'] = bool(data.get('author_is_following'))
-            nested['is_followed_by'] = bool(
-                getattr(instance, '_viewer_followed_by_post_author', False)
-            )
-            nested['follow_request_outgoing'] = bool(
-                getattr(instance, '_follow_request_outgoing', False)
-            )
-            nested['follow_request_incoming'] = bool(
-                getattr(instance, '_follow_request_incoming', False)
-            )
+            nested['is_followed_by'] = bool(getattr(instance, '_viewer_followed_by_post_author', False))
+            nested['follow_request_outgoing'] = bool(getattr(instance, '_follow_request_outgoing', False))
+            nested['follow_request_incoming'] = bool(getattr(instance, '_follow_request_incoming', False))
         if settings.DEBUG:
             import logging
+
             logger = logging.getLogger(__name__)
             logger.info(
-                "[PostListSerializer] post_id=%s recipe_batch_id=%s photos=%s",
+                '[PostListSerializer] post_id=%s recipe_batch_id=%s photos=%s',
                 instance.id,
                 getattr(instance, 'recipe_batch_id', None),
                 [
@@ -2430,7 +2667,7 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
                 ],
             )
         return data
-    
+
     def get_recipe(self, obj):
         recipe = obj.recipe_batch.recipe if obj.recipe_batch else None
         if not recipe:
@@ -2449,26 +2686,30 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'servings': recipe.servings,
             'total_time': total_time,
         }
-    
+
     def get_recipe_batch(self, obj):
         """Retourner les infos minimales du batch pour le carnet"""
         if not obj.recipe_batch:
             return None
         batch = obj.recipe_batch
         recipe = batch.recipe if batch else None
-        
+
         # Utiliser les données préchargées si disponibles pour éviter les requêtes N+1
         meal_plan_ids = []
         grouped_dates = []
         meals = []
-        
+
         # Si les meal_plan_recipe_batches sont préchargés, les utiliser
-        if hasattr(batch, '_prefetched_objects_cache') and 'meal_plan_recipe_batches' in batch._prefetched_objects_cache:
+        if (
+            hasattr(batch, '_prefetched_objects_cache')
+            and 'meal_plan_recipe_batches' in batch._prefetched_objects_cache
+        ):
             mprbs = batch._prefetched_objects_cache['meal_plan_recipe_batches']
             meal_plan_ids = [mprb.meal_plan_id for mprb in mprbs if mprb.meal_plan_id]
             # Récupérer les meal plans depuis le cache si disponible
             if meal_plan_ids:
                 from .models import MealPlan
+
                 meal_plans = MealPlan.objects.filter(id__in=meal_plan_ids).only(
                     'id', 'date', 'meal_time', 'custom_label'
                 )
@@ -2485,9 +2726,9 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
         else:
             # Fallback : faire une requête si les données ne sont pas préchargées
             from .models import MealPlanRecipeBatch, MealPlan
+
             meal_plan_ids = list(
-                MealPlanRecipeBatch.objects.filter(recipe_batch=batch)
-                .values_list('meal_plan_id', flat=True)
+                MealPlanRecipeBatch.objects.filter(recipe_batch=batch).values_list('meal_plan_id', flat=True)
             )
             if meal_plan_ids:
                 meal_plans = MealPlan.objects.filter(id__in=meal_plan_ids).only(
@@ -2503,7 +2744,7 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
                     }
                     for mp in meal_plans
                 ]
-        
+
         return {
             'id': batch.id,
             'recipe': {
@@ -2516,12 +2757,12 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
             'meals': meals,
             'meal_plan_ids': meal_plan_ids,
         }
-    
+
     def get_cookies_count(self, obj):
         if hasattr(obj, '_prefetched_objects_cache') and 'cookies' in obj._prefetched_objects_cache:
             return len(obj._prefetched_objects_cache['cookies'])
         return obj.cookies.count()
-    
+
     def get_has_cookie_from_user(self, obj):
         request = self.context.get('request')
         if not request or request.user.is_anonymous:
@@ -2538,19 +2779,16 @@ class PostListSerializer(RepostFieldsMixin, serializers.ModelSerializer):
 
 class PostCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer pour créer/mettre à jour un post"""
+
     recipe_batch_id = serializers.PrimaryKeyRelatedField(
-        queryset=RecipeBatch.objects.all(),
-        source='recipe_batch',
-        write_only=True
+        queryset=RecipeBatch.objects.all(), source='recipe_batch', write_only=True
     )
-    
+
     class Meta:
         model = Post
-        fields = [
-            'id', 'recipe_batch', 'recipe_batch_id', 'comment', 'is_published'
-        ]
+        fields = ['id', 'recipe_batch', 'recipe_batch_id', 'comment', 'is_published']
         read_only_fields = ['id']
-    
+
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
@@ -2558,6 +2796,7 @@ class PostCreateUpdateSerializer(serializers.ModelSerializer):
 
 class ShoppingListSerializer(serializers.ModelSerializer):
     """Serializer pour une liste de courses (V2)"""
+
     members = serializers.SerializerMethodField()
     items_count = serializers.SerializerMethodField()
     is_complete = serializers.SerializerMethodField()
@@ -2565,9 +2804,15 @@ class ShoppingListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShoppingList
         fields = [
-            'id', 'name', 'color', 'is_archived',
-            'members', 'items_count', 'is_complete',
-            'created_at', 'updated_at',
+            'id',
+            'name',
+            'color',
+            'is_archived',
+            'members',
+            'items_count',
+            'is_complete',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at', 'members', 'items_count', 'is_complete']
 
@@ -2588,6 +2833,7 @@ class ShoppingListSerializer(serializers.ModelSerializer):
     def get_items_count(self, obj):
         try:
             from decimal import Decimal
+
             items = obj.items.prefetch_related('quantities').all()
             count = 0
             for item in items:
@@ -2605,10 +2851,11 @@ class ShoppingListSerializer(serializers.ModelSerializer):
         """Vérifie si tous les ingrédients sont cochés (remaining <= 0 pour tous les items)"""
         try:
             from decimal import Decimal
+
             items = obj.items.prefetch_related('quantities').all()
             if not items.exists():
                 return False  # Liste vide = pas complète
-            
+
             for item in items:
                 pantry_qty = Decimal(str(item.pantry_quantity or 0))
                 total_qty = sum(Decimal(str(q.quantity or 0)) for q in item.quantities.all())
@@ -2626,9 +2873,10 @@ class ShoppingListSerializer(serializers.ModelSerializer):
         """
         request = self.context.get('request')
         if not request or request.user.is_anonymous:
-            raise serializers.ValidationError("Authentication required")
+            raise serializers.ValidationError('Authentication required')
         shopping_list = super().create(validated_data)
         from .models import ShoppingListMember
+
         ShoppingListMember.objects.create(
             shopping_list=shopping_list,
             user=request.user,
@@ -2639,12 +2887,14 @@ class ShoppingListSerializer(serializers.ModelSerializer):
 
 class ShoppingListInvitationSerializer(serializers.ModelSerializer):
     """Serializer pour les invitations aux listes de courses"""
+
     from accounts.serializers import UserSerializer
+
     inviter = UserSerializer(read_only=True)
     invitee = UserSerializer(read_only=True)
     shopping_list = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    
+
     class Meta:
         model = ShoppingListInvitation
         fields = [
@@ -2658,7 +2908,7 @@ class ShoppingListInvitationSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
-    
+
     def get_shopping_list(self, obj):
         """Utiliser ShoppingListSerializer pour éviter la référence circulaire"""
         return ShoppingListSerializer(obj.shopping_list, context=self.context).data
@@ -2666,6 +2916,7 @@ class ShoppingListInvitationSerializer(serializers.ModelSerializer):
 
 class ShoppingListItemSerializer(serializers.ModelSerializer):
     """Serializer pour les items de liste de courses (V2)"""
+
     ingredient = IngredientSerializer(read_only=True)
     checked_by = UserLightSerializer(read_only=True)
     total_quantity = serializers.SerializerMethodField()
@@ -2759,31 +3010,35 @@ class ShoppingListItemSerializer(serializers.ModelSerializer):
 
 class ShoppingListItemCreateSerializer(serializers.Serializer):
     """Serializer pour créer un item de liste de courses manuellement"""
+
     shopping_list_id = serializers.IntegerField(required=True)
-    ingredient_name = serializers.CharField(max_length=200, required=True, help_text="Nom de l'ingrédient (sera créé si n'existe pas)")
+    ingredient_name = serializers.CharField(
+        max_length=200, required=True, help_text="Nom de l'ingrédient (sera créé si n'existe pas)"
+    )
     quantity = serializers.DecimalField(max_digits=10, decimal_places=2, default=1.0, required=False)
     unit = serializers.CharField(max_length=20, default='piece', required=False)
-    category_id = serializers.IntegerField(required=False, allow_null=True, help_text="ID de catégorie (optionnel, sera déterminé automatiquement si non fourni)")
-    
+    category_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text='ID de catégorie (optionnel, sera déterminé automatiquement si non fourni)',
+    )
+
     def validate_unit(self, value):
         """Valider que l'unité est valide"""
         valid_units = ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'piece', 'pinch', 'clove']
         if value and value.lower() not in valid_units:
-            raise serializers.ValidationError(f"Unité invalide. Unités valides: {', '.join(valid_units)}")
+            raise serializers.ValidationError(f'Unité invalide. Unités valides: {", ".join(valid_units)}')
         return value.lower() if value else 'piece'
 
 
 # Serializers pour Collections
 class CollectionRecipeSerializer(serializers.ModelSerializer):
     """Serializer pour la relation Collection-Recipe"""
+
     recipe = RecipeLightSerializer(read_only=True)
-    recipe_id = serializers.PrimaryKeyRelatedField(
-        queryset=Recipe.objects.all(),
-        source='recipe',
-        write_only=True
-    )
+    recipe_id = serializers.PrimaryKeyRelatedField(queryset=Recipe.objects.all(), source='recipe', write_only=True)
     added_by_username = serializers.CharField(source='added_by.username', read_only=True)
-    
+
     class Meta:
         model = CollectionRecipe
         fields = ['id', 'recipe', 'recipe_id', 'added_by', 'added_by_username', 'added_at']
@@ -2792,14 +3047,11 @@ class CollectionRecipeSerializer(serializers.ModelSerializer):
 
 class CollectionMemberSerializer(serializers.ModelSerializer):
     """Serializer pour les membres d'une collection"""
+
     user = UserLightSerializer(read_only=True)
-    user_id = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
-        source='user',
-        write_only=True
-    )
+    user_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), source='user', write_only=True)
     role_display = serializers.CharField(source='get_role_display', read_only=True)
-    
+
     class Meta:
         model = CollectionMember
         fields = ['id', 'user', 'user_id', 'role', 'role_display', 'joined_at']
@@ -2808,6 +3060,7 @@ class CollectionMemberSerializer(serializers.ModelSerializer):
 
 class CollectionSerializer(serializers.ModelSerializer):
     """Serializer pour afficher une collection avec ses recettes"""
+
     owner = UserLightSerializer(read_only=True)
     recipes_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
@@ -2816,9 +3069,18 @@ class CollectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Collection
         fields = [
-            'id', 'name', 'description', 'owner', 'is_public', 'is_collaborative',
-            'cover_image_path', 'cover_image_url', 'recipes_count', 'is_following',
-            'created_at', 'updated_at'
+            'id',
+            'name',
+            'description',
+            'owner',
+            'is_public',
+            'is_collaborative',
+            'cover_image_path',
+            'cover_image_url',
+            'recipes_count',
+            'is_following',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['owner', 'created_at', 'updated_at']
 
@@ -2827,7 +3089,7 @@ class CollectionSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return False
         return obj.followers.filter(user=request.user).exists()
-    
+
     def get_recipes_count(self, obj):
         """Compter les recettes de manière optimisée"""
         try:
@@ -2841,16 +3103,18 @@ class CollectionSerializer(serializers.ModelSerializer):
             return obj.collection_recipes.count()
         except Exception:
             return 0
-    
+
     def get_cover_image_url(self, obj):
         """Construire l'URL complète de l'image de couverture"""
         try:
             if obj.cover_image_path:
                 from django.conf import settings
+
                 if hasattr(settings, 'build_s3_url'):
                     return settings.build_s3_url(obj.cover_image_path)
                 # Fallback si build_s3_url n'est pas disponible
                 from savr_back.settings import build_s3_url
+
                 return build_s3_url(obj.cover_image_path)
         except Exception:
             pass
@@ -2859,6 +3123,7 @@ class CollectionSerializer(serializers.ModelSerializer):
 
 class CollectionListSerializer(serializers.ModelSerializer):
     """Serializer simplifié pour la liste des collections"""
+
     owner = UserLightSerializer(read_only=True)
     recipes_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
@@ -2870,9 +3135,21 @@ class CollectionListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Collection
         fields = [
-            'id', 'name', 'description', 'owner', 'is_public', 'is_collaborative',
-            'cover_image_path', 'cover_image_url', 'recipes_count', 'collection_recipes',
-            'last_activity_at', 'is_owner', 'is_following', 'created_at', 'updated_at'
+            'id',
+            'name',
+            'description',
+            'owner',
+            'is_public',
+            'is_collaborative',
+            'cover_image_path',
+            'cover_image_url',
+            'recipes_count',
+            'collection_recipes',
+            'last_activity_at',
+            'is_owner',
+            'is_following',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['owner', 'created_at', 'updated_at']
 
@@ -2887,7 +3164,7 @@ class CollectionListSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return False
         return obj.followers.filter(user=request.user).exists()
-    
+
     def get_recipes_count(self, obj):
         """Compter les recettes"""
         try:
@@ -2901,7 +3178,7 @@ class CollectionListSerializer(serializers.ModelSerializer):
             return obj.collection_recipes.count()
         except Exception:
             return 0
-    
+
     def get_collection_recipes(self, obj):
         """Récupérer les premières recettes avec leurs images pour le collage"""
         try:
@@ -2914,21 +3191,25 @@ class CollectionListSerializer(serializers.ModelSerializer):
                         'id': cr.recipe.id,
                         'title': cr.recipe.title,
                         'image_url': cr.recipe.image_url,
-                    } if cr.recipe else None,
+                    }
+                    if cr.recipe
+                    else None,
                 }
                 for cr in collection_recipes
             ]
         except Exception:
             return []
-    
+
     def get_cover_image_url(self, obj):
         """Construire l'URL complète de l'image de couverture"""
         try:
             if obj.cover_image_path:
                 from django.conf import settings
+
                 if hasattr(settings, 'build_s3_url'):
                     return settings.build_s3_url(obj.cover_image_path)
                 from savr_back.settings import build_s3_url
+
                 return build_s3_url(obj.cover_image_path)
         except Exception:
             pass
@@ -2945,12 +3226,12 @@ class CollectionListSerializer(serializers.ModelSerializer):
 
 class CollectionCreateSerializer(serializers.ModelSerializer):
     """Serializer pour créer une collection"""
-    
+
     class Meta:
         model = Collection
         fields = ['id', 'name', 'description', 'is_public', 'is_collaborative', 'cover_image_path']
         read_only_fields = ['id']
-    
+
     def create(self, validated_data):
         """Créer une collection avec l'utilisateur connecté comme owner"""
         user = self.context['request'].user
@@ -2958,17 +3239,13 @@ class CollectionCreateSerializer(serializers.ModelSerializer):
         validated_data.pop('owner', None)
         collection = Collection.objects.create(owner=user, **validated_data)
         # Créer automatiquement un CollectionMember pour le owner
-        CollectionMember.objects.create(
-            collection=collection,
-            user=user,
-            role='owner'
-        )
+        CollectionMember.objects.create(collection=collection, user=user, role='owner')
         return collection
 
 
 class CollectionUpdateSerializer(serializers.ModelSerializer):
     """Serializer pour mettre à jour une collection"""
-    
+
     class Meta:
         model = Collection
         fields = ['name', 'description', 'is_public', 'is_collaborative', 'cover_image_path']
@@ -2976,73 +3253,63 @@ class CollectionUpdateSerializer(serializers.ModelSerializer):
 
 class RecipeFormalizeSerializer(serializers.Serializer):
     """Serializer pour recevoir les données brutes du formulaire de création de recette"""
+
     title = serializers.CharField(
-        max_length=200, 
+        max_length=200,
         required=False,
         allow_blank=True,
         default='Ma recette',
-        help_text="Titre de la recette (max 200 caractères)"
+        help_text='Titre de la recette (max 200 caractères)',
     )
     description = serializers.CharField(
-        required=False, 
-        allow_blank=True,
-        max_length=2000,
-        help_text="Description optionnelle (max 2000 caractères)"
+        required=False, allow_blank=True, max_length=2000, help_text='Description optionnelle (max 2000 caractères)'
     )
     raw_text = serializers.CharField(
         required=False,
         allow_blank=True,
         max_length=15000,
-        help_text="Recette collée en vrac (titre + ingrédients + étapes mélangés)"
+        help_text='Recette collée en vrac (titre + ingrédients + étapes mélangés)',
     )
     ingredients_text = serializers.CharField(
         required=False,
         allow_blank=True,
         max_length=5000,
-        help_text="Ingrédients séparés par sauts de ligne (max 5000 caractères)"
+        help_text='Ingrédients séparés par sauts de ligne (max 5000 caractères)',
     )
     instructions_text = serializers.CharField(
         required=False,
         allow_blank=True,
         max_length=10000,
-        help_text="Instructions séparées par sauts de ligne (max 10000 caractères)"
+        help_text='Instructions séparées par sauts de ligne (max 10000 caractères)',
     )
     servings = serializers.IntegerField(
-        required=False, 
-        min_value=1, 
-        max_value=50,
-        allow_null=True,
-        help_text="Nombre de portions (1-50)"
+        required=False, min_value=1, max_value=50, allow_null=True, help_text='Nombre de portions (1-50)'
     )
     prep_time = serializers.IntegerField(
-        required=False, 
-        min_value=0, 
-        max_value=1440,
-        allow_null=True, 
-        help_text="Temps de préparation en minutes (max 24h)"
-    )
-    cook_time = serializers.IntegerField(
-        required=False, 
+        required=False,
         min_value=0,
         max_value=1440,
-        allow_null=True, 
-        help_text="Temps de cuisson en minutes (max 24h)"
+        allow_null=True,
+        help_text='Temps de préparation en minutes (max 24h)',
+    )
+    cook_time = serializers.IntegerField(
+        required=False, min_value=0, max_value=1440, allow_null=True, help_text='Temps de cuisson en minutes (max 24h)'
     )
     image_path = serializers.CharField(
         required=False,
         allow_blank=True,
         allow_null=True,
         max_length=500,
-        help_text="Chemin relatif de l'image (fourni après upload S3)"
+        help_text="Chemin relatif de l'image (fourni après upload S3)",
     )
     categories = serializers.ListField(
         child=serializers.CharField(max_length=100),
         required=False,
         allow_empty=True,
         max_length=10,
-        help_text="Liste des catégories (max 10)"
+        help_text='Liste des catégories (max 10)',
     )
-    
+
     def validate_title(self, value):
         """Valider le titre"""
         if value is None:
@@ -3051,25 +3318,25 @@ class RecipeFormalizeSerializer(serializers.Serializer):
         if not cleaned:
             return 'Ma recette'
         if len(cleaned) < 3:
-            raise serializers.ValidationError("Le titre doit contenir au moins 3 caractères.")
+            raise serializers.ValidationError('Le titre doit contenir au moins 3 caractères.')
         return cleaned
-    
+
     def validate_ingredients_text(self, value):
         """Valider le texte des ingrédients (optionnel si raw_text)."""
         if value is None or not str(value).strip():
             return value or ''
         lines = [line.strip() for line in value.split('\n') if line.strip()]
         if len(lines) > 100:
-            raise serializers.ValidationError("Maximum 100 ingrédients autorisés.")
+            raise serializers.ValidationError('Maximum 100 ingrédients autorisés.')
         return value
-    
+
     def validate_instructions_text(self, value):
         """Valider le texte des instructions (optionnel si raw_text)."""
         if value is None or not str(value).strip():
             return value or ''
         lines = [line.strip() for line in value.split('\n') if line.strip()]
         if len(lines) > 50:
-            raise serializers.ValidationError("Maximum 50 étapes autorisées.")
+            raise serializers.ValidationError('Maximum 50 étapes autorisées.')
         return value
 
     def validate(self, attrs):
@@ -3080,9 +3347,11 @@ class RecipeFormalizeSerializer(serializers.Serializer):
 
         if raw:
             if len(raw) < 10:
-                raise serializers.ValidationError({
-                    'raw_text': 'Colle une recette un peu plus longue (10 caractères minimum).',
-                })
+                raise serializers.ValidationError(
+                    {
+                        'raw_text': 'Colle une recette un peu plus longue (10 caractères minimum).',
+                    }
+                )
             attrs['raw_text'] = raw
             attrs['title'] = title
             # Compat stockage / preprocesseur : garder un fallback non vide
@@ -3116,9 +3385,7 @@ class RecipeGenerateFromIdeaSerializer(serializers.Serializer):
     def validate_idea_text(self, value):
         cleaned = (value or '').strip()
         if len(cleaned) < 5:
-            raise serializers.ValidationError(
-                "Décrivez votre idée en au moins quelques mots (5 caractères minimum)."
-            )
+            raise serializers.ValidationError('Décrivez votre idée en au moins quelques mots (5 caractères minimum).')
         return cleaned
 
 
@@ -3181,6 +3448,7 @@ class RecipeImportRequestLightSerializer(serializers.ModelSerializer):
     Version allégée pour le polling (bulle + écran imports).
     Ne retourne pas la recette complète pour limiter la taille du payload.
     """
+
     recipe_id = serializers.SerializerMethodField()
     recipe_title = serializers.SerializerMethodField()
     import_progress = serializers.SerializerMethodField()

@@ -26,9 +26,7 @@ User = get_user_model()
 
 class ContextRefsPromptTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
-            username='chef', email='chef@test.com', password='pass'
-        )
+        self.user = User.objects.create_user(username='chef', email='chef@test.com', password='pass')
         self.recipe = Recipe.objects.create(
             title='Salade composée',
             description='Une salade fraîche et colorée.',
@@ -48,22 +46,31 @@ class ContextRefsPromptTests(TestCase):
         )
 
     def test_format_context_refs_includes_meta(self):
-        prompt = format_context_refs_prompt([{
-            'type': 'recipe',
-            'id': self.recipe.id,
-            'label': self.recipe.title,
-            'meta': {'view_mode_label': 'Fiche recette'},
-        }])
+        prompt = format_context_refs_prompt(
+            [
+                {
+                    'type': 'recipe',
+                    'id': self.recipe.id,
+                    'label': self.recipe.title,
+                    'meta': {'view_mode_label': 'Fiche recette'},
+                }
+            ]
+        )
         self.assertIn('[Contexte utilisateur attaché]', prompt)
         self.assertIn('Salade composée', prompt)
         self.assertIn('Fiche recette', prompt)
 
     def test_build_context_prompt_resolves_recipe_from_db(self):
-        prompt = build_context_prompt_for_agent(self.user, [{
-            'type': 'recipe',
-            'id': self.recipe.id,
-            'label': self.recipe.title,
-        }])
+        prompt = build_context_prompt_for_agent(
+            self.user,
+            [
+                {
+                    'type': 'recipe',
+                    'id': self.recipe.id,
+                    'label': self.recipe.title,
+                }
+            ],
+        )
         self.assertIn('[Contenu résolu depuis Tchikook Agent]', prompt)
         self.assertIn('Tomate', prompt)
         self.assertIn('Résumé des étapes', prompt)
@@ -76,11 +83,13 @@ class ContextRefsPromptTests(TestCase):
             message_type=Message.TYPE_TEXT,
             content='Comment adapter les portions ?',
             ui_payload={
-                'context_refs': [{
-                    'type': 'recipe',
-                    'id': self.recipe.id,
-                    'label': self.recipe.title,
-                }],
+                'context_refs': [
+                    {
+                        'type': 'recipe',
+                        'id': self.recipe.id,
+                        'label': self.recipe.title,
+                    }
+                ],
             },
         )
         msgs = list(conv.messages.order_by('created_at'))
@@ -132,10 +141,15 @@ class ContextRefsPromptTests(TestCase):
             checked_at=timezone.now() - timedelta(hours=30),
         )
 
-        prompt = build_context_prompt_for_agent(self.user, [{
-            'type': 'shopping_list',
-            'id': shopping_list.id,
-            'label': 'ABC',
-        }])
+        prompt = build_context_prompt_for_agent(
+            self.user,
+            [
+                {
+                    'type': 'shopping_list',
+                    'id': shopping_list.id,
+                    'label': 'ABC',
+                }
+            ],
+        )
         self.assertIn('tout est déjà acheté', prompt)
         self.assertNotIn('Noix', prompt)

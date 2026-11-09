@@ -75,9 +75,7 @@ class RecipeCreateAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
         recipe = Recipe.objects.get(id=response.data['id'])
-        names = set(
-            RecipeIngredient.objects.filter(recipe=recipe).values_list('ingredient__name', flat=True)
-        )
+        names = set(RecipeIngredient.objects.filter(recipe=recipe).values_list('ingredient__name', flat=True))
         self.assertEqual(names, {'Lait', 'Farine'})
         milk = RecipeIngredient.objects.get(recipe=recipe, ingredient__name='Lait')
         self.assertEqual(milk.quantity, 250)

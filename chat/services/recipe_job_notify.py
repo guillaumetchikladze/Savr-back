@@ -14,12 +14,12 @@ def build_recipe_job_ready_system_content(event: dict) -> str:
     job_type = event.get('job_type') or 'import'
     kind = 'génération' if job_type == 'generate' else 'import'
     return (
-        f"[Événement Tchikook Agent] La {kind} de recette est terminée avec succès.\n"
-        f"- Titre : {recipe_title}\n"
-        f"- recipe_id : {recipe_id}\n"
+        f'[Événement Tchikook Agent] La {kind} de recette est terminée avec succès.\n'
+        f'- Titre : {recipe_title}\n'
+        f'- recipe_id : {recipe_id}\n'
         "L'utilisateur attend la suite : propose une action concrète "
-        "(planifier avec add_recipe_to_meal_plan si pertinent, ou inviter à consulter la fiche). "
-        "Ne relance pas generate_recipe_from_idea ni import_recipe_from_url pour cette recette."
+        '(planifier avec add_recipe_to_meal_plan si pertinent, ou inviter à consulter la fiche). '
+        'Ne relance pas generate_recipe_from_idea ni import_recipe_from_url pour cette recette.'
     )
 
 

@@ -22,7 +22,7 @@ def execute_pending_action(user: AbstractBaseUser, action: PendingAction) -> dic
     elif action.action_type == PendingAction.ACTION_RECIPE_REVISION:
         result = execute_recipe_revision(user, payload)
     else:
-        raise ValueError(f'Type d\'action inconnu: {action.action_type}')
+        raise ValueError(f"Type d'action inconnu: {action.action_type}")
 
     action.status = PendingAction.STATUS_CONFIRMED
     action.save(update_fields=['status'])

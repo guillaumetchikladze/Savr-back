@@ -36,32 +36,79 @@ from .services.meal_plan_service import (
 )
 from .services.repost_service import create_post_repost, delete_post_repost, user_can_repost_post
 from .models import (
-    Category, Recipe, Step, Ingredient, RecipeIngredient, StepIngredient,
-    MealPlan, MealInvitation, CookingProgress, Timer, Post, PostPhoto, PostCookie, PostComment, PostReport,
-    ShoppingList, ShoppingListMember, ShoppingListBatch, ShoppingListLoyaltyCard, ShoppingListItem, ShoppingListItemQuantity,
+    Category,
+    Recipe,
+    Step,
+    Ingredient,
+    RecipeIngredient,
+    StepIngredient,
+    MealPlan,
+    MealInvitation,
+    CookingProgress,
+    Timer,
+    Post,
+    PostPhoto,
+    PostCookie,
+    PostComment,
+    PostReport,
+    ShoppingList,
+    ShoppingListMember,
+    ShoppingListBatch,
+    ShoppingListLoyaltyCard,
+    ShoppingListItem,
+    ShoppingListItemQuantity,
     ShoppingListInvitation,
-    Collection, CollectionRecipe, CollectionMember, CollectionFollower,
-    RecipeImportRequest, RecipeBatch, MealPlanRecipeBatch, PostCommentLike, PostRepost,
+    Collection,
+    CollectionRecipe,
+    CollectionMember,
+    CollectionFollower,
+    RecipeImportRequest,
+    RecipeBatch,
+    MealPlanRecipeBatch,
+    PostCommentLike,
+    PostRepost,
 )
 from accounts.models import Follow, Notification, LoyaltyCard, PushDevice
 from django.contrib.auth import get_user_model
+
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 from .serializers import (
-    RecipeSerializer, RecipeDetailSerializer, RecipeCreateSerializer, RecipeLightSerializer,
-    StepSerializer, IngredientSerializer, CategorySerializer,
-    MealPlanSerializer, MealPlanDetailSerializer, MealInvitationSerializer, MealInvitationListSerializer,
-    MealPlanListSerializer, MealPlanRangeListSerializer, MealPlanByDateSerializer,
+    RecipeSerializer,
+    RecipeDetailSerializer,
+    RecipeCreateSerializer,
+    RecipeLightSerializer,
+    StepSerializer,
+    IngredientSerializer,
+    CategorySerializer,
+    MealPlanSerializer,
+    MealPlanDetailSerializer,
+    MealInvitationSerializer,
+    MealInvitationListSerializer,
+    MealPlanListSerializer,
+    MealPlanRangeListSerializer,
+    MealPlanByDateSerializer,
     MealPlanMinimalListSerializer,
-    CookingProgressSerializer, CookingProgressCreateUpdateSerializer,
-    TimerSerializer, TimerCreateSerializer,
-    PostSerializer, PostCreateUpdateSerializer, PostPhotoSerializer,
-    PostCommentSerializer, PostCommentCreateSerializer,
-    ShoppingListSerializer, ShoppingListItemSerializer,
-    CollectionSerializer, CollectionCreateSerializer, CollectionUpdateSerializer,
-    CollectionRecipeSerializer, CollectionMemberSerializer,
-    RecipeFormalizeSerializer, RecipeGenerateFromIdeaSerializer,
-    RecipeImportRequestSerializer, RecipeImportRequestLightSerializer,
+    CookingProgressSerializer,
+    CookingProgressCreateUpdateSerializer,
+    TimerSerializer,
+    TimerCreateSerializer,
+    PostSerializer,
+    PostCreateUpdateSerializer,
+    PostPhotoSerializer,
+    PostCommentSerializer,
+    PostCommentCreateSerializer,
+    ShoppingListSerializer,
+    ShoppingListItemSerializer,
+    CollectionSerializer,
+    CollectionCreateSerializer,
+    CollectionUpdateSerializer,
+    CollectionRecipeSerializer,
+    CollectionMemberSerializer,
+    RecipeFormalizeSerializer,
+    RecipeGenerateFromIdeaSerializer,
+    RecipeImportRequestSerializer,
+    RecipeImportRequestLightSerializer,
     RecipeBatchLightSerializer,
     UserLightSerializer,
     PostMiamUserSerializer,
@@ -87,21 +134,24 @@ logger = logging.getLogger(__name__)
 
 class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
     """Lister / récupérer les batches (préparation partagée)"""
+
     serializer_class = RecipeBatchLightSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         user = self.request.user
-        
+
         # Filtrer les RecipeBatch liés aux MealPlan accessibles par l'utilisateur
         # (propriétaire ou invité accepté)
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
-        qs = RecipeBatch.objects.filter(
-            meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                accessible_meal_plan_filter
+        qs = (
+            RecipeBatch.objects.filter(
+                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter)
             )
-        ).select_related('recipe').order_by('-created_at')
-        
+            .select_related('recipe')
+            .order_by('-created_at')
+        )
+
         date_gte = self.request.query_params.get('date__gte')
         date_lte = self.request.query_params.get('date__lte')
         exclude_cooked = self.request.query_params.get('exclude_cooked') == 'true'
@@ -109,36 +159,29 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         if exclude_cooked:
             in_date_range = Q()
             if date_gte:
-                in_date_range &= Q(
-                    meal_plan_recipe_batches__meal_plan__date__gte=date_gte
-                )
+                in_date_range &= Q(meal_plan_recipe_batches__meal_plan__date__gte=date_gte)
             if date_lte:
-                in_date_range &= Q(
-                    meal_plan_recipe_batches__meal_plan__date__lte=date_lte
-                )
+                in_date_range &= Q(meal_plan_recipe_batches__meal_plan__date__lte=date_lte)
             if date_gte or date_lte:
                 qs = qs.filter(in_date_range & Q(is_cooked=False))
             else:
                 qs = qs.filter(is_cooked=False)
         else:
             if date_gte:
-                qs = qs.filter(
-                    meal_plan_recipe_batches__meal_plan__date__gte=date_gte
-                )
+                qs = qs.filter(meal_plan_recipe_batches__meal_plan__date__gte=date_gte)
             if date_lte:
-                qs = qs.filter(
-                    meal_plan_recipe_batches__meal_plan__date__lte=date_lte
-                )
-        
+                qs = qs.filter(meal_plan_recipe_batches__meal_plan__date__lte=date_lte)
+
         # Annoter groupedDates et total_servings_batch
-        qs = qs.select_related('created_by').prefetch_related(
-            Prefetch(
-                'meal_plan_recipe_batches',
-                queryset=MealPlanRecipeBatch.objects.select_related('meal_plan')
+        qs = (
+            qs.select_related('created_by')
+            .prefetch_related(
+                Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan'))
             )
-        ).distinct()
+            .distinct()
+        )
         return qs
-    
+
     def list(self, request, *args, **kwargs):
         # post-process for groupedDates & total_servings_batch
         queryset = self.filter_queryset(self.get_queryset())
@@ -146,20 +189,25 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         # Calculer le filtre d'accessibilité une seule fois pour tous les batches
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
         from .models import MealInvitation
+
         for batch in queryset:
             # Filtrer les meal plans accessibles par l'utilisateur pour ce batch
-            meal_plans_accessible = MealPlan.objects.filter(
-                meal_plan_recipe_batches__recipe_batch=batch
-            ).filter(accessible_meal_plan_filter).distinct()
-            
+            meal_plans_accessible = (
+                MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+                .filter(accessible_meal_plan_filter)
+                .distinct()
+            )
+
             # Pour total_servings_batch, calculer avec TOUS les meal plans du batch
             # (même ceux auxquels l'utilisateur n'est pas invité)
-            all_meal_plans = MealPlan.objects.filter(
-                meal_plan_recipe_batches__recipe_batch=batch
-            ).prefetch_related(
-                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee', 'inviter'))
-            ).distinct()
-            
+            all_meal_plans = (
+                MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+                .prefetch_related(
+                    Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee', 'inviter'))
+                )
+                .distinct()
+            )
+
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
             servings_breakdown_all = []
             servings_breakdown_accessible = []
@@ -171,7 +219,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 servings_breakdown_accessible.extend(breakdown)
             total_servings_all = sum(e.get('portions', 0) for e in servings_breakdown_all)
             total_servings_accessible = sum(e.get('portions', 0) for e in servings_breakdown_accessible)
-            
+
             # Préparer un mapping des invitations acceptées pour l'utilisateur courant,
             # indexées par meal_plan_id pour enrichir les métadonnées côté front.
             accepted_invitations_for_user = MealInvitation.objects.filter(
@@ -179,10 +227,8 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 invitee=request.user,
                 status='accepted',
             ).select_related('inviter')
-            invitations_by_meal_plan_id = {
-                inv.meal_plan_id: inv for inv in accepted_invitations_for_user
-            }
-            
+            invitations_by_meal_plan_id = {inv.meal_plan_id: inv for inv in accepted_invitations_for_user}
+
             meals = []
             meal_plan_ids = []
             batch_is_cooked = bool(getattr(batch, 'is_cooked', False))
@@ -193,19 +239,20 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 is_guest = invitation is not None
                 inviter_name = None
                 if invitation and invitation.inviter:
-                    inviter_name = (
-                        getattr(invitation.inviter, 'username', None)
-                        or getattr(invitation.inviter, 'email', None)
+                    inviter_name = getattr(invitation.inviter, 'username', None) or getattr(
+                        invitation.inviter, 'email', None
                     )
-                meals.append({
-                    'id': mp.id,
-                    'date': mp.date,
-                    'meal_time': mp.meal_time,
-                    **meal_plan_slot_api_fields(mp),
-                    'is_cooked': batch_is_cooked,
-                    'is_guest': is_guest,
-                    'inviter_name': inviter_name,
-                })
+                meals.append(
+                    {
+                        'id': mp.id,
+                        'date': mp.date,
+                        'meal_time': mp.meal_time,
+                        **meal_plan_slot_api_fields(mp),
+                        'is_cooked': batch_is_cooked,
+                        'is_guest': is_guest,
+                        'inviter_name': inviter_name,
+                    }
+                )
             payload = RecipeBatchLightSerializer(batch, context={'request': request}).data
             payload['groupedDates'] = grouped_dates
             payload['total_servings_batch'] = total_servings_all  # Total de TOUS les meal plans
@@ -217,25 +264,28 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             payload['is_cooked'] = batch_is_cooked
             data.append(payload)
         return Response(data)
-    
+
     def retrieve(self, request, *args, **kwargs):
         batch = self.get_object()
         # Filtrer les meal plans accessibles par l'utilisateur pour ce batch
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-        meal_plans_accessible = MealPlan.objects.filter(
-            meal_plan_recipe_batches__recipe_batch=batch
-        ).filter(accessible_meal_plan_filter).distinct()
-        
+        meal_plans_accessible = (
+            MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+            .filter(accessible_meal_plan_filter)
+            .distinct()
+        )
+
         # Pour total_servings_batch, calculer avec TOUS les meal plans du batch
         # (même ceux auxquels l'utilisateur n'est pas invité)
         # Précharger les invitations pour pouvoir calculer correctement les servings
         from .models import MealInvitation
-        all_meal_plans = MealPlan.objects.filter(
-            meal_plan_recipe_batches__recipe_batch=batch
-        ).prefetch_related(
-            Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee'))
-        ).distinct()
-        
+
+        all_meal_plans = (
+            MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+            .prefetch_related(Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')))
+            .distinct()
+        )
+
         grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans_accessible})
         servings_breakdown = []
         accessible_servings_breakdown = []
@@ -248,20 +298,22 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             accessible_servings_breakdown.extend(breakdown)
         total_servings = sum(e.get('portions', 0) for e in servings_breakdown)
         accessible_total_servings = sum(e.get('portions', 0) for e in accessible_servings_breakdown)
-        
+
         meals = []
         meal_plan_ids = []
         batch_is_cooked = bool(getattr(batch, 'is_cooked', False))
         # Mais ne retourner que les meal plans accessibles dans meals et meal_plan_ids
         for mp in meal_plans_accessible:
             meal_plan_ids.append(mp.id)
-            meals.append({
-                'id': mp.id,
-                'date': mp.date,
-                'meal_time': mp.meal_time,
-                **meal_plan_slot_api_fields(mp),
-                'is_cooked': batch_is_cooked,
-            })
+            meals.append(
+                {
+                    'id': mp.id,
+                    'date': mp.date,
+                    'meal_time': mp.meal_time,
+                    **meal_plan_slot_api_fields(mp),
+                    'is_cooked': batch_is_cooked,
+                }
+            )
         serializer = RecipeBatchLightSerializer(batch, context={'request': request})
         payload = serializer.data
         payload['groupedDates'] = grouped_dates
@@ -291,18 +343,12 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
         qs = (
             RecipeBatch.objects.filter(
-                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                    accessible_meal_plan_filter
-                ),
+                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter),
                 created_by=request.user,
                 is_cooked=True,
                 updated_at__gte=recent_cutoff,
             )
-            .annotate(
-                has_published_post=Exists(
-                    Post.objects.filter(recipe_batch_id=OuterRef('pk'), is_published=True)
-                )
-            )
+            .annotate(has_published_post=Exists(Post.objects.filter(recipe_batch_id=OuterRef('pk'), is_published=True)))
             .filter(has_published_post=False)
             .select_related('recipe')
             .distinct()
@@ -327,20 +373,26 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 }
             )
         return Response({'results': results}, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['get'])
     def steps(self, request, pk=None):
         batch = self.get_object()
         from .models import Step, StepIngredient
+
         # Les steps sont liés à la recette, pas au batch directement
-        steps = Step.objects.filter(recipe=batch.recipe).prefetch_related(
-            Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
-        ).order_by('order')
-        
+        steps = (
+            Step.objects.filter(recipe=batch.recipe)
+            .prefetch_related(
+                Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
+            )
+            .order_by('order')
+        )
+
         from .serializers import StepSerializer
+
         serializer = StepSerializer(steps, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'], url_path='complete_cooking')
     def complete_cooking(self, request, pk=None):
         """
@@ -353,11 +405,13 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
         # Vérifier que l'utilisateur a accès au meal plan du batch
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
-        has_access = MealPlan.objects.filter(
-            meal_plan_recipe_batches__recipe_batch=batch
-        ).filter(accessible_meal_plan_filter).exists()
+        has_access = (
+            MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+            .filter(accessible_meal_plan_filter)
+            .exists()
+        )
         if not has_access:
-            return Response({'detail': "Accès refusé à ce batch."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': 'Accès refusé à ce batch.'}, status=status.HTTP_403_FORBIDDEN)
 
         # 1) Chercher une progression existante en cours pour ce batch
         progress = CookingProgress.objects.filter(
@@ -442,9 +496,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 )
                 new_tid = getattr(result, 'id', None)
                 if new_tid:
-                    MealPlan.objects.filter(pk=mp_pk).update(
-                        meal_time_photo_reminder_task_id=str(new_tid)
-                    )
+                    MealPlan.objects.filter(pk=mp_pk).update(meal_time_photo_reminder_task_id=str(new_tid))
             except Exception as exc:
                 logger.exception(
                     'meal_photo_reminder: schedule failed batch=%s user=%s: %s',
@@ -456,7 +508,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         transaction.on_commit(schedule_meal_photo_push_reminder)
 
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'], url_path='mark_shopping_done')
     def mark_shopping_done(self, request, pk=None):
         """Marque les courses comme terminées pour ce batch (ex. « J'ai déjà fait les courses »)."""
@@ -484,11 +536,13 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         batch = self.get_object()
         user = request.user
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
-        has_access = MealPlan.objects.filter(
-            meal_plan_recipe_batches__recipe_batch=batch
-        ).filter(accessible_meal_plan_filter).exists()
+        has_access = (
+            MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+            .filter(accessible_meal_plan_filter)
+            .exists()
+        )
         if not has_access:
-            return Response({'detail': "Accès refusé à ce batch."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': 'Accès refusé à ce batch.'}, status=status.HTTP_403_FORBIDDEN)
 
         batch.is_cooked = False
         batch.save(update_fields=['is_cooked', 'updated_at'])
@@ -499,28 +553,29 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         ).update(status='abandoned')
         serializer = RecipeBatchLightSerializer(batch, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def ingredients(self, request, pk=None):
         batch = self.get_object()
         ingredients = RecipeIngredient.objects.filter(recipe=batch.recipe).select_related('ingredient')
         from .serializers import RecipeIngredientSerializer
+
         serializer = RecipeIngredientSerializer(ingredients, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def photos(self, request, pk=None):
         """Galerie de photos associées au batch"""
         batch = self.get_object()
         step_order = request.query_params.get('step_order')
         photo_type = request.query_params.get('photo_type')
-        
+
         photos = PostPhoto.objects.filter(recipe_batch=batch).select_related('step').order_by('-created_at')
-        
+
         # Filtrer par photo_type si fourni
         if photo_type:
             photos = photos.filter(photo_type=photo_type)
-        
+
         # Filtrer par step_order si fourni (seulement pour during_cooking)
         if step_order:
             try:
@@ -528,11 +583,12 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                 photos = photos.filter(step__order=step_order_int)
             except ValueError:
                 pass
-        
+
         from .serializers import PostPhotoLightSerializer
+
         serializer = PostPhotoLightSerializer(photos, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'], url_path='create-photo-draft')
     def create_photo_draft(self, request, pk=None):
         """Créer un PostPhoto draft pour une étape photo"""
@@ -540,15 +596,15 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         step_order = request.data.get('step_order')
         step_id = request.data.get('step_id')
         photo_type = request.data.get('photo_type', 'during_cooking')
-        
+
         # Pour after_cooking, step_order/step_id sont optionnels
         if photo_type != 'after_cooking' and not step_order and not step_id:
             return Response({'error': 'step_order or step_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Vérifier que step_order est dans photo_step_orders (seulement pour during_cooking)
         if step_order is not None and photo_type == 'during_cooking' and step_order not in batch.photo_step_orders:
             return Response({'error': 'Invalid step_order'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Trouver la step correspondante (optionnel pour after_cooking)
         step = None
         if step_id:
@@ -557,15 +613,15 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             step = batch.recipe.steps.filter(order=step_order).first()
         else:
             step = None
-            
+
         # Pour during_cooking, step est requis
         if photo_type == 'during_cooking' and not step:
             return Response({'error': 'Step not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Vérifier que step_order correspond bien (seulement si step existe)
         if step and step_order and step.order != step_order:
             return Response({'error': 'Step order mismatch'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Créer le draft
         draft = PostPhoto.objects.create(
             recipe_batch=batch,
@@ -575,11 +631,12 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             image_path='',
             uploaded_by=request.user,
         )
-        
+
         from .serializers import PostPhotoSerializer
+
         serializer = PostPhotoSerializer(draft, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=True, methods=['delete'], url_path='delete-photo')
     def delete_photo(self, request, pk=None):
         """Supprimer une photo d'un batch"""
@@ -587,29 +644,29 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
         batch = self.get_object()
         # Accepter photo_id depuis query params (recommandé pour DELETE) ou body (compatibilité)
         photo_id = request.query_params.get('photo_id') or request.data.get('photo_id')
-        
+
         if not photo_id:
             return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             photo = PostPhoto.objects.get(id=photo_id, recipe_batch=batch)
 
             if photo.post_id:
                 return Response(
                     {
-                        'error': 'Cette photo fait partie d\'un post. Supprime d\'abord le post.',
+                        'error': "Cette photo fait partie d'un post. Supprime d'abord le post.",
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             if photo.uploaded_by_id and photo.uploaded_by_id != request.user.id:
                 return Response(
-                    {'error': 'Seul l\'utilisateur qui a ajouté cette photo peut la supprimer.'},
+                    {'error': "Seul l'utilisateur qui a ajouté cette photo peut la supprimer."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
             # Sauvegarder le chemin de l'image avant suppression
             image_path_to_delete = photo.image_path
-            
+
             # Supprimer de S3 AVANT de supprimer de la DB
             s3_deleted = False
             if image_path_to_delete:
@@ -617,34 +674,33 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                     s3_client = build_s3_client()
                     # Nettoyer le chemin (enlever s3:/ et les slashes en début)
                     file_path = image_path_to_delete.replace('s3:/', '').lstrip('/')
-                    
+
                     if file_path and settings.AWS_BUCKET:
-                        logger.info(f"Deleting S3 object: Bucket={settings.AWS_BUCKET}, Key={file_path}")
+                        logger.info(f'Deleting S3 object: Bucket={settings.AWS_BUCKET}, Key={file_path}')
                         s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=file_path)
                         s3_deleted = True
-                        logger.info(f"Successfully deleted S3 object: {file_path}")
+                        logger.info(f'Successfully deleted S3 object: {file_path}')
                     else:
-                        logger.warning(f"Cannot delete S3 object: file_path={file_path}, bucket={settings.AWS_BUCKET}")
+                        logger.warning(f'Cannot delete S3 object: file_path={file_path}, bucket={settings.AWS_BUCKET}')
                 except Exception as e:
-                    logger.error(f"Error deleting from S3: {str(e)}")
+                    logger.error(f'Error deleting from S3: {str(e)}')
                     logger.error(traceback.format_exc())
                     # On continue quand même pour supprimer de la DB
-            
+
             # Supprimer de la base de données
             photo.delete()
-            
-            return Response({
-                'message': 'Photo deleted successfully',
-                's3_deleted': s3_deleted
-            }, status=status.HTTP_200_OK)
-            
+
+            return Response(
+                {'message': 'Photo deleted successfully', 's3_deleted': s3_deleted}, status=status.HTTP_200_OK
+            )
+
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            logger.error(f"Unexpected error deleting photo: {str(e)}")
+            logger.error(f'Unexpected error deleting photo: {str(e)}')
             logger.error(traceback.format_exc())
             return Response({'error': f'Error deleting photo: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+
     @action(detail=True, methods=['post'], url_path='publish-post')
     def publish_post(self, request, pk=None):
         """Créer et publier un post à partir d'une sélection de photos"""
@@ -670,19 +726,17 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             # Récupérer les photos dans l'ordre de sélection (ordre des photo_ids)
             photos_dict = {p.id: p for p in PostPhoto.objects.filter(recipe_batch=batch, id__in=photo_ids)}
             if len(photos_dict) != len(photo_ids):
-                return Response({'error': 'Some photos are invalid or do not belong to this batch'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'Some photos are invalid or do not belong to this batch'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Préserver l'ordre de sélection
             photos = [photos_dict[pid] for pid in photo_ids]
 
         complete_recipe_batch_workflow(request.user, batch)
 
-        post = Post.objects.create(
-            user=request.user,
-            recipe_batch=batch,
-            comment=comment,
-            is_published=True
-        )
+        post = Post.objects.create(user=request.user, recipe_batch=batch, comment=comment, is_published=True)
 
         # Associer les photos au post dans l'ordre de sélection et définir l'ordre
         for order_index, photo in enumerate(photos, start=1):
@@ -692,15 +746,18 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
         # Retourner une réponse simplifiée pour éviter les timeouts
         # (les presigned URLs seront générées lors de la récupération du post)
-        return Response({
-            'id': post.id,
-            'comment': post.comment,
-            'is_published': post.is_published,
-            'created_at': post.created_at,
-            'photo_ids': photo_ids,
-            'message': 'Post créé avec succès'
-        }, status=status.HTTP_201_CREATED)
-    
+        return Response(
+            {
+                'id': post.id,
+                'comment': post.comment,
+                'is_published': post.is_published,
+                'created_at': post.created_at,
+                'photo_ids': photo_ids,
+                'message': 'Post créé avec succès',
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=True, methods=['get'], url_path='published-post')
     def published_post(self, request, pk=None):
         """Récupérer le post publié associé à ce batch"""
@@ -709,45 +766,39 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             post = Post.objects.filter(recipe_batch=batch, is_published=True).first()
             if post:
                 from .serializers import PostSerializer
+
                 serializer = PostSerializer(post, context={'request': request})
                 return Response(serializer.data)
             else:
                 return Response({}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+
     @action(detail=True, methods=['post'], url_path='apply-to-dates')
     def apply_to_dates(self, request, pk=None):
         """Appliquer un batch à plusieurs dates en créant les meal plans nécessaires."""
         from django.db import transaction
         from decimal import Decimal
         from datetime import datetime
-        
+
         batch = self.get_object()
-        
+
         # Vérifier que le batch n'est pas déjà cuisiné
         if batch.is_cooked:
             return Response(
-                {'error': 'Cannot apply a batch that has already been cooked'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': 'Cannot apply a batch that has already been cooked'}, status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         date_keys = request.data.get('date_keys', [])
         meal_time_param = request.data.get('meal_time')
         portions = request.data.get('portions')  # optional; None = suit le nombre de personnes
-        
+
         if not date_keys or not isinstance(date_keys, list):
-            return Response(
-                {'error': 'date_keys must be a non-empty list'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'date_keys must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
+
         if not meal_time_param:
-            return Response(
-                {'error': 'meal_time is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'meal_time is required'}, status=status.HTTP_400_BAD_REQUEST)
+
         if portions is not None:
             try:
                 portions = int(portions)
@@ -781,8 +832,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             resolved_slot_key = slot_key_param
             if not resolved_slot_key:
                 return Response(
-                    {'error': 'slot_key is required when meal_time is other'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {'error': 'slot_key is required when meal_time is other'}, status=status.HTTP_400_BAD_REQUEST
                 )
             db_meal_time = 'other'
             custom_label_save = custom_label_param or 'Repas'
@@ -792,28 +842,25 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
             db_meal_time = 'other'
             resolved_slot_key = slot_key_param or str(meal_time_param).strip()
             if not resolved_slot_key:
-                return Response(
-                    {'error': 'Invalid meal_time / slot_key'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({'error': 'Invalid meal_time / slot_key'}, status=status.HTTP_400_BAD_REQUEST)
             custom_label_save = custom_label_param or 'Repas'
             scheduled_save = scheduled_time
-        
+
         created_meal_plans = []
-        
+
         with transaction.atomic():
             for date_key in date_keys:
                 try:
                     target_date = datetime.strptime(date_key, '%Y-%m-%d').date()
                 except ValueError:
                     continue
-                
+
                 existing_meal_plan = MealPlan.objects.filter(
                     user=request.user,
                     date=target_date,
                     slot_key=resolved_slot_key,
                 ).first()
-                
+
                 if existing_meal_plan:
                     if not existing_meal_plan.meal_plan_recipe_batches.filter(recipe_batch=batch).exists():
                         MealPlanRecipeBatch.objects.create(
@@ -821,7 +868,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                             recipe_batch=batch,
                             portions=portions,
                             is_portions_overridden=portions is not None,
-                            order=existing_meal_plan.meal_plan_recipe_batches.count()
+                            order=existing_meal_plan.meal_plan_recipe_batches.count(),
                         )
                     meal_plan = existing_meal_plan
                 else:
@@ -840,15 +887,17 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
                         recipe_batch=batch,
                         portions=portions,
                         is_portions_overridden=portions is not None,
-                        order=0
+                        order=0,
                     )
-                
+
                 created_meal_plans.append(meal_plan)
-        
+
         # Sérialiser les meal plans créés
         from .serializers import MealPlanSerializer
+
         serializer = MealPlanSerializer(created_meal_plans, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
@@ -864,14 +913,22 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
         people = meal_plan._total_servings
         if include_breakdown:
             breakdown = []
-            for mprb in getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).filter(recipe_batch_id=recipe_batch_id) if recipe_batch_id else getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).all():
+            for mprb in (
+                getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).filter(
+                    recipe_batch_id=recipe_batch_id
+                )
+                if recipe_batch_id
+                else getattr(meal_plan, 'meal_plan_recipe_batches', MealPlanRecipeBatch.objects.none()).all()
+            ):
                 portions = get_batch_portions(meal_plan, mprb, people_count=people)
-                breakdown.append({
-                    'meal_plan_id': meal_plan.id,
-                    'recipe_batch_id': mprb.recipe_batch_id,
-                    'base_servings': people,
-                    'portions': portions,
-                })
+                breakdown.append(
+                    {
+                        'meal_plan_id': meal_plan.id,
+                        'recipe_batch_id': mprb.recipe_batch_id,
+                        'base_servings': people,
+                        'portions': portions,
+                    }
+                )
             return people, breakdown
         return (people, []) if include_breakdown else people
 
@@ -881,14 +938,22 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
         for mp in group_meal_plans:
             invitations = mp.invitations.all() if hasattr(mp, 'invitations') else []
             for inv in invitations:
-                all_participants.append({
-                    'user': inv.invitee,
-                    'status': inv.status,
-                })
+                all_participants.append(
+                    {
+                        'user': inv.invitee,
+                        'status': inv.status,
+                    }
+                )
         active_participants_by_user = {}
         for p in all_participants:
             if p.get('status') in ['accepted', 'pending']:
-                user_id = p['user'].id if hasattr(p['user'], 'id') else p['user']['id'] if isinstance(p['user'], dict) else None
+                user_id = (
+                    p['user'].id
+                    if hasattr(p['user'], 'id')
+                    else p['user']['id']
+                    if isinstance(p['user'], dict)
+                    else None
+                )
                 if user_id:
                     existing_status = active_participants_by_user.get(user_id)
                     if not existing_status or (p.get('status') == 'accepted' and existing_status != 'accepted'):
@@ -896,9 +961,11 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
         active_participants_count = len(active_participants_by_user)
         base_servings = len(group_meal_plans) + active_participants_count + total_guest_count
     else:
-        participants_count = meal_plan.invitations.filter(
-            status__in=['accepted', 'pending']
-        ).count() if hasattr(meal_plan, 'invitations') else 0
+        participants_count = (
+            meal_plan.invitations.filter(status__in=['accepted', 'pending']).count()
+            if hasattr(meal_plan, 'invitations')
+            else 0
+        )
         guest_count = meal_plan.guest_count or 0
         base_servings = 1 + participants_count + guest_count
 
@@ -910,12 +977,14 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
             mprbs_qs = mprbs_qs.filter(recipe_batch_id=recipe_batch_id)
         for mprb in mprbs_qs:
             portions = get_batch_portions(meal_plan, mprb, people_count=people_count)
-            breakdown.append({
-                'meal_plan_id': meal_plan.id,
-                'recipe_batch_id': mprb.recipe_batch_id,
-                'base_servings': people_count,
-                'portions': portions,
-            })
+            breakdown.append(
+                {
+                    'meal_plan_id': meal_plan.id,
+                    'recipe_batch_id': mprb.recipe_batch_id,
+                    'base_servings': people_count,
+                    'portions': portions,
+                }
+            )
         return float(people_count), breakdown
     return float(people_count)
 
@@ -923,26 +992,36 @@ def calculate_meal_plan_servings(meal_plan, group_meal_plans=None, include_break
 def get_batch_portions(meal_plan, mprb, people_count=None):
     """Délègue à recipes.utils.get_batch_portions pour cohérence."""
     from .utils import get_batch_portions as _get_batch_portions
+
     return _get_batch_portions(meal_plan, mprb, people_count=people_count)
 
 
 class RecipeViewSet(viewsets.ModelViewSet):
     """ViewSet pour les recettes"""
+
     queryset = Recipe.objects.all()
     permission_classes = [IsAuthenticated]
-    
+
     def get_serializer_class(self):
         if self.action == 'create':
             return RecipeCreateSerializer
         # Utiliser RecipeLightSerializer pour les listes (pas besoin de steps/ingredients)
-        if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic', 'my_imports', 'my_favorites', 'my_recipes']:
+        if self.action in [
+            'list',
+            'search',
+            'search_fuzzy',
+            'search_semantic',
+            'my_imports',
+            'my_favorites',
+            'my_recipes',
+        ]:
             return RecipeLightSerializer
         # Utiliser RecipeDetailSerializer pour retrieve (léger, sans steps/ingredients)
         if self.action == 'retrieve':
             return RecipeDetailSerializer
         # Utiliser RecipeSerializer complet pour update, etc.
         return RecipeSerializer
-    
+
     def get_queryset(self):
         """Filtrer selon is_public et user, puis appliquer les autres filtres"""
         user = self.request.user
@@ -951,23 +1030,21 @@ class RecipeViewSet(viewsets.ModelViewSet):
         # Recherche / listes : publiques + propres recettes uniquement
         if user.is_authenticated:
             if self.action in list_actions:
-                queryset = Recipe.objects.filter(
-                    Q(is_public=True) | Q(created_by=user)
-                )
+                queryset = Recipe.objects.filter(Q(is_public=True) | Q(created_by=user))
             else:
                 queryset = Recipe.objects.filter(
                     Q(is_public=True) | Q(created_by=user) | get_invited_recipe_filter(user)
                 ).distinct()
         else:
             queryset = Recipe.objects.filter(is_public=True)
-        
+
         meal_type = self.request.query_params.get('meal_type', None)
         difficulty = self.request.query_params.get('difficulty', None)
         search = self.request.query_params.get('search', None)
         max_total_time = self.request.query_params.get('max_total_time', None)
         mine = self.request.query_params.get('mine', '').lower() in ('1', 'true', 'yes')
         created_by = self.request.query_params.get('created_by', None)
-        
+
         if meal_type:
             queryset = queryset.filter(meal_type=meal_type)
         if difficulty:
@@ -982,9 +1059,9 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if max_total_time:
             try:
                 max_mins = int(max_total_time)
-                queryset = queryset.annotate(
-                    total_time_mins=F('prep_time') + F('cook_time')
-                ).filter(total_time_mins__lte=max_mins)
+                queryset = queryset.annotate(total_time_mins=F('prep_time') + F('cook_time')).filter(
+                    total_time_mins__lte=max_mins
+                )
             except (ValueError, TypeError):
                 pass
         if search:
@@ -992,10 +1069,8 @@ class RecipeViewSet(viewsets.ModelViewSet):
             if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic']:
                 queryset = queryset.filter(title__icontains=search)
             else:
-                queryset = queryset.filter(
-                    Q(title__icontains=search) | Q(description__icontains=search)
-                )
-        
+                queryset = queryset.filter(Q(title__icontains=search) | Q(description__icontains=search))
+
         # Pour les listes, ne pas précharger steps et ingredients (inutiles)
         # Utiliser defer() pour exclure les gros champs
         if self.action in ['list', 'search', 'search_fuzzy', 'search_semantic']:
@@ -1026,17 +1101,18 @@ class RecipeViewSet(viewsets.ModelViewSet):
         # IMPORTANT: on ne filtre pas en dur sur les listes “générales”.
         # Le mode strict est réservé aux endpoints de suggestions dédiés.
         return queryset
-    
+
     def list(self, request, *args, **kwargs):
         """Log détaillé pour diagnostiquer les lenteurs"""
         if settings.DEBUG:
             from django.db import reset_queries
             from time import perf_counter
+
             reset_queries()
             t0 = perf_counter()
-        
+
         queryset = self.filter_queryset(self.get_queryset())
-        
+
         if settings.DEBUG:
             t_qs_start = perf_counter()
             # Forcer l'évaluation pour mesurer le temps DB
@@ -1044,46 +1120,46 @@ class RecipeViewSet(viewsets.ModelViewSet):
             t_qs_end = perf_counter()
             db_queries = len(connection.queries)
             db_time_ms = sum(float(q.get('time', 0)) for q in connection.queries) * 1000
-        
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             data = serializer.data
-            
+
             # Ajouter les meal plans proches si demandé (suggestions de recettes issues d'autres jours)
             include_nearby = request.query_params.get('include_nearby_meal_plans', 'false').lower() == 'true'
             if include_nearby:
                 target_date_str = request.query_params.get('date')
                 meal_time = request.query_params.get('meal_time')
                 slot_key_qp = (request.query_params.get('slot_key') or '').strip()
-                
+
                 if target_date_str and meal_time:
                     try:
                         target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
                         current_slot_key = slot_key_qp or meal_time
-                        nearby_meal_plans = self._get_nearby_meal_plans(
-                            request.user, target_date, current_slot_key
-                        )
-                        
+                        nearby_meal_plans = self._get_nearby_meal_plans(request.user, target_date, current_slot_key)
+
                         # Suggestions basées sur les batches (pas de meal_type/difficulty ici)
                         batch_suggestions = []
                         suggested_recipe_ids = set()  # Pour filtrer les doublons de recettes
                         seen_batches = set()
-                        
+
                         def badge_label_for_date(target_date, earliest_date):
                             delta = (earliest_date - target_date).days
                             if delta == 0:
                                 return "Aujourd'hui"
                             if delta == 1:
-                                return "J+1"
+                                return 'J+1'
                             if delta == -1:
-                                return "J-1"
+                                return 'J-1'
                             if delta > 1:
-                                return f"J+{delta}"
-                            return f"J{delta}"
-                        
+                                return f'J+{delta}'
+                            return f'J{delta}'
+
                         for meal_plan in nearby_meal_plans:
-                            for mprb in meal_plan.meal_plan_recipe_batches.all().select_related('recipe_batch__recipe', 'recipe_batch__created_by'):
+                            for mprb in meal_plan.meal_plan_recipe_batches.all().select_related(
+                                'recipe_batch__recipe', 'recipe_batch__created_by'
+                            ):
                                 batch = mprb.recipe_batch
                                 if not batch or not batch.recipe:
                                     continue
@@ -1093,7 +1169,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
                                 if batch.created_by_id != request.user.id:
                                     continue
                                 seen_batches.add(batch.id)
-                                
+
                                 recipe = batch.recipe
                                 recipe_data = RecipeLightSerializer(recipe).data
                                 # Nettoyer les infos non nécessaires
@@ -1101,19 +1177,19 @@ class RecipeViewSet(viewsets.ModelViewSet):
                                 recipe_data.pop('meal_type_display', None)
                                 recipe_data.pop('difficulty', None)
                                 recipe_data.pop('difficulty_display', None)
-                                
+
                                 # Dates liées à ce batch (toutes les meal plans qui l’utilisent)
                                 related_mps = MealPlan.objects.filter(
                                     meal_plan_recipe_batches__recipe_batch_id=batch.id
                                 ).distinct()
                                 grouped_dates = sorted({mp.date for mp in related_mps})
                                 earliest_date = grouped_dates[0] if grouped_dates else meal_plan.date
-                                
+
                                 # Nombre total de personnes : somme des servings de chaque meal plan lié
                                 total_servings = 0
                                 for mp in related_mps:
                                     total_servings += calculate_meal_plan_servings(mp)
-                                
+
                                 suggestion = {
                                     **recipe_data,
                                     'is_batch': True,
@@ -1127,34 +1203,37 @@ class RecipeViewSet(viewsets.ModelViewSet):
                                     'groupedDates': [d.isoformat() for d in grouped_dates],
                                 }
                                 batch_suggestions.append(suggestion)
-                                
+
                                 if recipe_data.get('id'):
                                     suggested_recipe_ids.add(recipe_data['id'])
-                        
+
                         # Mélanger les suggestions et limiter à 3
                         import random
+
                         random.shuffle(batch_suggestions)
                         batch_suggestions = batch_suggestions[:3]
-                        
+
                         # Filtrer les recettes déjà suggérées via un batch
                         data = [item for item in data if item.get('id') not in suggested_recipe_ids]
-                        
+
                         # Insérer les suggestions de batches au début de la liste
                         data = list(batch_suggestions) + list(data)
                     except (ValueError, TypeError) as e:
                         # Si la date est invalide, ignorer les meal plans proches
                         pass
-            
+
             if settings.DEBUG:
                 t_ser_end = perf_counter()
                 total_ms = (t_ser_end - t0) * 1000
                 qs_ms = (t_qs_end - t_qs_start) * 1000 if 't_qs_end' in locals() else 0
                 ser_ms = (t_ser_end - (t_qs_end if 't_qs_end' in locals() else t0)) * 1000
-                print(f"[RecipeViewSet.list] count={count} items={len(page)} qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} "
-                      f"db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}")
-            
+                print(
+                    f'[RecipeViewSet.list] count={count} items={len(page)} qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} '
+                    f'db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}'
+                )
+
             return self.get_paginated_response(data)
-        
+
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
@@ -1183,46 +1262,53 @@ class RecipeViewSet(viewsets.ModelViewSet):
         except Exception:
             disliked = set()
 
-        items.sort(key=lambda r: (1 if r.id in disliked else 0))
+        items.sort(key=lambda r: 1 if r.id in disliked else 0)
 
         serializer = RecipeLightSerializer(items, many=True, context={'request': request})
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
-    
+
     def _get_nearby_meal_plans(self, user, target_date, current_slot_key, max_days=4, limit=10):
         """Récupérer les meal plans non cuisinés des jours proches, sauf le créneau courant (slot_key)."""
         from django.db.models import Prefetch, Q
         from .models import MealPlanRecipeBatch
         from django.utils import timezone
         from datetime import timedelta
-        
+
         # Calculer la plage de dates : 4 jours en arrière et 4 jours en avant
         date_start = target_date - timedelta(days=max_days)
         date_end = target_date + timedelta(days=max_days)
-        
+
         # Récupérer les meal plans non cuisinés dans la plage.
         # Nouvelle logique : proposer tous les batches des jours proches,
         # quel que soit le meal_time, à l’exception du meal plan du créneau courant.
-        meal_plans = MealPlan.objects.filter(
-            user=user,
-            date__gte=date_start,
-            date__lte=date_end,
-        ).exclude(
-            date=target_date,
-            slot_key=current_slot_key,
-        ).filter(
-            meal_plan_recipe_batches__recipe_batch__is_cooked=False
-        ).exclude(
-            meal_plan_recipe_batches__recipe_batch__cooking_progresses__status='in_progress'
-        ).prefetch_related(
-            Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
-            'invitations',
-            # Les groupes sont maintenant au niveau des recettes, pas des meal plans
-        ).order_by('-date', 'meal_time').distinct()[:limit]  # Trier par date décroissante puis meal_time
-        
+        meal_plans = (
+            MealPlan.objects.filter(
+                user=user,
+                date__gte=date_start,
+                date__lte=date_end,
+            )
+            .exclude(
+                date=target_date,
+                slot_key=current_slot_key,
+            )
+            .filter(meal_plan_recipe_batches__recipe_batch__is_cooked=False)
+            .exclude(meal_plan_recipe_batches__recipe_batch__cooking_progresses__status='in_progress')
+            .prefetch_related(
+                Prefetch(
+                    'meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+                ),
+                'invitations',
+                # Les groupes sont maintenant au niveau des recettes, pas des meal plans
+            )
+            .order_by('-date', 'meal_time')
+            .distinct()[:limit]
+        )  # Trier par date décroissante puis meal_time
+
         return meal_plans
-    
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1234,7 +1320,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         recipe = serializer.save(created_by=self.request.user)
         schedule_recipe_search_reindex(recipe.id)
-    
+
     @action(detail=True, methods=['get'])
     def steps(self, request, pk=None):
         """
@@ -1243,13 +1329,17 @@ class RecipeViewSet(viewsets.ModelViewSet):
         """
         recipe = self.get_object()
         # Les steps sont directement liés à la recette
-        steps = Step.objects.filter(recipe=recipe).prefetch_related(
-            Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
-        ).order_by('order')
-        
+        steps = (
+            Step.objects.filter(recipe=recipe)
+            .prefetch_related(
+                Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
+            )
+            .order_by('order')
+        )
+
         serializer = StepSerializer(steps, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def ingredients(self, request, pk=None):
         """
@@ -1257,14 +1347,15 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Chargé de manière lazy si nécessaire.
         """
         recipe = self.get_object()
-        
+
         # Charger les recipe_ingredients
         ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient')
-        
+
         from .serializers import RecipeIngredientSerializer
+
         serializer = RecipeIngredientSerializer(ingredients, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
         """
@@ -1272,10 +1363,12 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Endpoint léger pour afficher ces infos dans RecipeSummaryModal.
         """
         recipe = self.get_object()
-        return Response({
-            'description': recipe.description,
-            'steps_summary': recipe.steps_summary,
-        })
+        return Response(
+            {
+                'description': recipe.description,
+                'steps_summary': recipe.steps_summary,
+            }
+        )
 
     @action(detail=True, methods=['put'], url_path='edit')
     def edit(self, request, pk=None):
@@ -1292,7 +1385,17 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
         data = request.data or {}
 
-        meta_fields = ['title', 'description', 'steps_summary', 'meal_type', 'difficulty', 'prep_time', 'cook_time', 'servings', 'image_path']
+        meta_fields = [
+            'title',
+            'description',
+            'steps_summary',
+            'meal_type',
+            'difficulty',
+            'prep_time',
+            'cook_time',
+            'servings',
+            'image_path',
+        ]
 
         with transaction.atomic():
             # Mettre à jour les métadonnées si présentes
@@ -1313,7 +1416,9 @@ class RecipeViewSet(viewsets.ModelViewSet):
                         continue
 
                     ingredient_id = item.get('ingredient_id') or (item.get('ingredient') or {}).get('id')
-                    ingredient_name = item.get('ingredient_name') or (item.get('ingredient') or {}).get('name') or item.get('name')
+                    ingredient_name = (
+                        item.get('ingredient_name') or (item.get('ingredient') or {}).get('name') or item.get('name')
+                    )
 
                     ingredient_obj = None
                     if ingredient_id:
@@ -1400,7 +1505,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             .order_by('-created_at')
         )
         recipe_photos_total = recipe_photos_qs.count()
-        recipe_photos = recipe_photos_qs[offset:offset + limit]
+        recipe_photos = recipe_photos_qs[offset : offset + limit]
 
         meal_plan_ids = list(
             MealPlanRecipeBatch.objects.filter(recipe_batch_id__in=batch_ids)
@@ -1415,7 +1520,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             .exclude(image_path='')
             .order_by('-created_at')
         )
-        ambiance_photos = ambiance_photos_qs[offset:offset + limit]
+        ambiance_photos = ambiance_photos_qs[offset : offset + limit]
 
         def serialize_photo(photo, extra=None):
             data = {
@@ -1429,24 +1534,33 @@ class RecipeViewSet(viewsets.ModelViewSet):
             return data
 
         recipe_items = [
-            serialize_photo(p, {'batch_id': p.recipe_batch_id, 'cooked_at': p.created_at.isoformat() if p.created_at else None})
+            serialize_photo(
+                p, {'batch_id': p.recipe_batch_id, 'cooked_at': p.created_at.isoformat() if p.created_at else None}
+            )
             for p in recipe_photos
         ]
         ambiance_items = []
         for p in ambiance_photos:
             mp = p.meal_plan
-            ambiance_items.append(serialize_photo(p, {
-                'meal_plan_id': p.meal_plan_id,
-                'date': str(mp.date) if mp else None,
-                'meal_time': getattr(mp, 'meal_time', None) if mp else None,
-            }))
+            ambiance_items.append(
+                serialize_photo(
+                    p,
+                    {
+                        'meal_plan_id': p.meal_plan_id,
+                        'date': str(mp.date) if mp else None,
+                        'meal_time': getattr(mp, 'meal_time', None) if mp else None,
+                    },
+                )
+            )
 
-        return Response({
-            'recipe_photos': recipe_items,
-            'meal_ambiance_photos': ambiance_items,
-            'recipe_photos_total': recipe_photos_total,
-            'meal_ambiance_photos_total': ambiance_photos_qs.count(),
-        })
+        return Response(
+            {
+                'recipe_photos': recipe_items,
+                'meal_ambiance_photos': ambiance_items,
+                'recipe_photos_total': recipe_photos_total,
+                'meal_ambiance_photos_total': ambiance_photos_qs.count(),
+            }
+        )
 
     @action(detail=True, methods=['post'], url_path='set-cover-from-photo')
     def set_cover_from_photo(self, request, pk=None):
@@ -1476,15 +1590,13 @@ class RecipeViewSet(viewsets.ModelViewSet):
         try:
             photo = PostPhoto.objects.get(
                 Q(id=photo_id)
-                & (
-                    Q(recipe_batch_id__in=batch_ids)
-                    | Q(meal_plan_id__in=meal_plan_ids, photo_type='at_meal_time')
-                )
+                & (Q(recipe_batch_id__in=batch_ids) | Q(meal_plan_id__in=meal_plan_ids, photo_type='at_meal_time'))
             )
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo introuvable ou non autorisée'}, status=status.HTTP_404_NOT_FOUND)
 
         from .services.image_uploader import copy_s3_image_to_recipe_cover
+
         new_path = copy_s3_image_to_recipe_cover(photo.image_path, request.user.id)
         if not new_path:
             return Response({'error': "Impossible de copier l'image"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1492,10 +1604,12 @@ class RecipeViewSet(viewsets.ModelViewSet):
         recipe.image_path = new_path
         recipe.save(update_fields=['image_path', 'updated_at'])
 
-        return Response({
-            'image_path': new_path,
-            'image_url': recipe.image_url,
-        })
+        return Response(
+            {
+                'image_path': new_path,
+                'image_url': recipe.image_url,
+            }
+        )
 
     @action(detail=True, methods=['post'], url_path='revise')
     def revise(self, request, pk=None):
@@ -1530,22 +1644,22 @@ class RecipeViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger = logging.getLogger(__name__)
-            logger.exception("revise recipe failed")
+            logger.exception('revise recipe failed')
             return Response({'error': 'Révision IA impossible.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+
     @action(detail=False, methods=['get'])
     def my_recipes(self, request):
         """Récupérer les recettes de l'utilisateur connecté"""
         recipes = Recipe.objects.filter(created_by=request.user)
         serializer = self.get_serializer(recipes, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post', 'delete'])
     def favorite(self, request, pk=None):
         """Ajouter ou retirer une recette des favoris"""
         recipe = self.get_object()
         user = request.user
-        
+
         if request.method == 'POST':
             # Ajouter aux favoris
             if not user.favorite_recipes.filter(id=recipe.id).exists():
@@ -1556,7 +1670,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             # Retirer des favoris
             user.favorite_recipes.remove(recipe)
             return Response({'status': 'removed', 'is_favorited': False}, status=status.HTTP_200_OK)
-    
+
     @action(detail=False, methods=['get'])
     def my_imports(self, request):
         """Récupérer uniquement les recettes importées de l'utilisateur"""
@@ -1565,10 +1679,12 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if summary_only:
             count = recipes.count()
             last_recipe = recipes.order_by('-updated_at').first()
-            return Response({
-                'count': count,
-                'last_activity': last_recipe.updated_at if last_recipe else None,
-            })
+            return Response(
+                {
+                    'count': count,
+                    'last_activity': last_recipe.updated_at if last_recipe else None,
+                }
+            )
         # Trier par date de mise à jour (plus récentes en premier)
         recipes = recipes.order_by('-updated_at')
         page = self.paginate_queryset(recipes)
@@ -1576,7 +1692,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def user_imports(self, request):
         """
@@ -1584,18 +1700,17 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Utilisé pour afficher le livre d'import d'un autre profil.
         """
         from django.shortcuts import get_object_or_404
+
         User = get_user_model()
         user_id = request.query_params.get('user')
         if not user_id:
             return Response({'error': 'Paramètre user requis'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         target_user = get_object_or_404(User, id=user_id)
         summary_only = request.query_params.get('summary')
         from accounts.privacy import can_view_profile_content
-        if (
-            target_user.id != request.user.id
-            and not can_view_profile_content(request.user, target_user)
-        ):
+
+        if target_user.id != request.user.id and not can_view_profile_content(request.user, target_user):
             if summary_only:
                 return Response({'count': 0, 'last_activity': None})
             empty = Recipe.objects.none()
@@ -1609,18 +1724,20 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if summary_only:
             count = recipes.count()
             last_recipe = recipes.order_by('-updated_at').first()
-            return Response({
-                'count': count,
-                'last_activity': last_recipe.updated_at if last_recipe else None,
-            })
-        
+            return Response(
+                {
+                    'count': count,
+                    'last_activity': last_recipe.updated_at if last_recipe else None,
+                }
+            )
+
         recipes = recipes.order_by('-updated_at')
         page = self.paginate_queryset(recipes)
         serializer = self.get_serializer(page if page is not None else recipes, many=True)
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def my_favorites(self, request):
         """Récupérer les recettes favorites de l'utilisateur"""
@@ -1629,16 +1746,18 @@ class RecipeViewSet(viewsets.ModelViewSet):
         if summary_only:
             count = recipes.count()
             last_recipe = recipes.order_by('-updated_at').first()
-            return Response({
-                'count': count,
-                'last_activity': last_recipe.updated_at if last_recipe else None,
-            })
+            return Response(
+                {
+                    'count': count,
+                    'last_activity': last_recipe.updated_at if last_recipe else None,
+                }
+            )
         page = self.paginate_queryset(recipes)
         serializer = self.get_serializer(page if page is not None else recipes, many=True)
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['post'])
     def formalize(self, request):
         """
@@ -1646,16 +1765,15 @@ class RecipeViewSet(viewsets.ModelViewSet):
         """
         import logging
         from accounts.entitlements import user_has_feature, feature_locked_payload
+
         logger = logging.getLogger(__name__)
 
         if not user_has_feature(request.user, 'ai'):
             return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
-        
+
         process_start = perf_counter()
         logger.info(
-            "[RecipeFormalize] Appel entrant user=%s payload_keys=%s",
-            request.user.id,
-            list(request.data.keys())
+            '[RecipeFormalize] Appel entrant user=%s payload_keys=%s', request.user.id, list(request.data.keys())
         )
 
         serializer = RecipeFormalizeSerializer(data=request.data)
@@ -1668,7 +1786,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
             request.user.id,
             data.get('title'),
             len(data.get('ingredients_text', '')),
-            len(data.get('instructions_text', ''))
+            len(data.get('instructions_text', '')),
         )
 
         try:
@@ -1682,51 +1800,34 @@ class RecipeViewSet(viewsets.ModelViewSet):
             logger.info(
                 "[RecipeFormalize] Requête %s en file d'attente (%.2fs)",
                 import_request.id,
-                perf_counter() - process_start
+                perf_counter() - process_start,
             )
 
             response_serializer = RecipeImportRequestSerializer(import_request, context={'request': request})
             return Response(response_serializer.data, status=status.HTTP_202_ACCEPTED)
-        
+
         except PydanticAIUserError as e:
-            logger.warning("[RecipeFormalize] Erreur PydanticAI: %s", e)
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            logger.warning('[RecipeFormalize] Erreur PydanticAI: %s', e)
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError as e:
             # Erreur de configuration (ex: AI_API_KEY manquant ou modèle non supporté)
-            logger.warning("[RecipeFormalize] Erreur de configuration: %s", e)
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            logger.warning('[RecipeFormalize] Erreur de configuration: %s', e)
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except (BrokenPipeError, ConnectionResetError) as e:
-            logger.warning("[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s", e)
-            return Response(
-                {'error': 'Client disconnected during processing.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            logger.warning('[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s', e)
+            return Response({'error': 'Client disconnected during processing.'}, status=status.HTTP_400_BAD_REQUEST)
         except (BrokenPipeError, ConnectionResetError) as e:
-            logger.warning("[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s", e)
-            return Response(
-                {'error': 'Client disconnected during processing.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            logger.warning('[RecipeFormalize] Connexion interrompue par le client (broken pipe): %s', e)
+            return Response({'error': 'Client disconnected during processing.'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            logger.error(f"Erreur lors de la formalisation de la recette: {e}", exc_info=True)
+            logger.error(f'Erreur lors de la formalisation de la recette: {e}', exc_info=True)
             return Response(
-                {'error': f'Erreur lors de la formalisation: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': f'Erreur lors de la formalisation: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     @action(detail=False, methods=['get'], url_path='formalize/status/(?P<request_id>[0-9a-f-]+)')
     def formalize_status(self, request, request_id=None):
-        import_request = get_object_or_404(
-            RecipeImportRequest,
-            id=request_id,
-            user=request.user
-        )
+        import_request = get_object_or_404(RecipeImportRequest, id=request_id, user=request.user)
         serializer = RecipeImportRequestSerializer(import_request, context={'request': request})
         return Response(serializer.data)
 
@@ -1742,6 +1843,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         Génère une recette via IA à partir d'une idée libre (asynchrone via Celery).
         """
         from accounts.entitlements import user_has_feature, feature_locked_payload
+
         logger = logging.getLogger(__name__)
         if not user_has_feature(request.user, 'ai'):
             return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
@@ -1763,12 +1865,13 @@ class RecipeViewSet(viewsets.ModelViewSet):
             )
 
             from .tasks import process_recipe_generate_from_idea
+
             task = process_recipe_generate_from_idea.delay(str(import_request.id))
             import_request.task_id = task.id
             import_request.save(update_fields=['task_id'])
 
             logger.info(
-                "[RecipeGenerate] Idea generation queued - request_id=%s",
+                '[RecipeGenerate] Idea generation queued - request_id=%s',
                 import_request.id,
             )
 
@@ -1782,7 +1885,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_202_ACCEPTED,
             )
         except Exception as e:
-            logger.error("Erreur lors de la génération de recette: %s", e, exc_info=True)
+            logger.error('Erreur lors de la génération de recette: %s', e, exc_info=True)
             return Response(
                 {'error': f'Erreur lors de la génération: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1798,15 +1901,13 @@ class RecipeViewSet(viewsets.ModelViewSet):
         la même URL (normalisée) existe déjà et est accessible pour l'utilisateur.
         """
         from accounts.entitlements import user_has_feature, feature_locked_payload
+
         logger = logging.getLogger(__name__)
         if not user_has_feature(request.user, 'ai'):
             return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
         url = request.data.get('url', '').strip()
         if not url:
-            return Response(
-                {'error': 'URL requise'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'URL requise'}, status=status.HTTP_400_BAD_REQUEST)
 
         from .utils import canonicalize_import_url
 
@@ -1832,6 +1933,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
         if existing_recipe:
             from .serializers import RecipeDetailSerializer
+
             serializer = RecipeDetailSerializer(existing_recipe, context={'request': request})
             return Response(
                 {
@@ -1839,46 +1941,43 @@ class RecipeViewSet(viewsets.ModelViewSet):
                     'recipe_id': existing_recipe.id,
                     'recipe': serializer.data,
                 },
-                status=status.HTTP_200_OK
+                status=status.HTTP_200_OK,
             )
 
         try:
             # Créer une demande d'import avec l'URL (l'extraction sera faite par Celery)
             from .models import RecipeImportRequest
+
             import_request = RecipeImportRequest.objects.create(
                 user=request.user,
                 payload={
                     'url': url,
                     'source_type': 'imported',
                 },
-                status=RecipeImportRequest.STATUS_PENDING
+                status=RecipeImportRequest.STATUS_PENDING,
             )
 
             # Lancer la tâche Celery qui fait l'extraction + formalisation
             from .tasks import process_recipe_import_from_url
+
             task = process_recipe_import_from_url.delay(str(import_request.id))
             import_request.task_id = task.id
             import_request.save(update_fields=['task_id'])
 
-            logger.info(
-                "[RecipeImportURL] Import depuis %s - request_id=%s",
-                url,
-                import_request.id
-            )
+            logger.info('[RecipeImportURL] Import depuis %s - request_id=%s', url, import_request.id)
 
             return Response(
                 {
                     'request_id': import_request.id,
                     'status': import_request.status,
                 },
-                status=status.HTTP_202_ACCEPTED
+                status=status.HTTP_202_ACCEPTED,
             )
 
         except Exception as e:
             logger.error(f"Erreur lors de la soumission de l'import depuis URL: {e}", exc_info=True)
             return Response(
-                {'error': f'Erreur lors de la soumission: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': f'Erreur lors de la soumission: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     @action(detail=False, methods=['get'], url_path='search_fuzzy')
@@ -1895,7 +1994,9 @@ class RecipeViewSet(viewsets.ModelViewSet):
         paginated_queryset = self.paginate_queryset(queryset)
         if paginated_queryset is not None:
             serializer = RecipeLightSerializer(
-                paginated_queryset, many=True, context={'request': request},
+                paginated_queryset,
+                many=True,
+                context={'request': request},
             )
             return self.get_paginated_response(serializer.data)
 
@@ -1949,35 +2050,28 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
             serializer = RecipeLightSerializer(items, many=True, context={'request': request})
             return self.get_paginated_response(serializer.data)
-        
+
         # Fallback si pas de pagination
         page_size = min(int(request.query_params.get('page_size', 20)), 50)
         serializer = RecipeLightSerializer(queryset[:page_size], many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['post'])
     def get_recipe_image_presigned_url(self, request):
         """Générer une URL pré-signée pour uploader une image de recette directement vers S3"""
         try:
             logger = logging.getLogger(__name__)
-            logger.info(
-                "[RecipeImages] Demande de presigned URL user=%s payload=%s",
-                request.user.id,
-                request.data
-            )
+            logger.info('[RecipeImages] Demande de presigned URL user=%s payload=%s', request.user.id, request.data)
             s3_client = build_s3_client()
             bucket_name = settings.AWS_BUCKET
-            
+
             if not bucket_name:
-                return Response(
-                    {'error': 'S3 bucket non configuré'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
+                return Response({'error': 'S3 bucket non configuré'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
             # Générer un nom de fichier unique pour l'image de recette
             unique_id = str(uuid.uuid4()).replace('-', '')
-            file_name = f"recipes/{request.user.id}/{unique_id}.jpg"
-            
+            file_name = f'recipes/{request.user.id}/{unique_id}.jpg'
+
             # Générer l'URL pré-signée pour l'upload (valide 5 minutes)
             try:
                 presigned_url = s3_client.generate_presigned_url(
@@ -1987,7 +2081,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
                         'Key': file_name,
                         'ContentType': 'image/jpeg',
                     },
-                    ExpiresIn=300  # 5 minutes
+                    ExpiresIn=300,  # 5 minutes
                 )
             except Exception as url_error:
                 logger.error(f"Erreur lors de la génération de l'URL pré-signée: {url_error}")
@@ -1998,29 +2092,35 @@ class RecipeViewSet(viewsets.ModelViewSet):
                         'Bucket': bucket_name,
                         'Key': file_name,
                     },
-                    ExpiresIn=300
+                    ExpiresIn=300,
                 )
-            
+
             # Construire l'URL de consultation (pré-signée si possible)
             image_url = build_presigned_get_url(file_name)
-            
-            return Response({
-                'presigned_url': presigned_url,
-                'file_name': file_name,
-                'image_path': file_name,  # Chemin relatif à stocker en base
-                'image_url': image_url,  # URL complète pour l'affichage
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Erreur lors de la génération de l'URL pré-signée pour l'image de recette: {e}", exc_info=True)
+
             return Response(
-                {'error': f'Erreur lors de la génération de l\'URL: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {
+                    'presigned_url': presigned_url,
+                    'file_name': file_name,
+                    'image_path': file_name,  # Chemin relatif à stocker en base
+                    'image_url': image_url,  # URL complète pour l'affichage
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Erreur lors de la génération de l'URL pré-signée pour l'image de recette: {e}", exc_info=True
+            )
+            return Response(
+                {'error': f"Erreur lors de la génération de l'URL: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     """ViewSet pour les catégories d'ingrédients"""
+
     queryset = Category.objects.select_related('parent').all()
     serializer_class = CategorySerializer
     permission_classes = [IsAuthenticated]
@@ -2028,10 +2128,11 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
 class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
     """ViewSet pour les ingrédients (lecture seule)"""
+
     queryset = Ingredient.objects.all()
     serializer_class = IngredientSerializer
     permission_classes = [IsAuthenticated]
-    
+
     @action(detail=False, methods=['get'])
     def search(self, request):
         """Rechercher des ingrédients"""
@@ -2039,7 +2140,7 @@ class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
         ingredients = Ingredient.objects.filter(name__icontains=query)[:10]
         serializer = self.get_serializer(ingredients, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def frequent(self, request):
         """
@@ -2048,23 +2149,24 @@ class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
         """
         user = request.user
         limit = int(request.query_params.get('limit', 10))
-        
+
         # Récupérer les ingrédients les plus fréquents dans les listes de l'utilisateur
-        frequent_ingredients = Ingredient.objects.filter(
-            shopping_list_items__shopping_list__members__user=user
-        ).annotate(
-            usage_count=Count('shopping_list_items', distinct=True)
-        ).order_by('-usage_count', 'name')[:limit]
-        
+        frequent_ingredients = (
+            Ingredient.objects.filter(shopping_list_items__shopping_list__members__user=user)
+            .annotate(usage_count=Count('shopping_list_items', distinct=True))
+            .order_by('-usage_count', 'name')[:limit]
+        )
+
         serializer = self.get_serializer(frequent_ingredients, many=True)
         return Response(serializer.data)
 
 
 class MealPlanViewSet(viewsets.ModelViewSet):
     """ViewSet pour les repas planifiés"""
+
     serializer_class = MealPlanSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_serializer_class(self):
         # Utiliser des serializers adaptés par action
         if self.action == 'retrieve':
@@ -2073,11 +2175,12 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         view_mode = (self.request.query_params.get('view') or '').strip().lower()
         if self.action in ['list'] and view_mode == 'timeline':
             from .serializers import MealPlanTimelineSerializer
+
             return MealPlanTimelineSerializer
-        
+
         # Détecter le mode minimal via paramètre query
         is_minimal = self.request.query_params.get('minimal', '').lower() == 'true'
-        
+
         if self.action in ['list']:
             if is_minimal:
                 return MealPlanMinimalListSerializer
@@ -2087,7 +2190,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if self.action in ['by_week', 'shared_with_me', 'by_dates', 'bulk']:
             return MealPlanListSerializer
         return super().get_serializer_class()
-    
+
     def get_queryset(self):
         """
         Optimiser la liste:
@@ -2095,7 +2198,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         - Éviter les N+1 queries via select_related/prefetch_related
         """
         from django.db.models import Case, When, IntegerField
-        
+
         # Filtres de date (format YYYY-MM-DD) — appliqués tôt pour accès index-friendly
         date_gte = self.request.query_params.get('date__gte')
         date_lte = self.request.query_params.get('date__lte')
@@ -2103,7 +2206,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             qs = get_accessible_meal_plans_queryset(self.request.user, date_gte, date_lte)
         else:
             qs = MealPlan.objects.filter(get_accessible_meal_plan_filter(self.request.user))
-        
+
         # Exclure les meal plans déjà dans une shopping list non archivée
         exclude_in_shopping_list = self.request.query_params.get('exclude_in_shopping_list')
         if exclude_in_shopping_list == 'true':
@@ -2112,12 +2215,12 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             qs = qs.exclude(
                 meal_plan_recipe_batches__recipe_batch__shopping_list_batch__shopping_list__is_archived=False
             )
-        
+
         # Exclure les meal plans déjà cuisinés
         exclude_cooked = self.request.query_params.get('exclude_cooked')
         if exclude_cooked == 'true':
             qs = qs.filter(is_cooked=False)
-        
+
         # Autres filtres éventuels
         meal_time = self.request.query_params.get('meal_time')
         if meal_time:
@@ -2132,11 +2235,11 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             default=2,
             output_field=IntegerField(),
         )
-        
+
         # Chargement optimisé des relations utilisées par le serializer
         from django.db.models import Prefetch
         from .models import MealPlanRecipeBatch, StepIngredient
-        
+
         # Détecter le mode minimal
         is_minimal = self.request.query_params.get('minimal', '').lower() == 'true'
         include_shopping_list = self.request.query_params.get('include_shopping_list', '').lower() == 'true'
@@ -2151,7 +2254,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             'recipe_batch__recipe__steps_summary',
             'recipe_batch__notes',
         )
-        
+
         if self.action in ['list']:
             if is_minimal:
                 # Paint rapide: une seule query + Exists annoté (pas de N+1 is_guest / user / avatar)
@@ -2194,55 +2297,73 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 # Ne pas charger embeddings / search text (vecteur 512d) pour la timeline
                 if view_mode == 'timeline':
                     mprb_qs = mprb_qs.defer(*RECIPE_TIMELINE_DEFER)
-                qs = qs.select_related('user').prefetch_related(
-                    Prefetch(
-                        'invitations',
-                        queryset=MealInvitation.objects.filter(status__in=['accepted', 'pending']).select_related('invitee'),
-                    ),
-                    Prefetch(
-                        'meal_plan_recipe_batches',
-                        queryset=mprb_qs,
-                    ),
-                ).order_by('date', meal_time_order)
+                qs = (
+                    qs.select_related('user')
+                    .prefetch_related(
+                        Prefetch(
+                            'invitations',
+                            queryset=MealInvitation.objects.filter(status__in=['accepted', 'pending']).select_related(
+                                'invitee'
+                            ),
+                        ),
+                        Prefetch(
+                            'meal_plan_recipe_batches',
+                            queryset=mprb_qs,
+                        ),
+                    )
+                    .order_by('date', meal_time_order)
+                )
         elif self.action in ['by_date']:
             mprb_select_related = ['recipe_batch__recipe']
             if include_shopping_list:
                 mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
-            qs = qs.select_related('user').prefetch_related(
-                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-                Prefetch(
-                    'meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related(
-                        *mprb_select_related,
-                    ).order_by('order'),
-                ),
-            ).order_by('date', meal_time_order)
+            qs = (
+                qs.select_related('user')
+                .prefetch_related(
+                    Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
+                    Prefetch(
+                        'meal_plan_recipe_batches',
+                        queryset=MealPlanRecipeBatch.objects.select_related(
+                            *mprb_select_related,
+                        ).order_by('order'),
+                    ),
+                )
+                .order_by('date', meal_time_order)
+            )
         elif self.action in ['by_week', 'by_dates', 'bulk']:
             mprb_select_related = ['recipe_batch__recipe']
             if include_shopping_list:
                 mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
-            qs = qs.select_related('user').prefetch_related(
-                Prefetch(
-                    'meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related(
-                        *mprb_select_related,
-                    ).order_by('order'),
-                ),
-            ).order_by('date', meal_time_order)
+            qs = (
+                qs.select_related('user')
+                .prefetch_related(
+                    Prefetch(
+                        'meal_plan_recipe_batches',
+                        queryset=MealPlanRecipeBatch.objects.select_related(
+                            *mprb_select_related,
+                        ).order_by('order'),
+                    ),
+                )
+                .order_by('date', meal_time_order)
+            )
         else:
             # Pour retrieve : préfetch minimal (pas de steps ni recipe_ingredients détaillés)
             mprb_select_related = ['recipe_batch__recipe']
             if include_shopping_list:
                 mprb_select_related.append('recipe_batch__shopping_list_batch__shopping_list')
-            qs = qs.select_related('user').prefetch_related(
-                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-                Prefetch(
-                    'meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related(
-                        *mprb_select_related,
-                    ).order_by('order'),
-                ),
-            ).order_by('date', meal_time_order)
+            qs = (
+                qs.select_related('user')
+                .prefetch_related(
+                    Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
+                    Prefetch(
+                        'meal_plan_recipe_batches',
+                        queryset=MealPlanRecipeBatch.objects.select_related(
+                            *mprb_select_related,
+                        ).order_by('order'),
+                    ),
+                )
+                .order_by('date', meal_time_order)
+            )
         return qs
 
     @action(detail=False, methods=['get'], url_path='publish-candidates')
@@ -2294,8 +2415,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                     recipe_batch__meal_plan_recipe_batches__meal_plan=mp,
                     photo_type='at_meal_time',
                     is_draft=False,
-                )
-                .order_by('-created_at')[:4]
+                ).order_by('-created_at')[:4]
             )
             results.append(
                 {
@@ -2309,28 +2429,32 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             )
 
         return Response({'results': results}, status=status.HTTP_200_OK)
-    
+
     def _get_meal_plans_with_prefetch(self, meal_plan_ids):
         """Charger les meal plans avec les relations nécessaires pour la sérialisation."""
         if not meal_plan_ids:
             return []
         from django.db.models import Prefetch
-        return MealPlan.objects.filter(id__in=meal_plan_ids).select_related(
-            'user'
-        ).prefetch_related(
-            Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
-            Prefetch(
-                'meal_plan_recipe_batches',
-                queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')
-            ),
+
+        return (
+            MealPlan.objects.filter(id__in=meal_plan_ids)
+            .select_related('user')
+            .prefetch_related(
+                Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
+                Prefetch(
+                    'meal_plan_recipe_batches',
+                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+                ),
+            )
         )
+
     def create(self, request, *args, **kwargs):
         """
         Créer un ou plusieurs meal plans. Pour chaque recette, un MealPlanRecipeGroup est créé
         automatiquement (même si groupe de 1).
         """
         is_bulk = isinstance(request.data, list)
-        
+
         if is_bulk:
             serializer = self.get_serializer(data=request.data, many=True)
             serializer.is_valid(raise_exception=True)
@@ -2341,7 +2465,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             prefetched.sort(key=lambda mp: ordered_ids.index(mp.id))
             response_serializer = self.get_serializer(prefetched, many=True)
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-        
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
@@ -2350,21 +2474,21 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         response_serializer = self.get_serializer(prefetched[0])
         headers = self.get_success_headers(response_serializer.data)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-    
+
     def update(self, request, *args, **kwargs):
         """
         Mettre à jour un meal plan. Créer des groupes pour les nouvelles recettes si nécessaire.
         """
         from django.db import transaction
-        
+
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
-        
+
         with transaction.atomic():
             meal_plan = serializer.save()
-        
+
         prefetched = self._get_meal_plans_with_prefetch([meal_plan.id])
         response_serializer = self.get_serializer(prefetched[0])
         return Response(response_serializer.data)
@@ -2435,11 +2559,12 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         if settings.DEBUG:
             from django.db import reset_queries
+
             reset_queries()
             t0 = perf_counter()
-        
+
         queryset = self.get_queryset()
-        
+
         if settings.DEBUG:
             t_qs_start = perf_counter()
             # Forcer l'évaluation pour mesurer le temps DB
@@ -2449,21 +2574,23 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             db_time_ms = sum(float(q.get('time', 0)) for q in connection.queries) * 1000
         else:
             objects = list(queryset)
-        
+
         # Le calcul de total_servings est maintenant fait dans le serializer
         # en sommant les servings de chaque recette (groupée ou non)
         # On n'a plus besoin de pré-calculer ici
-        
+
         serializer = self.get_serializer(objects, many=True)
-        
+
         if settings.DEBUG:
             t_ser_end = perf_counter()
             total_ms = (t_ser_end - t0) * 1000
             qs_ms = (t_qs_end - t_qs_start) * 1000 if 't_qs_end' in locals() else 0
             ser_ms = (t_ser_end - (t_qs_end if 't_qs_end' in locals() else t0)) * 1000
-            print(f"[MealPlanViewSet.list] items={len(objects)} qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} "
-                  f"db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}")
-        
+            print(
+                f'[MealPlanViewSet.list] items={len(objects)} qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} '
+                f'db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}'
+            )
+
         return Response(serializer.data)
 
     @action(detail=False, methods=['get'], url_path='timeline-bounds')
@@ -2478,14 +2605,16 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         user = request.user
         owned_agg = MealPlan.objects.filter(user=user).aggregate(
-            min_date=Min('date'), max_date=Max('date'),
+            min_date=Min('date'),
+            max_date=Max('date'),
         )
         invited_ids = MealInvitation.objects.filter(
             invitee=user,
             status__in=['accepted', 'pending'],
         ).values('meal_plan_id')
         invited_agg = MealPlan.objects.filter(id__in=invited_ids).aggregate(
-            min_date=Min('date'), max_date=Max('date'),
+            min_date=Min('date'),
+            max_date=Max('date'),
         )
         bounds = merge_date_bounds(owned_agg, invited_agg)
         min_date = bounds.get('min_date')
@@ -2533,12 +2662,14 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 return None
             return d.isoformat() if hasattr(d, 'isoformat') else str(d)
 
-        return Response({
-            'min_date': _iso(min_date),
-            'max_date': _iso(max_date),
-            'next_date': _iso(next_date),
-            'prev_date': _iso(prev_date),
-        })
+        return Response(
+            {
+                'min_date': _iso(min_date),
+                'max_date': _iso(max_date),
+                'next_date': _iso(next_date),
+                'prev_date': _iso(prev_date),
+            }
+        )
 
     @action(detail=False, methods=['get'], url_path='timeline-window')
     def timeline_window(self, request):
@@ -2573,36 +2704,38 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             'recipe_batch__notes',
         )
         mprb_qs = (
-            MealPlanRecipeBatch.objects
-            .select_related('recipe_batch__recipe')
-            .defer(*recipe_defer)
-            .order_by('order')
+            MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').defer(*recipe_defer).order_by('order')
         )
 
         qs = get_accessible_meal_plans_queryset(request.user, date_gte, date_lte)
-        qs = qs.annotate(
-            is_guest_annot=Exists(
-                MealInvitation.objects.filter(
-                    meal_plan_id=OuterRef('pk'),
-                    invitee=request.user,
-                    status='accepted',
-                )
-            ),
-            has_published_post_annot=Exists(
-                Post.objects.filter(
-                    meal_plan_id=OuterRef('pk'),
-                    is_published=True,
-                )
-            ),
-        ).select_related('user').prefetch_related(
-            Prefetch(
-                'invitations',
-                queryset=MealInvitation.objects.filter(
-                    status__in=['accepted', 'pending'],
-                ).select_related('invitee'),
-            ),
-            Prefetch('meal_plan_recipe_batches', queryset=mprb_qs),
-        ).order_by('date', meal_time_order)
+        qs = (
+            qs.annotate(
+                is_guest_annot=Exists(
+                    MealInvitation.objects.filter(
+                        meal_plan_id=OuterRef('pk'),
+                        invitee=request.user,
+                        status='accepted',
+                    )
+                ),
+                has_published_post_annot=Exists(
+                    Post.objects.filter(
+                        meal_plan_id=OuterRef('pk'),
+                        is_published=True,
+                    )
+                ),
+            )
+            .select_related('user')
+            .prefetch_related(
+                Prefetch(
+                    'invitations',
+                    queryset=MealInvitation.objects.filter(
+                        status__in=['accepted', 'pending'],
+                    ).select_related('invitee'),
+                ),
+                Prefetch('meal_plan_recipe_batches', queryset=mprb_qs),
+            )
+            .order_by('date', meal_time_order)
+        )
 
         inv_qs = (
             MealInvitation.objects.filter(
@@ -2622,11 +2755,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         ctx.setdefault('user_light_cache', {})
         ctx.setdefault('presign_path_cache', {})
 
-        return Response({
-            'meal_plans': MealPlanTimelineSerializer(qs, many=True, context=ctx).data,
-            'invitations': MealInvitationTimelineListSerializer(inv_qs, many=True, context=ctx).data,
-        })
-    
+        return Response(
+            {
+                'meal_plans': MealPlanTimelineSerializer(qs, many=True, context=ctx).data,
+                'invitations': MealInvitationTimelineListSerializer(inv_qs, many=True, context=ctx).data,
+            }
+        )
+
     @action(detail=False, methods=['get'])
     def cooked(self, request):
         """
@@ -2635,57 +2770,64 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         from django.core.paginator import Paginator, EmptyPage
         from django.db.models import Prefetch, Q
-        
+
         # Filtrer les batches cuisinés de l'utilisateur :
         # 1. Batches créés par l'utilisateur ET is_cooked=True
         # 2. OU batches liés à des meal plans accessibles ET is_cooked=True
         # Cela garantit que tous les batches cuisinés de l'utilisateur sont retournés,
         # même s'ils ne sont plus liés à un meal plan accessible
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
-        qs = RecipeBatch.objects.filter(
-            recipe__isnull=False
-        ).filter(
-            (
-                # Batches créés par l'utilisateur ET is_cooked=True
-                Q(created_by=request.user) & Q(is_cooked=True)
-            ) | (
-                # OU batches liés à des meal plans accessibles ET is_cooked=True
-                Q(meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                    accessible_meal_plan_filter
-                )) & Q(is_cooked=True)
+        qs = (
+            RecipeBatch.objects.filter(recipe__isnull=False)
+            .filter(
+                (
+                    # Batches créés par l'utilisateur ET is_cooked=True
+                    Q(created_by=request.user) & Q(is_cooked=True)
+                )
+                | (
+                    # OU batches liés à des meal plans accessibles ET is_cooked=True
+                    Q(meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter))
+                    & Q(is_cooked=True)
+                )
             )
-        ).distinct().select_related('recipe').prefetch_related(
-            Prefetch(
-                'posts',
-                queryset=Post.objects.prefetch_related(
-                    Prefetch('photos', queryset=PostPhoto.objects.order_by('order', 'created_at'))
-                ).order_by('-created_at'),
-            ),
-            Prefetch(
-                'draft_photos',
-                queryset=PostPhoto.objects.filter(is_draft=False).exclude(image_path='').order_by('order', 'created_at'),
-            ),
-            Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan')),
-        ).order_by('-created_at')
-        
+            .distinct()
+            .select_related('recipe')
+            .prefetch_related(
+                Prefetch(
+                    'posts',
+                    queryset=Post.objects.prefetch_related(
+                        Prefetch('photos', queryset=PostPhoto.objects.order_by('order', 'created_at'))
+                    ).order_by('-created_at'),
+                ),
+                Prefetch(
+                    'draft_photos',
+                    queryset=PostPhoto.objects.filter(is_draft=False)
+                    .exclude(image_path='')
+                    .order_by('order', 'created_at'),
+                ),
+                Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan')),
+            )
+            .order_by('-created_at')
+        )
+
         # Filtrer par recette si demandé
         recipe_id = request.query_params.get('recipe')
         if recipe_id:
             qs = qs.filter(recipe_id=recipe_id)
-        
+
         # Pagination : 12 par page
         page = request.query_params.get('page', 1)
         try:
             page = int(page)
         except (TypeError, ValueError):
             page = 1
-        
+
         paginator = Paginator(qs, 12)
         try:
             batches = paginator.page(page)
         except EmptyPage:
             batches = paginator.page(paginator.num_pages)
-        
+
         def _first_photo_url_from_post(post):
             if not post:
                 return None
@@ -2717,22 +2859,26 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
         for batch in batches:
             # Filtrer les meal plans accessibles par l'utilisateur pour ce batch
-            meal_plans = MealPlan.objects.filter(
-                meal_plan_recipe_batches__recipe_batch=batch
-            ).filter(accessible_meal_plan_filter).distinct()
+            meal_plans = (
+                MealPlan.objects.filter(meal_plan_recipe_batches__recipe_batch=batch)
+                .filter(accessible_meal_plan_filter)
+                .distinct()
+            )
             grouped_dates = sorted({mp.date.isoformat() for mp in meal_plans})
             meals = []
             breakdown_list = []
             for mp in meal_plans:
                 _, breakdown = calculate_meal_plan_servings(mp, include_breakdown=True, recipe_batch_id=batch.id)
                 breakdown_list.extend(breakdown)
-                meals.append({
-                    'id': mp.id,
-                    'date': mp.date,
-                    'meal_time': mp.meal_time,
-                    **meal_plan_slot_api_fields(mp),
-                    'is_cooked': batch.is_cooked,
-                })
+                meals.append(
+                    {
+                        'id': mp.id,
+                        'date': mp.date,
+                        'meal_time': mp.meal_time,
+                        **meal_plan_slot_api_fields(mp),
+                        'is_cooked': batch.is_cooked,
+                    }
+                )
             total_servings = sum(e.get('portions', 0) for e in breakdown_list)
             total_servings_accessible = total_servings
 
@@ -2746,27 +2892,31 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             user_note = post_comment or batch_notes
 
             payload = RecipeBatchLightSerializer(batch, context={'request': request}).data
-            payload.update({
-                'groupedDates': grouped_dates,
-                'total_servings_batch': total_servings,
-                'total_servings_batch_accessible': total_servings_accessible,
-                'meal_plan_ids': [mp.id for mp in meal_plans],
-                'meals': meals,
-                'is_shared': has_published_post,
-                'photo_url': photo_url,
-                'user_note': user_note,
-            })
+            payload.update(
+                {
+                    'groupedDates': grouped_dates,
+                    'total_servings_batch': total_servings,
+                    'total_servings_batch_accessible': total_servings_accessible,
+                    'meal_plan_ids': [mp.id for mp in meal_plans],
+                    'meals': meals,
+                    'is_shared': has_published_post,
+                    'photo_url': photo_url,
+                    'user_note': user_note,
+                }
+            )
             results.append(payload)
-        
-        return Response({
-            'results': results,
-            'count': paginator.count,
-            'num_pages': paginator.num_pages,
-            'current_page': batches.number,
-            'has_next': batches.has_next(),
-            'has_previous': batches.has_previous(),
-        })
-    
+
+        return Response(
+            {
+                'results': results,
+                'count': paginator.count,
+                'num_pages': paginator.num_pages,
+                'current_page': batches.number,
+                'has_next': batches.has_next(),
+                'has_previous': batches.has_previous(),
+            }
+        )
+
     @action(detail=False, methods=['get'])
     def by_dates(self, request):
         """
@@ -2775,7 +2925,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         dates_param = request.query_params.get('dates', '')
         if not dates_param:
-            return Response({'error': 'dates is required (comma-separated YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'dates is required (comma-separated YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST
+            )
         try:
             date_strings = [d.strip() for d in dates_param.split(',') if d.strip()]
             # Validation simple du format, sans construire des objets date coûteux
@@ -2783,14 +2935,18 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 if len(ds) != 10 or ds[4] != '-' or ds[7] != '-':
                     raise ValueError('invalid date format')
         except Exception:
-            return Response({'error': 'Invalid dates format. Use comma-separated YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        qs = MealPlan.objects.filter(user=request.user, date__in=date_strings).select_related(
-            'user', 'recipe'
-        ).order_by('-date', 'meal_time')
+            return Response(
+                {'error': 'Invalid dates format. Use comma-separated YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        qs = (
+            MealPlan.objects.filter(user=request.user, date__in=date_strings)
+            .select_related('user', 'recipe')
+            .order_by('-date', 'meal_time')
+        )
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def bulk(self, request):
         """
@@ -2804,55 +2960,57 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             ids = [int(x) for x in ids_param.split(',') if x.strip()]
         except ValueError:
             return Response({'error': 'ids must be integers'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        qs = MealPlan.objects.filter(user=request.user, id__in=ids).select_related(
-            'user', 'recipe'
-        )
+
+        qs = MealPlan.objects.filter(user=request.user, id__in=ids).select_related('user', 'recipe')
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
-    
+
     def retrieve(self, request, *args, **kwargs):
         """Logging détaillé pour le GET d'un objet"""
         if settings.DEBUG:
             from django.db import reset_queries
+
             reset_queries()
             t0 = perf_counter()
-        
+
         instance = self.get_object()
-        
+
         # DEBUG : Vérifier les invitations chargées
         if settings.DEBUG:
             import logging
+
             logger = logging.getLogger(__name__)
             # Vérifier si les invitations sont préchargées
             invitations_count = instance.invitations.count() if hasattr(instance, 'invitations') else 0
-            logger.debug(f"[MealPlanViewSet.retrieve] Meal plan {instance.id} - invitations count: {invitations_count}")
+            logger.debug(f'[MealPlanViewSet.retrieve] Meal plan {instance.id} - invitations count: {invitations_count}')
             if hasattr(instance, 'invitations'):
                 for inv in instance.invitations.all():
-                    logger.debug(f"  - Invitation {inv.id}: user_id={inv.invitee_id}, status={inv.status}")
-        
+                    logger.debug(f'  - Invitation {inv.id}: user_id={inv.invitee_id}, status={inv.status}')
+
         # Les groupes explicites sont retirés au profit des batches
         # (les agrégations se feront via recipe_batch côté serializers)
         # Si pas de groupe explicite, le meal plan est simple
         # Le serializer calculera total_servings automatiquement (1 + participants + guest_count)
-        
+
         if settings.DEBUG:
             t_qs_end = perf_counter()
             db_queries = len(connection.queries)
             db_time_ms = sum(float(q.get('time', 0)) for q in connection.queries) * 1000
-        
+
         serializer = self.get_serializer(instance)
-        
+
         if settings.DEBUG:
             t_ser_end = perf_counter()
             qs_ms = (t_qs_end - t0) * 1000
             ser_ms = (t_ser_end - t_qs_end) * 1000
             total_ms = (t_ser_end - t0) * 1000
-            print(f"[MealPlanViewSet.retrieve] qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} "
-                  f"db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}")
-        
+            print(
+                f'[MealPlanViewSet.retrieve] qs_ms={qs_ms:.1f} ser_ms={ser_ms:.1f} '
+                f'db_queries={db_queries} db_time_ms={db_time_ms:.1f} total_ms={total_ms:.1f}'
+            )
+
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def steps(self, request, pk=None):
         """
@@ -2860,24 +3018,30 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Chargé de manière lazy quand l'utilisateur clique sur "Go".
         """
         meal_plan = self.get_object()
-        
+
         # Récupérer la recette via le batch
         recipe_batch = meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe').first()
         recipe = recipe_batch.recipe_batch.recipe if recipe_batch and recipe_batch.recipe_batch else None
         if not recipe:
             return Response({'error': 'No recipe found for this meal plan'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Charger les steps avec leurs step_ingredients depuis la recette
         from .models import Step, StepIngredient
         from django.db.models import Prefetch
-        steps = Step.objects.filter(recipe=recipe).prefetch_related(
-            Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
-        ).order_by('order')
-        
+
+        steps = (
+            Step.objects.filter(recipe=recipe)
+            .prefetch_related(
+                Prefetch('step_ingredients', queryset=StepIngredient.objects.select_related('ingredient'))
+            )
+            .order_by('order')
+        )
+
         from .serializers import StepSerializer
+
         serializer = StepSerializer(steps, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def ingredients(self, request, pk=None):
         """
@@ -2885,23 +3049,24 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         Chargé de manière lazy si nécessaire.
         """
         meal_plan = self.get_object()
-        
+
         # Récupérer la recette via le batch
         recipe_batch = meal_plan.meal_plan_recipe_batches.select_related('recipe_batch__recipe').first()
         recipe = recipe_batch.recipe_batch.recipe if recipe_batch and recipe_batch.recipe_batch else None
         if not recipe:
             return Response({'error': 'No recipe found for this meal plan'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Charger les recipe_ingredients
         from .models import RecipeIngredient
         from django.db.models import Prefetch
-        
+
         ingredients = RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient')
-        
+
         from .serializers import RecipeIngredientSerializer
+
         serializer = RecipeIngredientSerializer(ingredients, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
@@ -2922,9 +3087,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context['include_shopping_list'] = (
-            self.request.query_params.get('include_shopping_list', '').lower() == 'true'
-        )
+        context['include_shopping_list'] = self.request.query_params.get('include_shopping_list', '').lower() == 'true'
         context.setdefault('user_light_cache', {})
         context.setdefault('presign_path_cache', {})
         # Pour la liste générique, on peut éviter les presign (URLs S3 publiques / non critiques).
@@ -2937,19 +3100,19 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             if hasattr(self, '_grouped_dates_by_batch_id'):
                 context['grouped_dates_by_batch_id'] = self._grouped_dates_by_batch_id
         return context
-    
+
     def list(self, request, *args, **kwargs):
         """Liste optimisée avec pagination pour les meal plans"""
         queryset = self.filter_queryset(self.get_queryset())
-        
+
         # En mode minimal ou timeline, désactiver la pagination (plage de dates limitée côté client).
         is_minimal = request.query_params.get('minimal', '').lower() == 'true'
         view_mode = (request.query_params.get('view') or '').strip().lower()
-        
+
         if is_minimal or view_mode == 'timeline':
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data)
-        
+
         # Mode complet : utiliser la pagination DRF
         page = self.paginate_queryset(queryset)
         objects = page if page is not None else queryset
@@ -2967,9 +3130,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             from .models import MealPlanRecipeBatch
 
             # Une seule requête pour toutes les dates par batch
-            rows = MealPlanRecipeBatch.objects.filter(
-                recipe_batch_id__in=batch_ids
-            ).values_list('recipe_batch_id', 'meal_plan__date', 'meal_plan__meal_time')
+            rows = MealPlanRecipeBatch.objects.filter(recipe_batch_id__in=batch_ids).values_list(
+                'recipe_batch_id', 'meal_plan__date', 'meal_plan__meal_time'
+            )
 
             by_batch = defaultdict(set)
             for batch_id, mp_date, mp_meal_time in rows:
@@ -2983,55 +3146,52 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if page is not None:
             serializer = self.get_serializer(objects, many=True)
             return self.get_paginated_response(serializer.data)
-        
+
         # Fallback si pas de pagination
         serializer = self.get_serializer(objects, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def by_date(self, request):
         """Récupérer les repas planifiés pour une date spécifique"""
         date_str = request.query_params.get('date', None)
         if not date_str:
             return Response({'error': 'Date parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         except ValueError:
             return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Utiliser get_queryset() pour bénéficier des optimisations (prefetch, etc.)
         meal_plans = list(self.get_queryset().filter(date=target_date))
-        
+
         # Le calcul de total_servings est maintenant fait dans le serializer
         # en sommant les servings de chaque recette (groupée ou non)
-        
+
         serializer = self.get_serializer(meal_plans, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def by_week(self, request):
         """Récupérer les repas planifiés pour une semaine"""
         date_str = request.query_params.get('date', None)
         if not date_str:
             date_str = date.today().isoformat()
-        
+
         try:
             start_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         except ValueError:
             return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         from datetime import timedelta
+
         end_date = start_date + timedelta(days=6)
-        
-        meal_plans = MealPlan.objects.filter(
-            user=request.user,
-            date__gte=start_date,
-            date__lte=end_date
-        )
+
+        meal_plans = MealPlan.objects.filter(user=request.user, date__gte=start_date, date__lte=end_date)
         serializer = self.get_serializer(meal_plans, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         """Confirmer un repas planifié"""
@@ -3123,9 +3283,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 'date': result.date,
                 'meal_time': result.meal_time,
                 'slot_key': meal_plan.slot_key,
-                'scheduled_time': (
-                    meal_plan.scheduled_time.strftime('%H:%M') if meal_plan.scheduled_time else None
-                ),
+                'scheduled_time': (meal_plan.scheduled_time.strftime('%H:%M') if meal_plan.scheduled_time else None),
                 'custom_label': meal_plan.custom_label or '',
                 'guest_count': meal_plan.guest_count,
                 'message': result.message,
@@ -3248,7 +3406,10 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             ).filter(photo_filter)
             photos_dict = {p.id: p for p in photos_qs}
             if len(photos_dict) != len(photo_ids):
-                return Response({'error': 'Some photos are invalid or do not belong to this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'Some photos are invalid or do not belong to this meal plan'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             photos = [photos_dict[pid] for pid in photo_ids]
         else:
@@ -3266,7 +3427,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             try:
                 cooking_time_value = max(0, int(cooking_time_minutes))
             except (TypeError, ValueError):
-                return Response({'error': 'cooking_time_minutes must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'cooking_time_minutes must be an integer'}, status=status.HTTP_400_BAD_REQUEST
+                )
 
         post = Post.objects.create(
             user=request.user,
@@ -3303,6 +3466,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not post:
             return Response({}, status=status.HTTP_200_OK)
         from .serializers import PostSerializer
+
         serializer = PostSerializer(post, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -3320,9 +3484,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             return Response({'error': 'assignments must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
 
         # batches du meal plan
-        batch_ids = list(
-            meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)
-        )
+        batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
         batch_ids = [bid for bid in batch_ids if bid]
         if not batch_ids:
             return Response({'error': 'This meal plan has no recipe batches'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3335,9 +3497,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 pid = int(a.get('photo_id'))
                 bid = int(a.get('recipe_batch_id'))
             except Exception:
-                return Response({'error': 'photo_id and recipe_batch_id must be integers'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'photo_id and recipe_batch_id must be integers'}, status=status.HTTP_400_BAD_REQUEST
+                )
             if bid not in batch_ids:
-                return Response({'error': 'Invalid recipe_batch_id for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'Invalid recipe_batch_id for this meal plan'}, status=status.HTTP_400_BAD_REQUEST
+                )
             photo_ids.append(pid)
             mapping[pid] = bid
 
@@ -3349,7 +3515,10 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         )
         found = list(qs)
         if len(found) != len(set(photo_ids)):
-            return Response({'error': 'Some photos are invalid or not temporary photos of this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Some photos are invalid or not temporary photos of this meal plan'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         updated = []
         for p in found:
@@ -3377,9 +3546,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not isinstance(assignments, list) or len(assignments) == 0:
             return Response({'error': 'assignments must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
 
-        batch_ids = list(
-            meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)
-        )
+        batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
         batch_ids = [bid for bid in batch_ids if bid]
 
         photo_ids = []
@@ -3395,9 +3562,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 try:
                     bid = int(bid_raw)
                 except Exception:
-                    return Response({'error': 'recipe_batch_id must be an integer or null'}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response(
+                        {'error': 'recipe_batch_id must be an integer or null'}, status=status.HTTP_400_BAD_REQUEST
+                    )
                 if bid not in batch_ids:
-                    return Response({'error': 'Invalid recipe_batch_id for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response(
+                        {'error': 'Invalid recipe_batch_id for this meal plan'}, status=status.HTTP_400_BAD_REQUEST
+                    )
             photo_ids.append(pid)
             mapping[pid] = bid
 
@@ -3408,14 +3579,12 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         # - OU toute photo dont recipe_batch_id est l’un des batches de ce meal plan
         #   (évite le 400 quand meal_plan est renseigné à tort mais le batch est le bon)
         from django.db.models import Q
+
         qs = PostPhoto.objects.filter(
             id__in=photo_ids,
             post__isnull=True,
             is_draft=False,
-        ).filter(
-            Q(meal_plan=meal_plan) |
-            Q(recipe_batch_id__in=batch_ids)
-        )
+        ).filter(Q(meal_plan=meal_plan) | Q(recipe_batch_id__in=batch_ids))
         found = list(qs)
         if len(found) != len(set(photo_ids)):
             return Response({'error': 'Some photos are invalid for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3434,8 +3603,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         # Mapping compact pour le front (photo_id -> recipe_batch_id, null si ambiance générale)
         photos_mapping = [{'photo_id': pid, 'recipe_batch_id': mapping.get(pid)} for pid in photo_ids]
         return Response(
-            {'ok': True, 'updated_photo_ids': updated, 'photos_mapping': photos_mapping},
-            status=status.HTTP_200_OK
+            {'ok': True, 'updated_photo_ids': updated, 'photos_mapping': photos_mapping}, status=status.HTTP_200_OK
         )
 
     @action(detail=True, methods=['delete'], url_path='delete-photo')
@@ -3457,7 +3625,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
 
         if photo.post_id is not None:
-            return Response({'error': 'Cannot delete a photo already attached to a post'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Cannot delete a photo already attached to a post'}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         photo.delete()
         return Response({'ok': True}, status=status.HTTP_200_OK)
@@ -3478,7 +3648,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
 
         if photo.post_id is not None:
-            return Response({'error': 'Cannot delete a photo already attached to a post'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Cannot delete a photo already attached to a post'}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         # réutiliser la logique delete S3 de recipe-batches/delete-photo (simple: delete DB only here)
         # Le nettoyage S3 est best-effort; on peut l'ajouter plus tard si nécessaire.
@@ -3499,10 +3671,14 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             return Response({'error': 'Invalid meal plan id'}, status=status.HTTP_400_BAD_REQUEST)
 
-        accessible = MealPlan.objects.filter(
-            get_accessible_meal_plan_filter(request.user),
-            id=meal_plan_id,
-        ).only('id').first()
+        accessible = (
+            MealPlan.objects.filter(
+                get_accessible_meal_plan_filter(request.user),
+                id=meal_plan_id,
+            )
+            .only('id')
+            .first()
+        )
         if not accessible:
             return Response({'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -3518,13 +3694,16 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             .order_by('-created_at')
         )
         from .serializers import PostPhotoLightSerializer
+
         serializer = PostPhotoLightSerializer(photos, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=False, methods=['get'])
     def shared_with_me(self, request):
         """Récupérer les repas partagés avec l'utilisateur connecté"""
-        invitations = MealInvitation.objects.filter(invitee=request.user, status='accepted').select_related('meal_plan', 'meal_plan__user')
+        invitations = MealInvitation.objects.filter(invitee=request.user, status='accepted').select_related(
+            'meal_plan', 'meal_plan__user'
+        )
         meal_plans = [inv.meal_plan for inv in invitations]
         serializer = self.get_serializer(meal_plans, many=True)
         return Response(serializer.data)
@@ -3633,15 +3812,17 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
         photos = PostPhoto.objects.filter(recipe_batch_id__in=batch_ids).select_related('step')
         from .serializers import PostPhotoLightSerializer
+
         serializer = PostPhotoLightSerializer(photos, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'], url_path='published-post')
     def published_post(self, request, pk=None):
         """Récupérer le post publié associé à ce meal_plan (post du repas, sinon legacy batch)."""
         meal_plan = self.get_object()
         try:
             from .serializers import PostSerializer
+
             # Prefer meal-plan scoped posts (workflow "Partager ce repas")
             post = Post.objects.filter(meal_plan=meal_plan, is_published=True).first()
             if not post:
@@ -3658,7 +3839,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
     def create_batch_and_associate(self, request):
         """
         Créer un batch unique pour une recette et l'associer à plusieurs meal plans.
-        
+
         Payload attendu:
         {
             "recipe_id": 123,
@@ -3672,31 +3853,22 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         """
         from django.db import transaction
         from decimal import Decimal
-        
+
         recipe_id = request.data.get('recipe_id')
         dates = request.data.get('dates', [])
         ratio = request.data.get('ratio', 1.0)
-        
+
         if not recipe_id:
-            return Response(
-                {'error': 'recipe_id is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'recipe_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
         if not dates or not isinstance(dates, list):
-            return Response(
-                {'error': 'dates must be a non-empty list'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'dates must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             recipe = Recipe.objects.get(id=recipe_id)
         except Recipe.DoesNotExist:
-            return Response(
-                {'error': 'Recipe not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
+            return Response({'error': 'Recipe not found'}, status=status.HTTP_404_NOT_FOUND)
+
         portions = request.data.get('portions')
         if portions is not None:
             try:
@@ -3704,7 +3876,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 portions = max(0, portions)
             except (ValueError, TypeError):
                 portions = None
-        
+
         created_meal_plans = []
         valid_meal_times = {c[0] for c in MealPlan.MEAL_TIME_CHOICES}
 
@@ -3720,10 +3892,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             return None
 
         with transaction.atomic():
-            batch = RecipeBatch.objects.create(
-                recipe=recipe,
-                created_by=request.user
-            )
+            batch = RecipeBatch.objects.create(recipe=recipe, created_by=request.user)
 
             for date_item in dates:
                 date_key = date_item.get('date')
@@ -3758,7 +3927,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                             recipe_batch=batch,
                             portions=portions,
                             is_portions_overridden=portions is not None,
-                            order=existing_meal_plan.meal_plan_recipe_batches.count()
+                            order=existing_meal_plan.meal_plan_recipe_batches.count(),
                         )
                     meal_plan = existing_meal_plan
                 else:
@@ -3777,68 +3946,64 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                         recipe_batch=batch,
                         portions=portions,
                         is_portions_overridden=portions is not None,
-                        order=0
+                        order=0,
                     )
 
                 created_meal_plans.append(meal_plan)
-        
+
         # Précharger les relations nécessaires pour le serializer
         from django.db.models import Prefetch
-        created_meal_plans = MealPlan.objects.filter(
-            id__in=[mp.id for mp in created_meal_plans]
-        ).prefetch_related(
-            Prefetch('meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order')),
+
+        created_meal_plans = MealPlan.objects.filter(id__in=[mp.id for mp in created_meal_plans]).prefetch_related(
+            Prefetch(
+                'meal_plan_recipe_batches',
+                queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+            ),
             Prefetch('invitations', queryset=MealInvitation.objects.select_related('invitee')),
         )
-        
+
         # Sérialiser les meal plans créés/mis à jour
         serializer = self.get_serializer(created_meal_plans, many=True)
-        return Response({
-            'batch_id': batch.id,
-            'meal_plans': serializer.data
-        }, status=status.HTTP_201_CREATED)
-    
+        return Response({'batch_id': batch.id, 'meal_plans': serializer.data}, status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=['post'], url_path='apply-to-dates')
     def apply_to_dates(self, request, pk=None):
         """Appliquer un meal plan à plusieurs dates (batches)."""
         from django.db import transaction
         from decimal import Decimal
-        
+
         source_meal_plan = self.get_object()
-        
+
         date_keys = request.data.get('date_keys', [])
         meal_time = request.data.get('meal_time')
-        
+
         if not date_keys or not isinstance(date_keys, list):
-            return Response(
-                {'error': 'date_keys must be a non-empty list'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'date_keys must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
+
         if not meal_time:
-            return Response(
-                {'error': 'meal_time is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'meal_time is required'}, status=status.HTTP_400_BAD_REQUEST)
+
         created_meal_plans = []
-        
+
         with transaction.atomic():
             source_recipes = source_meal_plan.meal_plan_recipe_batches.all().select_related('recipe_batch__recipe')
-            recipe_data = [(mpr.recipe_batch_id, mpr.recipe_batch.recipe_id, mpr.portions, mpr.is_portions_overridden, mpr.order) for mpr in source_recipes]
-            
+            recipe_data = [
+                (mpr.recipe_batch_id, mpr.recipe_batch.recipe_id, mpr.portions, mpr.is_portions_overridden, mpr.order)
+                for mpr in source_recipes
+            ]
+
             for date_key in date_keys:
                 try:
                     target_date = datetime.strptime(date_key, '%Y-%m-%d').date()
                 except ValueError:
                     continue
-                
+
                 existing_meal_plan = MealPlan.objects.filter(
                     user=request.user,
                     date=target_date,
                     slot_key=source_meal_plan.slot_key,
                 ).first()
-                
+
                 if existing_meal_plan:
                     existing_meal_plan.meal_plan_recipe_batches.all().delete()
                     meal_plan = existing_meal_plan
@@ -3853,19 +4018,23 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                         meal_type=source_meal_plan.meal_type,
                         confirmed=source_meal_plan.confirmed,
                     )
-                
+
                 for batch_id, recipe_id, portions, is_overridden, order in recipe_data:
-                    batch = RecipeBatch.objects.get(id=batch_id) if batch_id else RecipeBatch.objects.create(recipe_id=recipe_id, created_by=request.user)
+                    batch = (
+                        RecipeBatch.objects.get(id=batch_id)
+                        if batch_id
+                        else RecipeBatch.objects.create(recipe_id=recipe_id, created_by=request.user)
+                    )
                     MealPlanRecipeBatch.objects.create(
                         meal_plan=meal_plan,
                         recipe_batch=batch,
                         portions=portions,
                         is_portions_overridden=is_overridden,
-                        order=order
+                        order=order,
                     )
-                
+
                 created_meal_plans.append(meal_plan)
-        
+
         # Sérialiser les meal plans créés
         serializer = self.get_serializer(created_meal_plans, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -3953,12 +4122,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             slot_key=resolved_slot_key,
         ).exists():
             return Response(
-                {
-                    'error': (
-                        'Un repas existe déjà pour cette date et ce créneau. '
-                        'La fusion n\'est pas supportée (V1).'
-                    )
-                },
+                {'error': ("Un repas existe déjà pour cette date et ce créneau. La fusion n'est pas supportée (V1).")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3985,9 +4149,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             )
 
             source_mprbs = (
-                source.meal_plan_recipe_batches.all()
-                .select_related('recipe_batch__recipe')
-                .order_by('order')
+                source.meal_plan_recipe_batches.all().select_related('recipe_batch__recipe').order_by('order')
             )
             for mprb in source_mprbs:
                 if not mprb.recipe_batch_id or not mprb.recipe_batch.recipe_id:
@@ -4008,6 +4170,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
             if duplicate_guests and invitee_ids:
                 from recipes.services.invitation_service import execute_meal_invitation
+
                 try:
                     execute_meal_invitation(
                         request.user,
@@ -4023,12 +4186,12 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         prefetched = self._get_meal_plans_with_prefetch([new_meal_plan.id])
         serializer = self.get_serializer(prefetched[0] if prefetched else new_meal_plan)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=True, methods=['post'], url_path='remove-from-group')
     def remove_from_group(self, request, pk=None):
         """Legacy group removal not supported after batch refactor."""
         return Response({'detail': 'Grouping moved to recipe batches'}, status=status.HTTP_410_GONE)
-    
+
     @action(detail=True, methods=['post'])
     def invite(self, request, pk=None):
         """Inviter des utilisateurs à un repas"""
@@ -4050,6 +4213,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
 
         meal_plan.refresh_from_db()
         from .serializers import MealPlanSerializer
+
         meal_plan_serializer = MealPlanSerializer(meal_plan, context={'request': request})
 
         new_invitations = MealInvitation.objects.filter(
@@ -4058,15 +4222,19 @@ class MealPlanViewSet(viewsets.ModelViewSet):
             status='pending',
         ).order_by('-created_at')
         serializer = MealInvitationSerializer(new_invitations, many=True, context={'request': request})
-        return Response({
-            'invitations': serializer.data,
-            'meal_plan': meal_plan_serializer.data,
-            'result': result,
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                'invitations': serializer.data,
+                'meal_plan': meal_plan_serializer.data,
+                'result': result,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class MealInvitationViewSet(viewsets.ModelViewSet):
     """ViewSet pour les invitations à des repas"""
+
     serializer_class = MealInvitationSerializer
     permission_classes = [IsAuthenticated]
 
@@ -4075,6 +4243,7 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
             view_mode = (self.request.query_params.get('view') or '').strip().lower()
             if view_mode == 'timeline':
                 from .serializers import MealInvitationTimelineListSerializer
+
                 return MealInvitationTimelineListSerializer
             return MealInvitationListSerializer
         return MealInvitationSerializer
@@ -4143,9 +4312,9 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
         if view_mode == 'timeline':
             from django.db.models import Prefetch
             from .models import MealPlanRecipeBatch
+
             mprb_qs = (
-                MealPlanRecipeBatch.objects
-                .select_related('recipe_batch__recipe')
+                MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe')
                 .defer(
                     'recipe_batch__recipe__embedding',
                     'recipe_batch__recipe__search_index_text',
@@ -4160,107 +4329,106 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
             qs = qs.prefetch_related(
                 Prefetch('meal_plan__meal_plan_recipe_batches', queryset=mprb_qs),
             )
-        
+
         status_param = params.get('status')
         if status_param:
-          qs = qs.filter(status=status_param)
-        
+            qs = qs.filter(status=status_param)
+
         date_gte = params.get('date__gte')
         if date_gte:
             qs = qs.filter(meal_plan__date__gte=date_gte)
-        
+
         date_lte = params.get('date__lte')
         if date_lte:
             qs = qs.filter(meal_plan__date__lte=date_lte)
-        
+
         return qs
-    
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['request'] = self.request
         context.setdefault('user_light_cache', {})
         context.setdefault('presign_path_cache', {})
         return context
-    
+
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
         """Accepter une invitation à un repas"""
         from accounts.models import Notification
-        
+
         invitation = self.get_object()
-        
+
         if invitation.invitee != request.user:
             return Response({'error': 'You can only accept invitations sent to you'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         if invitation.status != 'pending':
             return Response({'error': 'Invitation already processed'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         invitation.status = 'accepted'
         invitation.save()
-        
+
         # Ne plus créer de meal plan pour l'invité - l'invitation acceptée est la source de vérité
         # L'invité verra le meal plan dans son calendrier via le champ is_guest du serializer
-        
+
         meal_plan = invitation.meal_plan
-        
+
         # Créer une notification pour l'inviteur
         Notification.objects.create(
             user=invitation.inviter,
             notification_type='meal_invitation',
-            title=f"{request.user.username} a accepté votre invitation",
-            message=f"{request.user.username} a accepté votre invitation pour {meal_plan.get_meal_time_display()} le {meal_plan.date.strftime('%d/%m/%Y')}",
-            related_user=request.user
+            title=f'{request.user.username} a accepté votre invitation',
+            message=f'{request.user.username} a accepté votre invitation pour {meal_plan.get_meal_time_display()} le {meal_plan.date.strftime("%d/%m/%Y")}',
+            related_user=request.user,
         )
-        
+
         serializer = self.get_serializer(invitation)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def decline(self, request, pk=None):
         """Refuser une invitation à un repas"""
         invitation = self.get_object()
-        
+
         if invitation.invitee != request.user:
             return Response({'error': 'You can only decline invitations sent to you'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         if invitation.status != 'pending':
             return Response({'error': 'Invitation already processed'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         invitation.status = 'declined'
         invitation.save()
-        
+
         serializer = self.get_serializer(invitation)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         """
         Annuler une invitation déjà acceptée par l'utilisateur invité.
-        
+
         Concrètement, on passe le statut de 'accepted' à 'declined', ce qui
         retire l'accès au meal plan partagé via get_accessible_meal_plan_filter.
         """
         invitation = self.get_object()
-        
+
         if invitation.invitee != request.user:
             return Response({'error': 'You can only cancel invitations sent to you'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         if invitation.status != 'accepted':
             return Response({'error': 'Only accepted invitations can be cancelled'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         invitation.status = 'declined'
         invitation.save()
-        
+
         serializer = self.get_serializer(invitation)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def pending(self, request):
         """Récupérer les invitations en attente pour l'utilisateur connecté"""
-        invitations = MealInvitation.objects.filter(
-            invitee=request.user,
-            status='pending'
-        ).select_related('inviter', 'meal_plan', 'meal_plan__user')
+        invitations = MealInvitation.objects.filter(invitee=request.user, status='pending').select_related(
+            'inviter', 'meal_plan', 'meal_plan__user'
+        )
 
         # Optionnellement filtrer par plage de dates (sur meal_plan.date)
         date_gte = request.query_params.get('date__gte')
@@ -4276,52 +4444,51 @@ class MealInvitationViewSet(viewsets.ModelViewSet):
 
 class CookingProgressViewSet(viewsets.ModelViewSet):
     """ViewSet pour la progression de cuisson"""
+
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         queryset = CookingProgress.objects.filter(user=self.request.user)
-        
+
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
-        
+
         batch_id = self.request.query_params.get('recipe_batch', None)
         if batch_id:
             queryset = queryset.filter(recipe_batch_id=batch_id)
-        
+
         return queryset.select_related('recipe_batch').order_by('-updated_at')
-    
+
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
             return CookingProgressCreateUpdateSerializer
         return CookingProgressSerializer
-    
+
     def create(self, request, *args, **kwargs):
         """Override create pour gérer le get_or_create"""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         validated_data = serializer.validated_data
         recipe_batch = validated_data.get('recipe_batch')
-        
+
         # Chercher une progression existante en cours
         existing_progress = CookingProgress.objects.filter(
-            user=request.user,
-            recipe_batch=recipe_batch,
-            status='in_progress'
+            user=request.user, recipe_batch=recipe_batch, status='in_progress'
         ).first()
-        
+
         if existing_progress:
             # Mettre à jour la progression existante au lieu d'en créer une nouvelle
             # Vérifier si on reprend après une longue pause (plus de 1 heure)
             from django.utils import timezone
             from datetime import timedelta
-            
+
             time_since_start = timezone.now() - existing_progress.started_at
             # Si plus d'1 heure s'est écoulée, réinitialiser le temps de départ
             if time_since_start > timedelta(hours=1):
                 existing_progress.started_at = timezone.now()
-            
+
             # Mettre à jour les autres champs
             for key, value in validated_data.items():
                 if key != 'started_at':  # Ne pas écraser started_at si on vient de le réinitialiser
@@ -4335,31 +4502,29 @@ class CookingProgressViewSet(viewsets.ModelViewSet):
             self.perform_create(serializer)
             headers = self.get_success_headers(serializer.data)
             return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-    
+
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-    
+
     @action(detail=False, methods=['get'])
     def current(self, request):
         """Récupérer la progression en cours pour un batch"""
         batch_id = request.query_params.get('recipe_batch')
-        
+
         if not batch_id:
             return Response({'error': 'recipe_batch parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         progress = CookingProgress.objects.filter(
-            user=request.user,
-            recipe_batch_id=batch_id,
-            status='in_progress'
+            user=request.user, recipe_batch_id=batch_id, status='in_progress'
         ).first()
-        
+
         if progress:
             serializer = self.get_serializer(progress)
             return Response(serializer.data)
         else:
             # Retourner un objet vide plutôt que None pour éviter les problèmes de parsing JSON
             return Response({}, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
         """Marquer une progression comme terminée"""
@@ -4367,7 +4532,7 @@ class CookingProgressViewSet(viewsets.ModelViewSet):
         progress.complete()
         serializer = self.get_serializer(progress)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def abandon(self, request, pk=None):
         """Marquer une progression comme abandonnée"""
@@ -4380,26 +4545,24 @@ class CookingProgressViewSet(viewsets.ModelViewSet):
 
 class TimerViewSet(viewsets.ModelViewSet):
     """ViewSet pour les minuteurs actifs"""
+
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         from django.utils import timezone
         from datetime import timedelta
+
         # Inclure les timers actifs ou expirés depuis moins d'1 heure
         now = timezone.now()
         one_hour_ago = now - timedelta(hours=1)
-        queryset = Timer.objects.filter(
-            user=self.request.user,
-            is_completed=False,
-            expires_at__gte=one_hour_ago
-        )
+        queryset = Timer.objects.filter(user=self.request.user, is_completed=False, expires_at__gte=one_hour_ago)
         return queryset.select_related('recipe_batch', 'step', 'cooking_progress').order_by('expires_at')
-    
+
     def get_serializer_class(self):
         if self.action in ['create']:
             return TimerCreateSerializer
         return TimerSerializer
-    
+
     def perform_create(self, serializer):
         from django.utils import timezone
         from datetime import timedelta
@@ -4413,14 +4576,14 @@ class TimerViewSet(viewsets.ModelViewSet):
             almost_eta = expires_at - timedelta(seconds=3)
             if almost_eta > now:
                 send_timer_almost_finished_push.apply_async(args=[timer.id], eta=almost_eta)
-    
+
     @action(detail=False, methods=['get'])
     def active(self, request):
         """Récupérer tous les minuteurs actifs de l'utilisateur"""
         timers = self.get_queryset()
         serializer = self.get_serializer(timers, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
         """Marquer un minuteur comme terminé"""
@@ -4429,7 +4592,7 @@ class TimerViewSet(viewsets.ModelViewSet):
         timer.save()
         serializer = self.get_serializer(timer)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['patch'])
     def update_remaining(self, request, pk=None):
         """Mettre à jour le temps restant du minuteur"""
@@ -4437,41 +4600,44 @@ class TimerViewSet(viewsets.ModelViewSet):
         remaining_seconds = request.data.get('remaining_seconds')
         if remaining_seconds is not None:
             from django.utils import timezone
+
             timer.remaining_seconds = remaining_seconds
             timer.expires_at = timezone.now() + timezone.timedelta(seconds=remaining_seconds)
             timer.save()
         serializer = self.get_serializer(timer)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['patch'])
     def add_time(self, request, pk=None):
         """Ajouter du temps au minuteur"""
         from django.utils import timezone
+
         timer = self.get_object()
         minutes = request.data.get('minutes', 0)
-        
+
         if minutes > 0:
             # Calculer le temps restant actuel
             now = timezone.now()
             elapsed = (now - timer.started_at).total_seconds()
             current_remaining = max(0, (timer.duration_minutes * 60) - elapsed)
-            
+
             # Ajouter les minutes
             new_duration_minutes = timer.duration_minutes + minutes
             new_remaining_seconds = current_remaining + (minutes * 60)
-            
+
             # Mettre à jour
             timer.duration_minutes = new_duration_minutes
             timer.remaining_seconds = int(new_remaining_seconds)
             timer.expires_at = now + timezone.timedelta(seconds=new_remaining_seconds)
             timer.save()
-        
+
         serializer = self.get_serializer(timer)
         return Response(serializer.data)
 
 
 class PostViewSet(viewsets.ModelViewSet):
     """ViewSet pour les posts"""
+
     permission_classes = [IsAuthenticated]
 
     def _annotate_repost_fields(self, queryset):
@@ -4500,9 +4666,8 @@ class PostViewSet(viewsets.ModelViewSet):
     def _get_feed_author_ids(self, user):
         """Comptes suivis (Follow approuvé en base) + l'utilisateur connecté, hors blocages."""
         from accounts.blocks import blocked_user_ids_for
-        following_ids = Follow.objects.filter(follower=user).values_list(
-            'following_id', flat=True
-        )
+
+        following_ids = Follow.objects.filter(follower=user).values_list('following_id', flat=True)
         blocked_ids = blocked_user_ids_for(user)
         return (set(following_ids) | {user.id}) - blocked_ids
 
@@ -4510,7 +4675,7 @@ class PostViewSet(viewsets.ModelViewSet):
         """Restreint le feed aux posts des comptes suivis et aux siens (non contournable côté client)."""
         author_ids = list(self._get_feed_author_ids(user))
         return queryset.filter(user_id__in=author_ids).distinct()
-    
+
     def _user_can_manage_photo(self, photo, user):
         if photo.uploaded_by_id and photo.uploaded_by_id != user.id:
             return False
@@ -4518,35 +4683,36 @@ class PostViewSet(viewsets.ModelViewSet):
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(user)
             return RecipeBatch.objects.filter(
                 id=photo.recipe_batch_id,
-                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                    accessible_meal_plan_filter
-                )
+                meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter),
             ).exists()
         if photo.post_id and photo.post:
             return photo.post.user_id == user.id
         return False
-    
+
     def get_queryset(self):
         # retrieve : post publié visible seulement si auteur = soi ou suivi approuvé
         if self.action == 'retrieve':
-            queryset = Post.objects.filter(is_published=True).select_related(
-                'user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan'
-            ).prefetch_related(
-                Prefetch(
-                    'photos',
-                    queryset=PostPhoto.objects.select_related('recipe_batch__recipe').order_by('order'),
-                ),
-                Prefetch(
-                    'meal_plan__meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
-                ),
-                'cookies',
-                'comments',
-                Prefetch(
-                    'reposts',
-                    queryset=PostRepost.objects.select_related('user').order_by('created_at'),
-                ),
-            ).order_by('-created_at')
+            queryset = (
+                Post.objects.filter(is_published=True)
+                .select_related('user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan')
+                .prefetch_related(
+                    Prefetch(
+                        'photos',
+                        queryset=PostPhoto.objects.select_related('recipe_batch__recipe').order_by('order'),
+                    ),
+                    Prefetch(
+                        'meal_plan__meal_plan_recipe_batches',
+                        queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
+                    ),
+                    'cookies',
+                    'comments',
+                    Prefetch(
+                        'reposts',
+                        queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+                    ),
+                )
+                .order_by('-created_at')
+            )
             if self.request.user.is_authenticated:
                 author_ids = self._get_feed_author_ids(self.request.user)
                 queryset = queryset.filter(user_id__in=author_ids)
@@ -4558,14 +4724,11 @@ class PostViewSet(viewsets.ModelViewSet):
 
         if is_published is not None and is_published.lower() == 'true':
             queryset = Post.objects.filter(is_published=True)
-            if (
-                not profile_user_id
-                and self.request.user.is_authenticated
-            ):
+            if not profile_user_id and self.request.user.is_authenticated:
                 queryset = self._apply_social_feed_filter(queryset, self.request.user)
         else:
             queryset = Post.objects.filter(user=self.request.user)
-        
+
         # Filtrer par batch (nouveau modèle) ou par recette via le batch
         recipe_batch_id = self.request.query_params.get('recipe_batch')
         if recipe_batch_id:
@@ -4574,7 +4737,7 @@ class PostViewSet(viewsets.ModelViewSet):
         recipe_id = self.request.query_params.get('recipe')
         if recipe_id:
             queryset = queryset.filter(recipe_batch__recipe_id=recipe_id)
-        
+
         # Filtrer par utilisateur si fourni
         user_id = self.request.query_params.get('user')
         if user_id:
@@ -4584,18 +4747,15 @@ class PostViewSet(viewsets.ModelViewSet):
                 if viewer.is_authenticated and profile_user_id != viewer.id:
                     from accounts.privacy import can_view_profile_content
                     from django.contrib.auth import get_user_model
+
                     profile_user = get_user_model().objects.filter(id=profile_user_id).first()
                     if not profile_user or not can_view_profile_content(viewer, profile_user):
                         return Post.objects.none()
-                reposted_post_ids = PostRepost.objects.filter(
-                    user_id=profile_user_id
-                ).values('original_post_id')
-                queryset = queryset.filter(
-                    Q(user_id=profile_user_id) | Q(id__in=reposted_post_ids)
-                ).distinct()
+                reposted_post_ids = PostRepost.objects.filter(user_id=profile_user_id).values('original_post_id')
+                queryset = queryset.filter(Q(user_id=profile_user_id) | Q(id__in=reposted_post_ids)).distinct()
             except (ValueError, TypeError):
                 pass
-        
+
         # Optimisation : pour les listes, limiter les champs chargés
         if self.action == 'list':
             queryset = queryset.select_related(
@@ -4604,18 +4764,23 @@ class PostViewSet(viewsets.ModelViewSet):
                 'recipe_batch__recipe',
                 'meal_plan',
             ).prefetch_related(
-                'photos', 'cookies', 'comments',
+                'photos',
+                'cookies',
+                'comments',
                 Prefetch(
                     'reposts',
                     queryset=PostRepost.objects.select_related('user').order_by('created_at'),
                 ),
                 Prefetch(
                     'recipe_batch__meal_plan_recipe_batches',
-                    queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only('meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time')
-                )
+                    queryset=MealPlanRecipeBatch.objects.select_related('meal_plan').only(
+                        'meal_plan_id', 'meal_plan__date', 'meal_plan__meal_time'
+                    ),
+                ),
             )
             if self.request.user.is_authenticated:
                 from accounts.models import FollowRequest
+
                 viewer_id = self.request.user.id
                 follow_exists = Follow.objects.filter(
                     follower_id=viewer_id,
@@ -4644,39 +4809,47 @@ class PostViewSet(viewsets.ModelViewSet):
             queryset = self._annotate_repost_fields(queryset)
             queryset = queryset.order_by('-created_at')
         else:
-            queryset = queryset.select_related(
-                'user',
-                'recipe_batch',
-                'recipe_batch__recipe',
-                'meal_plan',
-            ).prefetch_related(
-                'photos', 'cookies', 'comments',
-                Prefetch(
-                    'reposts',
-                    queryset=PostRepost.objects.select_related('user').order_by('created_at'),
-                ),
-            ).order_by('-created_at')
+            queryset = (
+                queryset.select_related(
+                    'user',
+                    'recipe_batch',
+                    'recipe_batch__recipe',
+                    'meal_plan',
+                )
+                .prefetch_related(
+                    'photos',
+                    'cookies',
+                    'comments',
+                    Prefetch(
+                        'reposts',
+                        queryset=PostRepost.objects.select_related('user').order_by('created_at'),
+                    ),
+                )
+                .order_by('-created_at')
+            )
             return self._annotate_repost_fields(queryset)
-        
+
         return queryset
-    
+
     def list(self, request, *args, **kwargs):
         """Liste optimisée des posts avec pagination"""
         logger = logging.getLogger(__name__)
         t0 = perf_counter()
         queryset = self.filter_queryset(self.get_queryset())
         t_qs = perf_counter()
-        print(f"[PostViewSet.list] start count={queryset.count()}")
-        
+        print(f'[PostViewSet.list] start count={queryset.count()}')
+
         # Utiliser la pagination DRF
         page = self.paginate_queryset(queryset)
         t_paginate = perf_counter()
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             t_ser = perf_counter()
-            print(f"[PostViewSet.list] page count={len(page)} qs_ms={(t_qs - t0)*1000:.1f} paginate_ms={(t_paginate - t_qs)*1000:.1f} serialize_ms={(t_ser - t_paginate)*1000:.1f} total_ms={(t_ser - t0)*1000:.1f}")
+            print(
+                f'[PostViewSet.list] page count={len(page)} qs_ms={(t_qs - t0) * 1000:.1f} paginate_ms={(t_paginate - t_qs) * 1000:.1f} serialize_ms={(t_ser - t_paginate) * 1000:.1f} total_ms={(t_ser - t0) * 1000:.1f}'
+            )
             logger.info(
-                "[PostViewSet.list] page count=%s qs_time_ms=%.1f paginate_ms=%.1f serialize_ms=%.1f total_ms=%.1f",
+                '[PostViewSet.list] page count=%s qs_time_ms=%.1f paginate_ms=%.1f serialize_ms=%.1f total_ms=%.1f',
                 len(page),
                 (t_qs - t0) * 1000,
                 (t_paginate - t_qs) * 1000,
@@ -4684,13 +4857,15 @@ class PostViewSet(viewsets.ModelViewSet):
                 (t_ser - t0) * 1000,
             )
             return self.get_paginated_response(serializer.data)
-        
+
         # Fallback si pas de pagination (ne devrait pas arriver)
         serializer = self.get_serializer(queryset, many=True)
         t_ser = perf_counter()
-        print(f"[PostViewSet.list] no_page count={queryset.count()} qs_ms={(t_qs - t0)*1000:.1f} paginate_ms={(t_paginate - t_qs)*1000:.1f} serialize_ms={(t_ser - t_paginate)*1000:.1f} total_ms={(t_ser - t0)*1000:.1f}")
+        print(
+            f'[PostViewSet.list] no_page count={queryset.count()} qs_ms={(t_qs - t0) * 1000:.1f} paginate_ms={(t_paginate - t_qs) * 1000:.1f} serialize_ms={(t_ser - t_paginate) * 1000:.1f} total_ms={(t_ser - t0) * 1000:.1f}'
+        )
         logger.info(
-            "[PostViewSet.list] no_page count=%s qs_time_ms=%.1f paginate_ms=%.1f serialize_ms=%.1f total_ms=%.1f",
+            '[PostViewSet.list] no_page count=%s qs_time_ms=%.1f paginate_ms=%.1f serialize_ms=%.1f total_ms=%.1f',
             queryset.count(),
             (t_qs - t0) * 1000,
             (t_paginate - t_qs) * 1000,
@@ -4698,15 +4873,16 @@ class PostViewSet(viewsets.ModelViewSet):
             (t_ser - t0) * 1000,
         )
         return Response(serializer.data)
-    
+
     def get_serializer_class(self):
         if self.action == 'list':
             from .serializers import PostListSerializer
+
             return PostListSerializer
         if self.action in ['create', 'update', 'partial_update']:
             return PostCreateUpdateSerializer
         return PostSerializer
-    
+
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
@@ -4758,87 +4934,100 @@ class PostViewSet(viewsets.ModelViewSet):
         recipe_batch_id = request.data.get('recipe_batch_id')
         meal_plan_id = request.data.get('meal_plan_id')
         photo_type = request.data.get('photo_type', 'spontaneous')
-        
+
         if not recipe_batch_id and not meal_plan_id:
-            return Response({'error': 'recipe_batch_id or meal_plan_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response(
+                {'error': 'recipe_batch_id or meal_plan_id is required'}, status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
             recipe_batch = None
             meal_plan = None
             if recipe_batch_id:
                 # Vérifier batch accessible via meal plans
-                recipe_batch = RecipeBatch.objects.filter(
-                    id=recipe_batch_id,
-                    meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                        accessible_meal_plan_filter
+                recipe_batch = (
+                    RecipeBatch.objects.filter(
+                        id=recipe_batch_id,
+                        meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter),
                     )
-                ).distinct().first()
+                    .distinct()
+                    .first()
+                )
                 if not recipe_batch:
-                    return Response({'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+                    return Response(
+                        {'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND
+                    )
             else:
                 meal_plan = MealPlan.objects.filter(id=meal_plan_id).filter(accessible_meal_plan_filter).first()
                 if not meal_plan:
                     return Response({'error': 'Meal plan not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': f'Error accessing target: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+            return Response(
+                {'error': f'Error accessing target: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
         # Vérifier que le type de photo est valide
         if photo_type not in PHOTO_TYPES:
-            return Response({'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response(
+                {'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Vérifier l'unicité (legacy) uniquement si on connaît le batch.
         # En upload temporaire meal_plan, on ne bloque pas: l'association batch se fera ensuite.
         if recipe_batch and photo_type in RESTRICTED_PHOTO_TYPES:
             existing_photo = PostPhoto.objects.filter(
-                recipe_batch=recipe_batch,
-                photo_type=photo_type,
-                is_draft=False
+                recipe_batch=recipe_batch, photo_type=photo_type, is_draft=False
             ).first()
             if existing_photo:
-                return Response({'error': f'A {photo_type} photo already exists for this recipe batch'}, status=status.HTTP_400_BAD_REQUEST)
-        
+                return Response(
+                    {'error': f'A {photo_type} photo already exists for this recipe batch'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         try:
             # Vérifier que les credentials S3 sont configurés
             aws_access_key = settings.AWS_ACCESS_KEY_ID
             aws_secret_key = settings.AWS_SECRET_ACCESS_KEY
             bucket_name = settings.AWS_BUCKET
             region = settings.AWS_S3_REGION_NAME
-            
-            print(f"🔍 S3 Config check:")
-            print(f"  - AWS_ACCESS_KEY_ID: {'✅ Set' if aws_access_key else '❌ Missing'}")
-            print(f"  - AWS_SECRET_ACCESS_KEY: {'✅ Set' if aws_secret_key else '❌ Missing'}")
-            print(f"  - AWS_BUCKET: {bucket_name if bucket_name else '❌ Missing'}")
-            print(f"  - AWS_S3_REGION_NAME: {region}")
-            
+
+            print(f'🔍 S3 Config check:')
+            print(f'  - AWS_ACCESS_KEY_ID: {"✅ Set" if aws_access_key else "❌ Missing"}')
+            print(f'  - AWS_SECRET_ACCESS_KEY: {"✅ Set" if aws_secret_key else "❌ Missing"}')
+            print(f'  - AWS_BUCKET: {bucket_name if bucket_name else "❌ Missing"}')
+            print(f'  - AWS_S3_REGION_NAME: {region}')
+
             if not aws_access_key or not aws_secret_key or not bucket_name:
-                return Response({
-                    'error': 'S3 configuration is missing. Please configure AWS credentials in .env file.',
-                    'details': {
-                        'has_access_key': bool(aws_access_key),
-                        'has_secret_key': bool(aws_secret_key),
-                        'has_bucket_name': bool(bucket_name),
-                    }
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
+                return Response(
+                    {
+                        'error': 'S3 configuration is missing. Please configure AWS credentials in .env file.',
+                        'details': {
+                            'has_access_key': bool(aws_access_key),
+                            'has_secret_key': bool(aws_secret_key),
+                            'has_bucket_name': bool(bucket_name),
+                        },
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
             # Nettoyer le nom du bucket
             bucket_name = bucket_name.strip()
             if not bucket_name:
-                return Response({
-                    'error': 'AWS_BUCKET is empty'
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
+                return Response({'error': 'AWS_BUCKET is empty'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
             s3_client = build_s3_client()
-            
+
             # Générer un nom de fichier unique (sans caractères spéciaux)
             unique_id = str(uuid.uuid4()).replace('-', '')
             if recipe_batch:
-                file_name = f"recipe_batches/{recipe_batch.id}/{unique_id}.jpg"
+                file_name = f'recipe_batches/{recipe_batch.id}/{unique_id}.jpg'
             else:
-                file_name = f"meal_plans/{meal_plan.id}/{unique_id}.jpg"
-            
-            print(f"🔑 Generating presigned URL for bucket: {bucket_name}, key: {file_name}")
-            
+                file_name = f'meal_plans/{meal_plan.id}/{unique_id}.jpg'
+
+            print(f'🔑 Generating presigned URL for bucket: {bucket_name}, key: {file_name}')
+
             # Générer l'URL pré-signée pour l'upload (valide 5 minutes)
             # Note: ACL est déprécié dans certaines régions, on l'enlève
             try:
@@ -4849,11 +5038,11 @@ class PostViewSet(viewsets.ModelViewSet):
                         'Key': file_name,
                         'ContentType': 'image/jpeg',
                     },
-                    ExpiresIn=300  # 5 minutes
+                    ExpiresIn=300,  # 5 minutes
                 )
-                print(f"✅ Presigned URL generated successfully")
+                print(f'✅ Presigned URL generated successfully')
             except Exception as url_error:
-                print(f"❌ Error generating presigned URL: {url_error}")
+                print(f'❌ Error generating presigned URL: {url_error}')
                 # Essayer sans ContentType si ça échoue
                 presigned_url = s3_client.generate_presigned_url(
                     'put_object',
@@ -4861,71 +5050,85 @@ class PostViewSet(viewsets.ModelViewSet):
                         'Bucket': bucket_name,
                         'Key': file_name,
                     },
-                    ExpiresIn=300
+                    ExpiresIn=300,
                 )
-                print(f"✅ Presigned URL generated (without ContentType)")
-            
+                print(f'✅ Presigned URL generated (without ContentType)')
+
             # Retourner le chemin relatif (image_path) au lieu de l'URL complète
-            return Response({
-                'presigned_url': presigned_url,
-                'file_name': file_name,
-                'image_path': file_name,  # Chemin relatif à stocker en base
-                'recipe_batch_id': recipe_batch_id,
-                'meal_plan_id': meal_plan_id,
-                'photo_type': photo_type
-            }, status=status.HTTP_200_OK)
-            
+            return Response(
+                {
+                    'presigned_url': presigned_url,
+                    'file_name': file_name,
+                    'image_path': file_name,  # Chemin relatif à stocker en base
+                    'recipe_batch_id': recipe_batch_id,
+                    'meal_plan_id': meal_plan_id,
+                    'photo_type': photo_type,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         except Exception as e:
             import traceback
+
             error_details = traceback.format_exc()
-            print(f"❌ Error generating presigned URL: {str(e)}")
-            print(f"Traceback: {error_details}")
-            return Response({
-                'error': f'Error generating presigned URL: {str(e)}',
-                'details': error_details if settings.DEBUG else None
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+            print(f'❌ Error generating presigned URL: {str(e)}')
+            print(f'Traceback: {error_details}')
+            return Response(
+                {
+                    'error': f'Error generating presigned URL: {str(e)}',
+                    'details': error_details if settings.DEBUG else None,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     @action(detail=False, methods=['post'])
     def confirm_photo_upload(self, request):
         """Confirmer qu'une photo a été uploadée et créer ou finaliser l'objet PostPhoto"""
         recipe_batch_id = request.data.get('recipe_batch_id')
         meal_plan_id = request.data.get('meal_plan_id')
-        image_path = request.data.get('image_path') or request.data.get('file_name')  # Support des deux pour compatibilité
+        image_path = request.data.get('image_path') or request.data.get(
+            'file_name'
+        )  # Support des deux pour compatibilité
         photo_type = request.data.get('photo_type', 'spontaneous')
         step_id = request.data.get('step_id', None)
         draft_id = request.data.get('draft_id', None)  # ID du draft à finaliser
-        
+
         if (not recipe_batch_id and not meal_plan_id) or not image_path:
-            return Response({'error': 'recipe_batch_id or meal_plan_id and image_path are required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response(
+                {'error': 'recipe_batch_id or meal_plan_id and image_path are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             accessible_meal_plan_filter = get_accessible_meal_plan_filter(request.user)
             recipe_batch = None
             meal_plan = None
             if recipe_batch_id:
-                recipe_batch = RecipeBatch.objects.filter(
-                    id=recipe_batch_id,
-                    meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(
-                        accessible_meal_plan_filter
+                recipe_batch = (
+                    RecipeBatch.objects.filter(
+                        id=recipe_batch_id,
+                        meal_plan_recipe_batches__meal_plan__in=MealPlan.objects.filter(accessible_meal_plan_filter),
                     )
-                ).distinct().first()
+                    .distinct()
+                    .first()
+                )
                 if not recipe_batch:
-                    return Response({'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+                    return Response(
+                        {'error': 'Recipe batch not found or access denied'}, status=status.HTTP_404_NOT_FOUND
+                    )
             else:
                 meal_plan = MealPlan.objects.filter(id=meal_plan_id).filter(accessible_meal_plan_filter).first()
                 if not meal_plan:
                     return Response({'error': 'Meal plan not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': f'Error accessing target: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+            return Response(
+                {'error': f'Error accessing target: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
         # Si un draft_id est fourni, finaliser le draft
         if draft_id:
             try:
-                draft = PostPhoto.objects.get(
-                    id=draft_id,
-                    recipe_batch=recipe_batch,
-                    is_draft=True
-                )
+                draft = PostPhoto.objects.get(id=draft_id, recipe_batch=recipe_batch, is_draft=True)
                 draft.image_path = image_path
                 draft.is_draft = False
                 if not draft.uploaded_by_id:
@@ -4938,13 +5141,14 @@ class PostViewSet(viewsets.ModelViewSet):
             # Vérifier l'unicité (legacy) seulement si batch connu.
             if recipe_batch and photo_type in RESTRICTED_PHOTO_TYPES:
                 existing_photo = PostPhoto.objects.filter(
-                    recipe_batch=recipe_batch, 
-                    photo_type=photo_type,
-                    is_draft=False
+                    recipe_batch=recipe_batch, photo_type=photo_type, is_draft=False
                 ).first()
                 if existing_photo:
-                    return Response({'error': f'A {photo_type} photo already exists for this recipe batch'}, status=status.HTTP_400_BAD_REQUEST)
-            
+                    return Response(
+                        {'error': f'A {photo_type} photo already exists for this recipe batch'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             # Créer l'objet PostPhoto avec image_path
             photo_data = {
                 'recipe_batch': recipe_batch,
@@ -4959,42 +5163,42 @@ class PostViewSet(viewsets.ModelViewSet):
                     photo_data['step'] = Step.objects.get(id=step_id)
                 except Step.DoesNotExist:
                     pass
-            
+
             post_photo = PostPhoto.objects.create(**photo_data)
-        
+
         serializer = PostPhotoSerializer(post_photo, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=False, methods=['post'])
     def get_edit_presigned_url(self, request):
         """Obtenir une URL pré-signée pour remplacer l'image d'une photo existante"""
         photo_id = request.data.get('photo_id')
         extension = request.data.get('extension', 'jpg')
-        
+
         if not photo_id:
             return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         extension = str(extension).lower().replace('.', '')
         if extension not in ['jpg', 'jpeg', 'png', 'webp']:
             extension = 'jpg'
         content_type = 'image/jpeg' if extension in ['jpg', 'jpeg'] else f'image/{extension}'
-        
+
         try:
             photo = PostPhoto.objects.select_related('recipe_batch', 'post').get(id=photo_id)
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         if not self._user_can_manage_photo(photo, request.user):
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         base_path = 'photos'
         if photo.recipe_batch_id:
-            base_path = f"recipe_batches/{photo.recipe_batch_id}"
+            base_path = f'recipe_batches/{photo.recipe_batch_id}'
         elif photo.post_id:
-            base_path = f"posts/{photo.post_id}"
-        
-        file_name = f"{base_path}/edits/{uuid.uuid4().hex}.{extension}"
-        
+            base_path = f'posts/{photo.post_id}'
+
+        file_name = f'{base_path}/edits/{uuid.uuid4().hex}.{extension}'
+
         try:
             s3_client = build_s3_client()
             presigned_url = s3_client.generate_presigned_url(
@@ -5004,37 +5208,41 @@ class PostViewSet(viewsets.ModelViewSet):
                     'Key': file_name,
                     'ContentType': content_type,
                 },
-                ExpiresIn=300
+                ExpiresIn=300,
             )
         except Exception as e:
-            return Response({'error': f'Unable to generate presigned URL: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+            return Response(
+                {'error': f'Unable to generate presigned URL: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
         # Retourner le chemin relatif (image_path) au lieu de l'URL complète
-        return Response({
-            'photo_id': photo.id,
-            'presigned_url': presigned_url,
-            'file_name': file_name,
-            'image_path': file_name,  # Chemin relatif à stocker en base
-            'content_type': content_type,
-        })
-    
+        return Response(
+            {
+                'photo_id': photo.id,
+                'presigned_url': presigned_url,
+                'file_name': file_name,
+                'image_path': file_name,  # Chemin relatif à stocker en base
+                'content_type': content_type,
+            }
+        )
+
     @action(detail=False, methods=['post'])
     def confirm_photo_edit(self, request):
         """Confirmer qu'une photo a été retouchée et créer une nouvelle photo avec l'image modifiée"""
         photo_id = request.data.get('photo_id')
         file_name = request.data.get('file_name')
-        
+
         if not photo_id or not file_name:
             return Response({'error': 'photo_id and file_name are required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             original_photo = PostPhoto.objects.select_related('meal_plan', 'post').get(id=photo_id)
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         if not self._user_can_manage_photo(original_photo, request.user):
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         # Nettoyer le chemin (enlever le préfixe s3:/ si présent)
         new_path = file_name.replace('s3:/', '').lstrip('/')
 
@@ -5048,10 +5256,10 @@ class PostViewSet(viewsets.ModelViewSet):
                     s3_client = build_s3_client()
                     s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=old_path)
                 except Exception as e:
-                    print(f"Error deleting old photo from S3: {str(e)}")
+                    print(f'Error deleting old photo from S3: {str(e)}')
             serializer = PostPhotoSerializer(original_photo, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
-        
+
         # Créer une nouvelle photo avec l'image modifiée
         # On copie toutes les propriétés de la photo originale SAUF le post (mis à null)
         # et on conserve la date de création
@@ -5065,45 +5273,51 @@ class PostViewSet(viewsets.ModelViewSet):
             uploaded_by=request.user,
         )
         new_photo.save()
-        
+
         serializer = PostPhotoSerializer(new_photo, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=False, methods=['post'])
     def upload_photo_to_meal_plan(self, request):
         """Uploader une photo associée à un meal_plan (avant publication)"""
-        
+
         meal_plan_id = request.data.get('meal_plan_id')
         if not meal_plan_id:
             return Response({'error': 'meal_plan_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             meal_plan = MealPlan.objects.get(id=meal_plan_id, user=request.user)
         except MealPlan.DoesNotExist:
             return Response({'error': 'Meal plan not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Vérifier que la photo est fournie
         if 'photo' not in request.FILES:
             return Response({'error': 'Photo is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         photo_file = request.FILES['photo']
         photo_type = request.data.get('photo_type', 'spontaneous')
         step_id = request.data.get('step_id', None)
-        
+
         # Vérifier que le type de photo est valide
         if photo_type not in PHOTO_TYPES:
-            return Response({'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response(
+                {'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Vérifier l'unicité pour certains types
         if photo_type in RESTRICTED_PHOTO_TYPES:
             existing_photo = PostPhoto.objects.filter(meal_plan=meal_plan, photo_type=photo_type).first()
             if existing_photo:
-                return Response({'error': f'A {photo_type} photo already exists for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
-        
+                return Response(
+                    {'error': f'A {photo_type} photo already exists for this meal plan'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         # Upload vers S3
         try:
             s3_client = build_s3_client()
-            
+
             # Générer un nom de fichier unique
             # Nettoyer le nom du fichier pour éviter les caractères invalides
             original_filename = photo_file.name if hasattr(photo_file, 'name') and photo_file.name else 'photo.jpg'
@@ -5111,33 +5325,30 @@ class PostViewSet(viewsets.ModelViewSet):
             # S'assurer que l'extension est valide
             if file_extension not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
                 file_extension = 'jpg'
-            
+
             # Créer un nom de fichier propre avec UUID (sans caractères spéciaux)
             unique_id = str(uuid.uuid4()).replace('-', '')
-            file_name = f"meal_plans/{meal_plan.id}/{unique_id}.{file_extension}"
-            
+            file_name = f'meal_plans/{meal_plan.id}/{unique_id}.{file_extension}'
+
             # Déterminer le content type
             content_type = getattr(photo_file, 'content_type', None) or f'image/{file_extension}'
             if content_type == 'image/jpg':
                 content_type = 'image/jpeg'
             elif not content_type.startswith('image/'):
                 content_type = f'image/{file_extension}'
-            
+
             # S'assurer que le fichier est en mode lecture
             if hasattr(photo_file, 'seek'):
                 photo_file.seek(0)
-            
+
             # Upload vers S3
             s3_client.upload_fileobj(
                 photo_file,
                 settings.AWS_BUCKET,
                 file_name,
-                ExtraArgs={
-                    'ACL': 'public-read',
-                    'ContentType': content_type
-                }
+                ExtraArgs={'ACL': 'public-read', 'ContentType': content_type},
             )
-            
+
             # Créer l'objet PostPhoto avec image_path (chemin relatif)
             photo_data = {
                 'meal_plan': meal_plan,
@@ -5150,42 +5361,43 @@ class PostViewSet(viewsets.ModelViewSet):
                     photo_data['step'] = Step.objects.get(id=step_id)
                 except Step.DoesNotExist:
                     pass
-            
+
             post_photo = PostPhoto.objects.create(**photo_data)
-            
+
             serializer = PostPhotoSerializer(post_photo, context={'request': request})
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-            
+
         except Exception as e:
             import traceback
+
             error_details = traceback.format_exc()
-            print(f"❌ Error uploading photo to S3 (meal_plan): {str(e)}")
-            print(f"Traceback: {error_details}")
-            print(f"Photo file type: {type(photo_file)}")
+            print(f'❌ Error uploading photo to S3 (meal_plan): {str(e)}')
+            print(f'Traceback: {error_details}')
+            print(f'Photo file type: {type(photo_file)}')
             if hasattr(photo_file, 'name'):
-                print(f"Photo file name: {photo_file.name}")
+                print(f'Photo file name: {photo_file.name}')
             if hasattr(photo_file, 'content_type'):
-                print(f"Photo file content_type: {photo_file.content_type}")
-            return Response({
-                'error': f'Error uploading photo: {str(e)}',
-                'details': error_details if settings.DEBUG else None
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+                print(f'Photo file content_type: {photo_file.content_type}')
+            return Response(
+                {'error': f'Error uploading photo: {str(e)}', 'details': error_details if settings.DEBUG else None},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     @action(detail=False, methods=['post'])
     def publish_from_meal_plan(self, request):
         """Créer et publier un post à partir des photos d'un meal_plan"""
         meal_plan_id = request.data.get('meal_plan_id')
         comment = request.data.get('comment', '')
         photo_ids = request.data.get('photo_ids', [])
-        
+
         if not meal_plan_id:
             return Response({'error': 'meal_plan_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             meal_plan = MealPlan.objects.get(id=meal_plan_id, user=request.user)
         except MealPlan.DoesNotExist:
             return Response({'error': 'Meal plan not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         photos_qs = PostPhoto.objects.filter(meal_plan=meal_plan)
         if isinstance(photo_ids, list) and photo_ids:
             try:
@@ -5193,79 +5405,84 @@ class PostViewSet(viewsets.ModelViewSet):
             except (TypeError, ValueError):
                 return Response({'error': 'photo_ids must contain integers'}, status=status.HTTP_400_BAD_REQUEST)
             photos_qs = photos_qs.filter(id__in=photo_ids)
-        
+
         photos = list(photos_qs.order_by('created_at'))
-        
+
         if not photos:
             return Response({'error': 'No photos selected for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         if len(photos) > 10:
             return Response({'error': 'You can select up to 10 photos per post'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Récupérer le batch principal
         main_batch = meal_plan.meal_plan_recipe_batches.select_related('recipe_batch').first()
         if not main_batch or not main_batch.recipe_batch:
             return Response({'error': 'No recipe batch found for this meal plan'}, status=status.HTTP_400_BAD_REQUEST)
 
         complete_meal_plan_batches_for_publish(request.user, meal_plan)
-        
+
         # Créer le post
         post = Post.objects.create(
             user=request.user,
             meal_plan=meal_plan,
             recipe_batch=main_batch.recipe_batch,
             comment=comment,
-            is_published=True
+            is_published=True,
         )
-        
+
         # Associer toutes les photos au post (tout en conservant l'association au meal_plan)
         PostPhoto.objects.filter(id__in=[p.id for p in photos]).update(post=post)
-        
+
         serializer = PostSerializer(post, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=True, methods=['post'])
     def upload_photo(self, request, pk=None):
         """Uploader une photo pour un post"""
         post = self.get_object()
-        
+
         if post.user != request.user:
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         # Vérifier que la photo est fournie
         if 'photo' not in request.FILES:
             return Response({'error': 'Photo is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         photo_file = request.FILES['photo']
         photo_type = request.data.get('photo_type', 'spontaneous')
         step_id = request.data.get('step_id', None)
-        
+
         # Vérifier que le type de photo est valide
         if photo_type not in PHOTO_TYPES:
-            return Response({'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response(
+                {'error': f'Invalid photo_type. Must be one of: {", ".join(PHOTO_TYPES)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Vérifier l'unicité pour les types non-spontanés
         if photo_type in RESTRICTED_PHOTO_TYPES:
             existing_photo = PostPhoto.objects.filter(post=post, photo_type=photo_type).first()
             if existing_photo:
-                return Response({'error': f'A {photo_type} photo already exists for this post'}, status=status.HTTP_400_BAD_REQUEST)
-        
+                return Response(
+                    {'error': f'A {photo_type} photo already exists for this post'}, status=status.HTTP_400_BAD_REQUEST
+                )
+
         # Upload vers S3
         try:
             s3_client = build_s3_client()
-            
+
             # Générer un nom de fichier unique
             file_extension = photo_file.name.split('.')[-1] if '.' in photo_file.name else 'jpg'
-            file_name = f"posts/{post.id}/{uuid.uuid4()}.{file_extension}"
-            
+            file_name = f'posts/{post.id}/{uuid.uuid4()}.{file_extension}'
+
             # Upload vers S3
             s3_client.upload_fileobj(
                 photo_file,
                 settings.AWS_BUCKET,
                 file_name,
-                ExtraArgs={'ACL': 'public-read', 'ContentType': photo_file.content_type}
+                ExtraArgs={'ACL': 'public-read', 'ContentType': photo_file.content_type},
             )
-            
+
             # Créer l'objet PostPhoto avec image_path (chemin relatif)
             photo_data = {
                 'post': post,
@@ -5278,29 +5495,28 @@ class PostViewSet(viewsets.ModelViewSet):
                     photo_data['step'] = Step.objects.get(id=step_id)
                 except Step.DoesNotExist:
                     pass
-            
+
             post_photo = PostPhoto.objects.create(**photo_data)
-            
+
             serializer = PostPhotoSerializer(post_photo, context={'request': request})
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-            
+
         except Exception as e:
             return Response({'error': f'Error uploading photo: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
         """Publier un post (nécessite les 3 photos)"""
         post = self.get_object()
-        
+
         if post.user != request.user:
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         if post.photos.count() == 0:
             return Response(
-                {'error': 'At least one photo is required before publishing'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': 'At least one photo is required before publishing'}, status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         post.is_published = True
         post.save()
 
@@ -5308,25 +5524,25 @@ class PostViewSet(viewsets.ModelViewSet):
             complete_meal_plan_batches_for_publish(request.user, post.meal_plan)
         elif post.recipe_batch_id:
             complete_recipe_batch_workflow(request.user, post.recipe_batch)
-        
+
         serializer = self.get_serializer(post)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['delete'])
     def delete_photo(self, request, pk=None):
         """Supprimer une photo d'un post"""
         post = self.get_object()
-        
+
         if post.user != request.user:
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         photo_id = request.data.get('photo_id')
         if not photo_id:
             return Response({'error': 'photo_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             photo = PostPhoto.objects.get(id=photo_id, post=post)
-            
+
             # Supprimer de S3
             try:
                 s3_client = build_s3_client()
@@ -5335,13 +5551,13 @@ class PostViewSet(viewsets.ModelViewSet):
                 if file_path:
                     s3_client.delete_object(Bucket=settings.AWS_BUCKET, Key=file_path)
             except Exception as e:
-                print(f"Error deleting from S3: {str(e)}")
-            
+                print(f'Error deleting from S3: {str(e)}')
+
             # Supprimer de la base de données
             photo.delete()
-            
+
             return Response({'message': 'Photo deleted successfully'}, status=status.HTTP_200_OK)
-            
+
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -5372,11 +5588,11 @@ class PostViewSet(viewsets.ModelViewSet):
             if len(photo_ids) == 0:
                 return Response({'error': 'At least one photo is required'}, status=status.HTTP_400_BAD_REQUEST)
             if len(photo_ids) > 10:
-                return Response({'error': 'You can select up to 10 photos per post'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'You can select up to 10 photos per post'}, status=status.HTTP_400_BAD_REQUEST
+                )
 
-            photos_dict = {
-                p.id: p for p in PostPhoto.objects.filter(id__in=photo_ids)
-            }
+            photos_dict = {p.id: p for p in PostPhoto.objects.filter(id__in=photo_ids)}
             if len(photos_dict) != len(photo_ids):
                 return Response({'error': 'Some photos are invalid'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -5422,12 +5638,12 @@ class PostViewSet(viewsets.ModelViewSet):
         )
         serializer = PostSerializer(refreshed, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def send_cookie(self, request, pk=None):
         """
         Envoyer un cookie (like) à un post.
-        
+
         Contrairement au queryset par défaut de PostViewSet (qui limite parfois
         aux posts de l'utilisateur connecté), ici on veut permettre d'envoyer
         un cookie à (presque) n'importe quel post publié.
@@ -5439,28 +5655,27 @@ class PostViewSet(viewsets.ModelViewSet):
         # gérée par is_published).
         post_qs = Post.objects.filter(is_published=True)
         post = get_object_or_404(post_qs, pk=pk)
-        
+
         # Vérifier si l'utilisateur a déjà donné un cookie
-        cookie, created = PostCookie.objects.get_or_create(
-            user=user,
-            post=post
-        )
-        
+        cookie, created = PostCookie.objects.get_or_create(user=user, post=post)
+
         serializer = PostSerializer(post, context={'request': request})
         if created:
             # Notification pour le propriétaire du post (sauf si c'est soi-même)
             if post.user_id != user.id:
-                logger.info("post_miam: creating notification for user=%s post=%s from user=%s", post.user_id, post.id, user.id)
+                logger.info(
+                    'post_miam: creating notification for user=%s post=%s from user=%s', post.user_id, post.id, user.id
+                )
 
                 miam_titles = [
-                    "On parle de ton repas",
-                    "Ton repas fait des envieux",
-                    "Un miam de plus au compteur",
+                    'On parle de ton repas',
+                    'Ton repas fait des envieux',
+                    'Un miam de plus au compteur',
                 ]
                 miam_messages = [
-                    f"{user.username} a mis un miam à ton post.",
-                    f"{user.username} vient de miamer ton repas.",
-                    f"{user.username} a craqué pour ton repas.",
+                    f'{user.username} a mis un miam à ton post.',
+                    f'{user.username} vient de miamer ton repas.',
+                    f'{user.username} a craqué pour ton repas.',
                 ]
 
                 Notification.objects.create(
@@ -5473,18 +5688,15 @@ class PostViewSet(viewsets.ModelViewSet):
                 )
                 # Push debouncée + agrégée (plusieurs likes rapides → 1 seule push)
                 from accounts.services.miam_push import schedule_post_miam_push
+
                 schedule_post_miam_push(owner_id=post.user_id, post_id=post.id)
-            return Response({
-                'message': 'Cookie sent successfully',
-                'post': serializer.data
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {'message': 'Cookie sent successfully', 'post': serializer.data}, status=status.HTTP_201_CREATED
+            )
         else:
             # Cookie déjà existant
-            return Response({
-                'message': 'Cookie already sent',
-                'post': serializer.data
-            }, status=status.HTTP_200_OK)
-    
+            return Response({'message': 'Cookie already sent', 'post': serializer.data}, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['delete'])
     def remove_cookie(self, request, pk=None):
         """Retirer un cookie (like) d'un post"""
@@ -5493,15 +5705,14 @@ class PostViewSet(viewsets.ModelViewSet):
         # Permettre de retirer un cookie sur n'importe quel post publié
         post_qs = Post.objects.filter(is_published=True)
         post = get_object_or_404(post_qs, pk=pk)
-        
+
         try:
             cookie = PostCookie.objects.get(user=user, post=post)
             cookie.delete()
             serializer = PostSerializer(post, context={'request': request})
-            return Response({
-                'message': 'Cookie removed successfully',
-                'post': serializer.data
-            }, status=status.HTTP_200_OK)
+            return Response(
+                {'message': 'Cookie removed successfully', 'post': serializer.data}, status=status.HTTP_200_OK
+            )
         except PostCookie.DoesNotExist:
             return Response({'error': 'Cookie not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -5523,8 +5734,7 @@ class PostViewSet(viewsets.ModelViewSet):
         )
 
         cookies_qs = (
-            PostCookie.objects
-            .filter(post=post)
+            PostCookie.objects.filter(post=post)
             .select_related('user')
             .annotate(
                 is_following_rel=Exists(follow_exists),
@@ -5551,10 +5761,7 @@ class PostViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         # POST
-        create_serializer = PostCommentCreateSerializer(
-            data=request.data,
-            context={'request': request, 'post': post}
-        )
+        create_serializer = PostCommentCreateSerializer(data=request.data, context={'request': request, 'post': post})
         if create_serializer.is_valid():
             comment = create_serializer.save()
             commenter = request.user
@@ -5563,12 +5770,12 @@ class PostViewSet(viewsets.ModelViewSet):
             # 1. Notification au propriétaire du post (sauf si c'est le commentateur)
             if post.user_id != commenter.id:
                 comment_titles = [
-                    "Nouveau mot sur ton post",
+                    'Nouveau mot sur ton post',
                     "Quelqu'un réagit à ton repas",
                 ]
                 comment_messages = [
-                    f"{commenter.username} a commenté ton post.",
-                    f"{commenter.username} a laissé un petit mot sous ton repas.",
+                    f'{commenter.username} a commenté ton post.',
+                    f'{commenter.username} a laissé un petit mot sous ton repas.',
                 ]
 
                 notification = Notification.objects.create(
@@ -5580,10 +5787,7 @@ class PostViewSet(viewsets.ModelViewSet):
                     related_post_id=post.id,
                 )
                 # Push Expo vers le propriétaire du post
-                owner_devices = PushDevice.objects.filter(
-                    user=post.user,
-                    is_active=True
-                ).exclude(expo_push_token='')
+                owner_devices = PushDevice.objects.filter(user=post.user, is_active=True).exclude(expo_push_token='')
                 owner_messages = []
                 for device in owner_devices:
                     owner_messages.append(
@@ -5614,7 +5818,7 @@ class PostViewSet(viewsets.ModelViewSet):
                     mentioned_user = User.objects.get(username__iexact=username)
                     if mentioned_user.id not in notified_user_ids:
                         mention_titles = [
-                            "On te cite à table",
+                            'On te cite à table',
                             "Quelqu'un parle de toi",
                         ]
                         mention_messages = [
@@ -5632,10 +5836,9 @@ class PostViewSet(viewsets.ModelViewSet):
                         )
                         notified_user_ids.add(mentioned_user.id)
                         # Push Expo vers l'utilisateur mentionné
-                        mention_devices = PushDevice.objects.filter(
-                            user=mentioned_user,
-                            is_active=True
-                        ).exclude(expo_push_token='')
+                        mention_devices = PushDevice.objects.filter(user=mentioned_user, is_active=True).exclude(
+                            expo_push_token=''
+                        )
                         mention_messages_list = []
                         for device in mention_devices:
                             mention_messages_list.append(
@@ -5692,9 +5895,10 @@ class PostViewSet(viewsets.ModelViewSet):
 
 class ShoppingListViewSet(viewsets.ModelViewSet):
     """ViewSet pour les listes de courses"""
+
     serializer_class = ShoppingListSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def list(self, request, *args, **kwargs):
         """
         Liste les shopping lists accessibles par l'utilisateur.
@@ -5702,7 +5906,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         - si recipe_batch_id est fourni
         - et que l'utilisateur n'a AUCUNE liste liée à ce batch
         - mais qu'une liste existe pour ce batch côté hôte
-        
+
         => retourner une entrée minimale qui signale l'existence d'une liste
            sans exposer ses détails (nom custom, membres, etc.).
         """
@@ -5715,15 +5919,10 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             recipe_batch_id_int = None
 
-        if (
-            recipe_batch_id_int is not None
-            and isinstance(response.data, dict)
-            and response.data.get('count', 0) == 0
-        ):
+        if recipe_batch_id_int is not None and isinstance(response.data, dict) and response.data.get('count', 0) == 0:
             # Aucun résultat accessible, mais on vérifie s'il existe au moins une liste liée à ce batch
             slb = (
-                ShoppingListBatch.objects
-                .filter(recipe_batch_id=recipe_batch_id_int)
+                ShoppingListBatch.objects.filter(recipe_batch_id=recipe_batch_id_int)
                 .select_related('shopping_list')
                 .first()
             )
@@ -5749,7 +5948,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 }
 
         return response
-    
+
     def get_queryset(self):
         """V2: filtrer par membership (owner/collaborator)"""
         include_archived = self.request.query_params.get('include_archived')
@@ -5769,7 +5968,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
             Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category')),
             Prefetch('batches', queryset=ShoppingListBatch.objects.select_related('recipe_batch__recipe')),
         ).order_by('-updated_at', '-created_at')
-    
+
     @action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
         """Archiver ou désarchiver une liste"""
@@ -5778,7 +5977,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         shopping_list.save()
         serializer = self.get_serializer(shopping_list)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def generate_items(self, request, pk=None):
         """
@@ -5789,20 +5988,27 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             # Supprimer uniquement les quantités liées à un batch (garder les ajouts manuels)
-            ShoppingListItemQuantity.objects.filter(
-                shopping_list_item__shopping_list=shopping_list
-            ).exclude(recipe_batch__isnull=True).delete()
+            ShoppingListItemQuantity.objects.filter(shopping_list_item__shopping_list=shopping_list).exclude(
+                recipe_batch__isnull=True
+            ).delete()
             # Supprimer les items qui n'ont plus aucune quantité
             empty_item_ids = [
-                item.id for item in ShoppingListItem.objects.filter(shopping_list=shopping_list)
+                item.id
+                for item in ShoppingListItem.objects.filter(shopping_list=shopping_list)
                 if not item.quantities.exists()
             ]
             ShoppingListItem.objects.filter(id__in=empty_item_ids).delete()
-            for slb in ShoppingListBatch.objects.filter(shopping_list=shopping_list).select_related('recipe_batch__recipe'):
+            for slb in ShoppingListBatch.objects.filter(shopping_list=shopping_list).select_related(
+                'recipe_batch__recipe'
+            ):
                 self._add_batch_ingredients_to_list(shopping_list, slb.recipe_batch, request.user)
 
-        items = ShoppingListItem.objects.filter(shopping_list=shopping_list).select_related('ingredient__category', 'checked_by')
-        return Response(ShoppingListItemSerializer(items, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
+        items = ShoppingListItem.objects.filter(shopping_list=shopping_list).select_related(
+            'ingredient__category', 'checked_by'
+        )
+        return Response(
+            ShoppingListItemSerializer(items, many=True, context={'request': request}).data, status=status.HTTP_200_OK
+        )
 
     @action(detail=True, methods=['post'], url_path='conflict-notice')
     def conflict_notice(self, request, pk=None):
@@ -5821,7 +6027,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         shopping_list = self.get_object()  # enforces membership through queryset
         items = request.data.get('items') or []
         if not isinstance(items, list) or not items:
-            return Response({"ok": True, "broadcasted": False}, status=status.HTTP_200_OK)
+            return Response({'ok': True, 'broadcasted': False}, status=status.HTTP_200_OK)
 
         sanitized_items = []
         target_user_ids = set()
@@ -5841,16 +6047,14 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 target_user_id_int = None
 
             if not name:
-                name = f"Item #{item_id_int}"
+                name = f'Item #{item_id_int}'
 
-            sanitized_items.append(
-                {"item_id": item_id_int, "name": name, "target_user_id": target_user_id_int}
-            )
+            sanitized_items.append({'item_id': item_id_int, 'name': name, 'target_user_id': target_user_id_int})
             if target_user_id_int is not None:
                 target_user_ids.add(target_user_id_int)
 
         if not sanitized_items:
-            return Response({"ok": True, "broadcasted": False}, status=status.HTTP_200_OK)
+            return Response({'ok': True, 'broadcasted': False}, status=status.HTTP_200_OK)
 
         member_ids = set(
             ShoppingListMember.objects.filter(shopping_list=shopping_list).values_list('user_id', flat=True)
@@ -5860,23 +6064,23 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         try:
             channel_layer = get_channel_layer()
             if channel_layer is not None:
-                group_name = f"shopping_list_{shopping_list.id}"
+                group_name = f'shopping_list_{shopping_list.id}'
                 actor = request.user
                 async_to_sync(channel_layer.group_send)(
                     group_name,
                     {
-                        "type": "shopping_list_conflict_notice",
-                        "shopping_list_id": shopping_list.id,
-                        "actor_user_id": actor.id if actor else None,
-                        "actor_username": getattr(actor, "username", "") or getattr(actor, "email", "") or "",
-                        "target_user_ids": target_user_ids,
-                        "items": sanitized_items,
+                        'type': 'shopping_list_conflict_notice',
+                        'shopping_list_id': shopping_list.id,
+                        'actor_user_id': actor.id if actor else None,
+                        'actor_username': getattr(actor, 'username', '') or getattr(actor, 'email', '') or '',
+                        'target_user_ids': target_user_ids,
+                        'items': sanitized_items,
                     },
                 )
         except Exception:
             pass
 
-        return Response({"ok": True, "broadcasted": True, "targets": target_user_ids}, status=status.HTTP_200_OK)
+        return Response({'ok': True, 'broadcasted': True, 'targets': target_user_ids}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get', 'post'], url_path='loyalty-cards')
     def loyalty_cards(self, request, pk=None):
@@ -5891,10 +6095,8 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         shopping_list = self.get_object()  # membership enforced by queryset
 
         if request.method == 'GET':
-            links = (
-                ShoppingListLoyaltyCard.objects
-                .filter(shopping_list=shopping_list)
-                .select_related('card', 'card__owner')
+            links = ShoppingListLoyaltyCard.objects.filter(shopping_list=shopping_list).select_related(
+                'card', 'card__owner'
             )
             cards = [link.card for link in links if link.card and link.card.is_active]
             serializer = LoyaltyCardSerializer(cards, many=True, context={'request': request})
@@ -5939,7 +6141,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         ).exists()
         if not is_owner:
             return Response(
-                {'detail': "Seul le propriétaire de la liste peut retirer une carte."},
+                {'detail': 'Seul le propriétaire de la liste peut retirer une carte.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -6026,7 +6228,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 defaults={
                     'pantry_quantity': 0,
                     'pantry_unit': unit_canon,
-                }
+                },
             )
             if not item.pantry_unit:
                 item.pantry_unit = unit_canon
@@ -6039,7 +6241,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                     'quantity': qty_canon,
                     'unit': unit_canon,
                     'checked_quantity': 0,
-                }
+                },
             )
             if not created:
                 # merge quantities (add)
@@ -6067,13 +6269,12 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 old_list = existing_link.shopping_list
                 # Delete all quantities contributed by this batch in old list
                 ShoppingListItemQuantity.objects.filter(
-                    recipe_batch=batch,
-                    shopping_list_item__shopping_list=old_list
+                    recipe_batch=batch, shopping_list_item__shopping_list=old_list
                 ).delete()
                 # Delete empty items
-                ShoppingListItem.objects.filter(shopping_list=old_list).annotate(
-                    qcount=Count('quantities')
-                ).filter(qcount=0).delete()
+                ShoppingListItem.objects.filter(shopping_list=old_list).annotate(qcount=Count('quantities')).filter(
+                    qcount=0
+                ).delete()
                 existing_link.delete()
 
             # Create link to new list (or keep if already linked)
@@ -6085,7 +6286,9 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
             # Add ingredients for this batch into the list
             self._add_batch_ingredients_to_list(shopping_list, batch, request.user)
 
-        return Response(ShoppingListSerializer(shopping_list, context={'request': request}).data, status=status.HTTP_200_OK)
+        return Response(
+            ShoppingListSerializer(shopping_list, context={'request': request}).data, status=status.HTTP_200_OK
+        )
 
     @action(detail=True, methods=['post'], url_path='associate_meal_plan')
     def associate_meal_plan(self, request, pk=None):
@@ -6125,9 +6328,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             for batch in batches:
                 existing_link = (
-                    ShoppingListBatch.objects.filter(recipe_batch=batch)
-                    .select_related('shopping_list')
-                    .first()
+                    ShoppingListBatch.objects.filter(recipe_batch=batch).select_related('shopping_list').first()
                 )
                 if existing_link and existing_link.shopping_list_id != shopping_list.id:
                     old_list = existing_link.shopping_list
@@ -6135,9 +6336,9 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                         recipe_batch=batch,
                         shopping_list_item__shopping_list=old_list,
                     ).delete()
-                    ShoppingListItem.objects.filter(shopping_list=old_list).annotate(
-                        qcount=Count('quantities')
-                    ).filter(qcount=0).delete()
+                    ShoppingListItem.objects.filter(shopping_list=old_list).annotate(qcount=Count('quantities')).filter(
+                        qcount=0
+                    ).delete()
                     existing_link.delete()
 
                 ShoppingListBatch.objects.update_or_create(
@@ -6167,12 +6368,11 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             ShoppingListBatch.objects.filter(shopping_list=shopping_list, recipe_batch_id=batch_id_int).delete()
             ShoppingListItemQuantity.objects.filter(
-                recipe_batch_id=batch_id_int,
-                shopping_list_item__shopping_list=shopping_list
+                recipe_batch_id=batch_id_int, shopping_list_item__shopping_list=shopping_list
             ).delete()
-            ShoppingListItem.objects.filter(shopping_list=shopping_list).annotate(
-                qcount=Count('quantities')
-            ).filter(qcount=0).delete()
+            ShoppingListItem.objects.filter(shopping_list=shopping_list).annotate(qcount=Count('quantities')).filter(
+                qcount=0
+            ).delete()
 
         return Response({'ok': True}, status=status.HTTP_200_OK)
 
@@ -6182,70 +6382,72 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         from django.contrib.auth import get_user_model
         from django.db import transaction
         from accounts.models import Follow, Notification
+
         User = get_user_model()
-        
+
         shopping_list = self.get_object()
         invitee_ids = request.data.get('invitee_ids', [])
-        
+
         if not invitee_ids:
             return Response({'error': 'invitee_ids is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Vérifier que l'utilisateur est owner ou collaborator
         is_owner = shopping_list.members.filter(user=request.user, role='owner').exists()
         is_collaborator = shopping_list.members.filter(user=request.user, role='collaborator').exists()
         if not (is_owner or is_collaborator):
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         # Vérifier que les utilisateurs sont des complices
         following_ids = Follow.objects.filter(follower=request.user).values_list('following_id', flat=True)
         followers_ids = Follow.objects.filter(following=request.user).values_list('follower_id', flat=True)
         complice_ids = set(list(following_ids) + list(followers_ids))
-        
+
         valid_invitee_ids = [user_id for user_id in invitee_ids if user_id in complice_ids]
-        
+
         if not valid_invitee_ids:
             return Response({'error': 'No valid complices found'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Précharger les utilisateurs
         invitees = {user.id: user for user in User.objects.filter(id__in=valid_invitee_ids)}
-        
+
         # Créer les invitations
         invitations = []
         notification_data = []
-        
+
         with transaction.atomic():
             for invitee_id in valid_invitee_ids:
                 invitee = invitees.get(invitee_id)
                 if not invitee:
                     continue
-                
+
                 # Ne pas inviter si déjà membre
                 if shopping_list.members.filter(user=invitee).exists():
                     continue
-                
+
                 invitation, created = ShoppingListInvitation.objects.get_or_create(
-                    inviter=request.user,
-                    invitee=invitee,
-                    shopping_list=shopping_list,
-                    defaults={'status': 'pending'}
+                    inviter=request.user, invitee=invitee, shopping_list=shopping_list, defaults={'status': 'pending'}
                 )
                 if created:
                     invitations.append(invitation)
-                    notification_data.append({
-                        'user': invitee,
-                        'notification_type': 'shopping_list_invitation',
-                        'title': f"{request.user.username} vous invite à une liste de courses",
-                        'message': f"{request.user.username} vous invite à collaborer sur '{shopping_list.name}'",
-                        'related_user': request.user
-                    })
-        
+                    notification_data.append(
+                        {
+                            'user': invitee,
+                            'notification_type': 'shopping_list_invitation',
+                            'title': f'{request.user.username} vous invite à une liste de courses',
+                            'message': f"{request.user.username} vous invite à collaborer sur '{shopping_list.name}'",
+                            'related_user': request.user,
+                        }
+                    )
+
         # Créer les notifications après commit
         if notification_data:
+
             def create_notifications():
                 for notif_data in notification_data:
                     Notification.objects.create(**notif_data)
+
             transaction.on_commit(create_notifications)
-        
+
         shopping_list.refresh_from_db()
         serializer = self.get_serializer(shopping_list, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -6256,6 +6458,7 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         from django.contrib.auth import get_user_model
         from django.db import transaction
         from accounts.models import Follow, Notification
+
         User = get_user_model()
 
         shopping_list = self.get_object()
@@ -6286,22 +6489,24 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
                 if not invitee or shopping_list.members.filter(user=invitee).exists():
                     continue
                 ShoppingListMember.objects.get_or_create(
-                    shopping_list=shopping_list,
-                    user=invitee,
-                    defaults={'role': 'collaborator'}
+                    shopping_list=shopping_list, user=invitee, defaults={'role': 'collaborator'}
                 )
-                notification_data.append({
-                    'user': invitee,
-                    'notification_type': 'shopping_list_invitation',
-                    'title': f"{request.user.username} vous a ajouté à une liste de courses",
-                    'message': f"{request.user.username} vous a ajouté à la liste '{shopping_list.name}'",
-                    'related_user': request.user
-                })
+                notification_data.append(
+                    {
+                        'user': invitee,
+                        'notification_type': 'shopping_list_invitation',
+                        'title': f'{request.user.username} vous a ajouté à une liste de courses',
+                        'message': f"{request.user.username} vous a ajouté à la liste '{shopping_list.name}'",
+                        'related_user': request.user,
+                    }
+                )
 
         if notification_data:
+
             def create_notifications():
                 for nd in notification_data:
                     Notification.objects.create(**nd)
+
             transaction.on_commit(create_notifications)
 
         shopping_list.refresh_from_db()
@@ -6313,23 +6518,23 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
         """Retirer un membre d'une liste de courses (seulement owner)"""
         shopping_list = self.get_object()
         user_id = request.data.get('user_id')
-        
+
         if not user_id:
             return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Vérifier que l'utilisateur est owner
         is_owner = shopping_list.members.filter(user=request.user, role='owner').exists()
         if not is_owner:
             return Response({'error': 'Only owner can remove members'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         # Ne pas permettre de retirer le owner
         member_to_remove = shopping_list.members.filter(user_id=user_id).first()
         if not member_to_remove:
             return Response({'error': 'Member not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         if member_to_remove.role == 'owner':
             return Response({'error': 'Cannot remove owner'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         member_to_remove.delete()
         shopping_list.refresh_from_db()
         serializer = self.get_serializer(shopping_list, context={'request': request})
@@ -6366,15 +6571,16 @@ class ShoppingListViewSet(viewsets.ModelViewSet):
 
 class ShoppingListInvitationViewSet(viewsets.ModelViewSet):
     """ViewSet pour les invitations aux listes de courses"""
+
     serializer_class = None  # À définir dans serializers.py
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         # L'utilisateur peut voir les invitations qu'il a envoyées ou reçues
         qs = ShoppingListInvitation.objects.filter(
             Q(inviter=self.request.user) | Q(invitee=self.request.user)
         ).select_related('inviter', 'invitee', 'shopping_list')
-        
+
         # Filtrer par shopping_list si fourni
         shopping_list_id = self.request.query_params.get('shopping_list')
         if shopping_list_id:
@@ -6382,51 +6588,50 @@ class ShoppingListInvitationViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(shopping_list_id=shopping_list_id)
             except ValueError:
                 pass
-        
+
         return qs
-    
+
     def get_serializer_class(self):
         # Utiliser un serializer simple pour les invitations
         from .serializers import ShoppingListInvitationSerializer
+
         return ShoppingListInvitationSerializer
-    
+
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
         """Accepter une invitation"""
         invitation = self.get_object()
         if invitation.invitee != request.user:
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         if invitation.status != 'pending':
             return Response({'error': 'Invitation already processed'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         with transaction.atomic():
             invitation.status = 'accepted'
             invitation.save()
-            
+
             # Créer le membre
             ShoppingListMember.objects.get_or_create(
-                shopping_list=invitation.shopping_list,
-                user=invitation.invitee,
-                defaults={'role': 'collaborator'}
+                shopping_list=invitation.shopping_list, user=invitation.invitee, defaults={'role': 'collaborator'}
             )
-        
+
         serializer = self.get_serializer(invitation)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def decline(self, request, pk=None):
         """Refuser une invitation"""
         invitation = self.get_object()
         if invitation.invitee != request.user:
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+
         if invitation.status != 'pending':
             return Response({'error': 'Invitation already processed'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         invitation.status = 'declined'
         invitation.save()
-        
+
         serializer = self.get_serializer(invitation)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -6437,6 +6642,7 @@ def _mark_shopping_done_if_list_complete(shopping_list):
     sur tous les RecipeBatch associés à cette liste.
     """
     from decimal import Decimal
+
     items = shopping_list.items.prefetch_related('quantities').all()
     if not items.exists():
         return
@@ -6468,7 +6674,7 @@ def _broadcast_shopping_list_item_update(item, updated_by_user):
         total_checked = float(sum(_D(str(q.checked_quantity or 0)) for q in qs))
 
         # Determine unit (same logic as with_quantities)
-        unit = ""
+        unit = ''
         first_q = qs.first()
         if first_q and first_q.unit:
             unit = first_q.unit
@@ -6480,28 +6686,28 @@ def _broadcast_shopping_list_item_update(item, updated_by_user):
         category = item.ingredient.category
 
         payload = {
-            "item_id": item.id,
-            "shopping_list_id": item.shopping_list_id,
-            "ingredient_id": item.ingredient_id,
-            "name": item.ingredient.name,
-            "unit_group": item.unit_group,
-            "quantity": total_qty,
-            "checked_quantity": total_checked,
-            "unit": unit,
-            "category": {
-                "id": category.id,
-                "name": category.name,
-                "display_order": category.display_order,
+            'item_id': item.id,
+            'shopping_list_id': item.shopping_list_id,
+            'ingredient_id': item.ingredient_id,
+            'name': item.ingredient.name,
+            'unit_group': item.unit_group,
+            'quantity': total_qty,
+            'checked_quantity': total_checked,
+            'unit': unit,
+            'category': {
+                'id': category.id,
+                'name': category.name,
+                'display_order': category.display_order,
             }
             if category
             else None,
-            "pantry_quantity": pantry_qty,
-            "pantry_unit": item.pantry_unit or unit or "",
-            "checked_at": item.checked_at.isoformat() if item.checked_at else None,
-            "checked_by": {
-                "id": updated_by_user.id,
-                "username": getattr(updated_by_user, "username", "") or updated_by_user.email,
-                "name": getattr(updated_by_user, "username", "") or updated_by_user.email,
+            'pantry_quantity': pantry_qty,
+            'pantry_unit': item.pantry_unit or unit or '',
+            'checked_at': item.checked_at.isoformat() if item.checked_at else None,
+            'checked_by': {
+                'id': updated_by_user.id,
+                'username': getattr(updated_by_user, 'username', '') or updated_by_user.email,
+                'name': getattr(updated_by_user, 'username', '') or updated_by_user.email,
             }
             if updated_by_user
             else None,
@@ -6511,13 +6717,13 @@ def _broadcast_shopping_list_item_update(item, updated_by_user):
         if channel_layer is None:
             return
 
-        group_name = f"shopping_list_{item.shopping_list_id}"
+        group_name = f'shopping_list_{item.shopping_list_id}'
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
-                "type": "shopping_list_item_updated",
-                "item": payload,
-                "updated_by_user_id": updated_by_user.id if updated_by_user else None,
+                'type': 'shopping_list_item_updated',
+                'item': payload,
+                'updated_by_user_id': updated_by_user.id if updated_by_user else None,
             },
         )
     except Exception:
@@ -6527,13 +6733,14 @@ def _broadcast_shopping_list_item_update(item, updated_by_user):
 
 class ShoppingListItemViewSet(viewsets.ModelViewSet):
     """ViewSet pour les items de liste de courses"""
+
     serializer_class = ShoppingListItemSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         """V2: Filtrer par shopping list accessible via membership"""
         shopping_list_id = self.request.query_params.get('shopping_list_id')
-        
+
         if shopping_list_id:
             try:
                 shopping_list = ShoppingList.objects.get(id=shopping_list_id, members__user=self.request.user)
@@ -6542,53 +6749,63 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 return ShoppingListItem.objects.none()
         else:
             queryset = ShoppingListItem.objects.filter(shopping_list__members__user=self.request.user).distinct()
-        
+
         # Filtres optionnels
         ingredient_id = self.request.query_params.get('ingredient_id')
-        
+
         if ingredient_id:
             queryset = queryset.filter(ingredient_id=ingredient_id)
-        
+
         # Optimisation : précharger toutes les relations nécessaires
         return queryset.select_related(
             'ingredient__category',
             'shopping_list',
             'checked_by',
         ).order_by('-updated_at')
-    
+
     @action(detail=False, methods=['get'])
     def with_quantities(self, request):
         """V2: Retourne les lignes (ingredient + unit_group) avec quantités totalisées depuis ShoppingListItemQuantity."""
-        
+
         shopping_list_id = request.query_params.get('shopping_list_id')
-        
+
         if not shopping_list_id:
             return Response({'error': 'shopping_list_id required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         from .models import MealPlan, MealPlanRecipeBatch, PostPhoto
         from .serializers import RecipeLightSerializer
-        
+
         try:
             shopping_list = ShoppingList.objects.prefetch_related(
-                Prefetch('items', queryset=ShoppingListItem.objects.select_related('ingredient__category', 'checked_by').prefetch_related(
-                    Prefetch('quantities', queryset=ShoppingListItemQuantity.objects.select_related(
-                        'recipe_batch__recipe', 'checked_by'
+                Prefetch(
+                    'items',
+                    queryset=ShoppingListItem.objects.select_related(
+                        'ingredient__category', 'checked_by'
                     ).prefetch_related(
-                        Prefetch('recipe_batch__meal_plan_recipe_batches', queryset=MealPlanRecipeBatch.objects.select_related('meal_plan'))
-                    ))
-                ))
+                        Prefetch(
+                            'quantities',
+                            queryset=ShoppingListItemQuantity.objects.select_related(
+                                'recipe_batch__recipe', 'checked_by'
+                            ).prefetch_related(
+                                Prefetch(
+                                    'recipe_batch__meal_plan_recipe_batches',
+                                    queryset=MealPlanRecipeBatch.objects.select_related('meal_plan'),
+                                )
+                            ),
+                        )
+                    ),
+                )
             ).get(id=shopping_list_id, members__user=request.user)
         except ShoppingList.DoesNotExist:
             return Response({'error': 'Shopping list not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         result = []
         now = timezone.now()
         hide_after = timedelta(days=1)
         for item in shopping_list.items.all():
             quantities_list = list(item.quantities.all())
             active_quantities = [
-                q for q in quantities_list
-                if not shopping_list_item_quantity_is_stale(q, now, hide_after)
+                q for q in quantities_list if not shopping_list_item_quantity_is_stale(q, now, hide_after)
             ]
             if not active_quantities:
                 continue
@@ -6618,7 +6835,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
 
             line_checked_at = None if remaining > 0 else item.checked_at
             line_checked_by = None if remaining > 0 else item.checked_by
-            
+
             # Collecter les batches avec leurs détails (recipe_batch=None = ajout manuel)
             batches_data = []
             batch_ids = []
@@ -6636,23 +6853,24 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 if batch.id in batch_ids:
                     continue
                 batch_ids.append(batch.id)
-                
+
                 dates = []
                 for mprb in batch.meal_plan_recipe_batches.all():
                     if mprb.meal_plan:
                         dates.append(mprb.meal_plan.date.isoformat())
                 dates = sorted(list(set(dates)))
-                
+
                 photo_url = None
                 if batch.recipe:
                     first_photo = PostPhoto.objects.filter(recipe_batch=batch).order_by('-created_at').first()
                     if first_photo:
                         try:
                             from savr_back.settings import build_presigned_get_url
+
                             photo_url = build_presigned_get_url(first_photo.image_path, expires_in=3600)
                         except Exception:
                             pass
-                
+
                 recipe_data = None
                 if batch.recipe:
                     try:
@@ -6663,50 +6881,56 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                             'title': batch.recipe.title or '',
                             'image_url': None,
                         }
-                
-                batches_data.append({
-                    'batch_id': batch.id,
-                    'recipe': recipe_data,
-                    'quantity': float(q.quantity or 0),
-                    'checked_quantity': float(q.checked_quantity or 0),
-                    'unit': q.unit or unit,
-                    'dates': dates,
-                    'photo_url': photo_url,
-                    'is_manual': False,
-                })
-            
+
+                batches_data.append(
+                    {
+                        'batch_id': batch.id,
+                        'recipe': recipe_data,
+                        'quantity': float(q.quantity or 0),
+                        'checked_quantity': float(q.checked_quantity or 0),
+                        'unit': q.unit or unit,
+                        'dates': dates,
+                        'photo_url': photo_url,
+                        'is_manual': False,
+                    }
+                )
+
             if has_manual:
-                batches_data.append({
-                    'batch_id': None,
-                    'recipe': None,
-                    'quantity': manual_qty,
-                    'checked_quantity': manual_checked,
+                batches_data.append(
+                    {
+                        'batch_id': None,
+                        'recipe': None,
+                        'quantity': manual_qty,
+                        'checked_quantity': manual_checked,
+                        'unit': unit,
+                        'dates': [],
+                        'photo_url': None,
+                        'is_manual': True,
+                    }
+                )
+
+            result.append(
+                {
+                    'item_id': item.id,
+                    'ingredient_id': item.ingredient.id,
+                    'unit_group': item.unit_group,
+                    'name': item.ingredient.name,
+                    'quantity': total_qty,
+                    'checked_quantity': total_checked,
                     'unit': unit,
-                    'dates': [],
-                    'photo_url': None,
-                    'is_manual': True,
-                })
-            
-            result.append({
-                'item_id': item.id,
-                'ingredient_id': item.ingredient.id,
-                'unit_group': item.unit_group,
-                'name': item.ingredient.name,
-                'quantity': total_qty,
-                'checked_quantity': total_checked,
-                'unit': unit,
-                'category': {
-                    'id': category.id if category else None,
-                    'name': category.name if category else 'Autres',
-                    'display_order': category.display_order if category else None,
-                },
-                'pantry_quantity': float(item.pantry_quantity or 0),
-                'pantry_unit': item.pantry_unit or unit or '',
-                'checked_at': line_checked_at,
-                'checked_by': UserLightSerializer(line_checked_by).data if line_checked_by else None,
-                'batches': batches_data,
-                'recipes_count': len(batches_data),
-            })
+                    'category': {
+                        'id': category.id if category else None,
+                        'name': category.name if category else 'Autres',
+                        'display_order': category.display_order if category else None,
+                    },
+                    'pantry_quantity': float(item.pantry_quantity or 0),
+                    'pantry_unit': item.pantry_unit or unit or '',
+                    'checked_at': line_checked_at,
+                    'checked_by': UserLightSerializer(line_checked_by).data if line_checked_by else None,
+                    'batches': batches_data,
+                    'recipes_count': len(batches_data),
+                }
+            )
         return Response(result, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
@@ -6773,9 +6997,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
             qty_val = Decimal('0')
         with transaction.atomic():
             qty_obj, _ = ShoppingListItemQuantity.objects.get_or_create(
-                shopping_list_item=item,
-                recipe_batch=None,
-                defaults={'quantity': qty_val, 'unit': unit}
+                shopping_list_item=item, recipe_batch=None, defaults={'quantity': qty_val, 'unit': unit}
             )
             if not _:
                 qty_obj.quantity = qty_val
@@ -6799,7 +7021,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         valid_units = ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'piece', 'pinch', 'clove']
         if new_unit not in valid_units:
             return Response(
-                {'error': f"Unité invalide. Unités valides: {', '.join(valid_units)}"},
+                {'error': f'Unité invalide. Unités valides: {", ".join(valid_units)}'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -6826,7 +7048,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 {
                     'error': (
                         "Impossible de changer le type d'unité pour un article "
-                        "provenant de recettes. Changez uniquement g↔kg ou ml↔L."
+                        'provenant de recettes. Changez uniquement g↔kg ou ml↔L.'
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -6859,11 +7081,15 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             if new_group != item.unit_group:
-                conflict = ShoppingListItem.objects.filter(
-                    shopping_list_id=item.shopping_list_id,
-                    ingredient_id=item.ingredient_id,
-                    unit_group=new_group,
-                ).exclude(pk=item.pk).first()
+                conflict = (
+                    ShoppingListItem.objects.filter(
+                        shopping_list_id=item.shopping_list_id,
+                        ingredient_id=item.ingredient_id,
+                        unit_group=new_group,
+                    )
+                    .exclude(pk=item.pk)
+                    .first()
+                )
                 if conflict:
                     return Response(
                         {'error': 'Une ligne existe déjà pour cet ingrédient avec cette unité.'},
@@ -6881,9 +7107,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 q.save(update_fields=['quantity', 'checked_quantity', 'unit', 'updated_at'])
 
             pantry_old = current_unit
-            item.pantry_quantity = Decimal(
-                str(_convert(float(item.pantry_quantity or 0), pantry_old, new_unit))
-            )
+            item.pantry_quantity = Decimal(str(_convert(float(item.pantry_quantity or 0), pantry_old, new_unit)))
             item.pantry_unit = new_unit
             item.save(update_fields=['unit_group', 'pantry_quantity', 'pantry_unit', 'updated_at'])
 
@@ -6921,6 +7145,7 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         """Utiliser ShoppingListItemCreateSerializer pour la création manuelle"""
         if self.action == 'create':
             from .serializers import ShoppingListItemCreateSerializer
+
             return ShoppingListItemCreateSerializer
         return ShoppingListItemSerializer
 
@@ -6931,30 +7156,29 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         shopping_list_id = serializer.validated_data['shopping_list_id']
         ingredient_name = serializer.validated_data['ingredient_name'].strip()
         quantity = serializer.validated_data.get('quantity', 1.0)
         unit = serializer.validated_data.get('unit', 'piece')
         category_id = serializer.validated_data.get('category_id')
-        
+
         # Vérifier que l'utilisateur a accès à la liste
         try:
             shopping_list = ShoppingList.objects.get(id=shopping_list_id, members__user=request.user)
         except ShoppingList.DoesNotExist:
-            return Response(
-                {'error': 'Shopping list not found or access denied'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
+            return Response({'error': 'Shopping list not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+
         with transaction.atomic():
             # Récupérer ou créer l'ingrédient
             from .services.ingredient_matcher import get_or_create_ingredient
+
             ingredient, created = get_or_create_ingredient(ingredient_name)
-            
+
             # Catégorie : utiliser celle fournie, sinon auto-catégoriser
             if category_id:
                 from .models import Category
+
                 try:
                     category = Category.objects.get(id=category_id)
                     if ingredient.category_id != category.id:
@@ -6962,14 +7186,16 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                         ingredient.save(update_fields=['category'])
                 except Category.DoesNotExist:
                     from .services.ingredient_categorization import ensure_ingredient_category
+
                     ensure_ingredient_category(ingredient)
             else:
                 from .services.ingredient_categorization import ensure_ingredient_category
+
                 ensure_ingredient_category(ingredient)
-            
+
             # Déterminer le unit_group à partir de l'unité
             unit_group = self._unit_group_for_unit(unit)
-            
+
             # Créer ou récupérer le ShoppingListItem
             item, item_created = ShoppingListItem.objects.get_or_create(
                 shopping_list=shopping_list,
@@ -6977,9 +7203,9 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 unit_group=unit_group,
                 defaults={
                     'pantry_unit': unit,
-                }
+                },
             )
-            
+
             # Quantité manuelle = pas de recipe_batch (recipe_batch=None en DB)
             canonical_qty, canonical_unit = self._canonicalize_quantity(float(quantity), unit)
             quantity_obj, qty_created = ShoppingListItemQuantity.objects.get_or_create(
@@ -6988,12 +7214,12 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
                 defaults={
                     'quantity': Decimal(str(canonical_qty)),
                     'unit': canonical_unit,
-                }
+                },
             )
             if not qty_created:
                 quantity_obj.quantity = Decimal(str(quantity_obj.quantity)) + Decimal(str(canonical_qty))
                 quantity_obj.save(update_fields=['quantity', 'updated_at'])
-            
+
             # Touch la liste pour que updated_at reflète bien la dernière modification
             shopping_list.updated_at = timezone.now()
             shopping_list.save(update_fields=['updated_at'])
@@ -7004,9 +7230,9 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
 
         return Response(
             ShoppingListItemSerializer(item, context={'request': request}).data,
-            status=status.HTTP_201_CREATED if item_created else status.HTTP_200_OK
+            status=status.HTTP_201_CREATED if item_created else status.HTTP_200_OK,
         )
-    
+
     def _categorize_ingredient(self, ingredient_name: str, ingredient: Ingredient) -> Optional[Category]:
         from .services.ingredient_categorization import resolve_category_for_ingredient
 
@@ -7015,8 +7241,9 @@ class ShoppingListItemViewSet(viewsets.ModelViewSet):
 
 class CollectionViewSet(viewsets.ModelViewSet):
     """ViewSet pour les collections de recettes"""
+
     permission_classes = [IsAuthenticated]
-    
+
     def get_serializer_class(self):
         if self.action == 'create':
             return CollectionCreateSerializer
@@ -7024,89 +7251,79 @@ class CollectionViewSet(viewsets.ModelViewSet):
             return CollectionUpdateSerializer
         if self.action == 'my_collections':
             from .serializers import CollectionListSerializer
+
             return CollectionListSerializer
         return CollectionSerializer
-    
+
     def get_queryset(self):
         """Filtrer les collections : publiques + celles de l'utilisateur"""
         user = self.request.user
-        
+
         # Filtrer par owner si fourni dans les query params
         owner_id = self.request.query_params.get('owner')
         is_public_param = self.request.query_params.get('is_public')
-        
+
         if owner_id:
             try:
                 owner_id_int = int(owner_id)
                 if owner_id_int != user.id:
                     from accounts.privacy import can_view_profile_content
                     from django.contrib.auth import get_user_model
+
                     owner_user = get_user_model().objects.filter(id=owner_id_int).first()
                     if not owner_user or not can_view_profile_content(user, owner_user):
                         return Collection.objects.none()
                 # Si on filtre par owner spécifique, montrer seulement ses collections publiques ou celles où l'utilisateur connecté est membre
                 if is_public_param and is_public_param.lower() == 'true':
-                    queryset = Collection.objects.filter(
-                        owner_id=owner_id_int,
-                        is_public=True
-                    )
+                    queryset = Collection.objects.filter(owner_id=owner_id_int, is_public=True)
                 else:
                     queryset = Collection.objects.filter(
-                        Q(owner_id=owner_id_int, is_public=True) | 
-                        Q(owner_id=owner_id_int, owner=user) |
-                        Q(owner_id=owner_id_int, members__user=user)
+                        Q(owner_id=owner_id_int, is_public=True)
+                        | Q(owner_id=owner_id_int, owner=user)
+                        | Q(owner_id=owner_id_int, members__user=user)
                     ).distinct()
             except (ValueError, TypeError):
                 queryset = Collection.objects.filter(
                     Q(is_public=True) | Q(owner=user) | Q(members__user=user)
                 ).distinct()
         else:
-            queryset = Collection.objects.filter(
-                Q(is_public=True) | Q(owner=user) | Q(members__user=user)
-            ).distinct()
-        
+            queryset = Collection.objects.filter(Q(is_public=True) | Q(owner=user) | Q(members__user=user)).distinct()
+
         # Précharger les relations
-        queryset = queryset.select_related('owner').prefetch_related(
-            'collection_recipes__recipe',
-            'members__user'
-        )
-        
-        queryset = queryset.annotate(
-            last_activity=Max('collection_recipes__added_at')
-        )
-        
+        queryset = queryset.select_related('owner').prefetch_related('collection_recipes__recipe', 'members__user')
+
+        queryset = queryset.annotate(last_activity=Max('collection_recipes__added_at'))
+
         return queryset.order_by('-last_activity', '-updated_at')
-    
+
     def perform_create(self, serializer):
         """Créer une collection avec l'utilisateur connecté comme owner"""
         # Le serializer.create() gère déjà la création du CollectionMember
         serializer.save(owner=self.request.user)
-    
+
     def perform_update(self, serializer):
         """Vérifier que l'utilisateur est le propriétaire"""
         collection = self.get_object()
         if collection.owner != self.request.user:
             return Response(
-                {'error': 'Vous n\'êtes pas le propriétaire de cette collection'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': "Vous n'êtes pas le propriétaire de cette collection"}, status=status.HTTP_403_FORBIDDEN
             )
         serializer.save()
-    
+
     def perform_destroy(self, instance):
         """Vérifier que l'utilisateur est le propriétaire"""
         if instance.owner != self.request.user:
             return Response(
-                {'error': 'Vous n\'êtes pas le propriétaire de cette collection'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': "Vous n'êtes pas le propriétaire de cette collection"}, status=status.HTTP_403_FORBIDDEN
             )
         instance.delete()
-    
+
     @action(detail=True, methods=['post'])
     def add_recipe(self, request, pk=None):
         """Ajouter une recette à la collection"""
         collection = self.get_object()
         user = request.user
-        
+
         # Vérifier les permissions : créateur OU membre collaborateur (si collection collaborative)
         is_owner = collection.owner == user
         is_collaborator = collection.members.filter(user=user, role='collaborator').exists()
@@ -7114,170 +7331,122 @@ class CollectionViewSet(viewsets.ModelViewSet):
 
         if not can_add:
             return Response(
-                {'error': 'Vous n\'avez pas la permission d\'ajouter des recettes à cette collection'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': "Vous n'avez pas la permission d'ajouter des recettes à cette collection"},
+                status=status.HTTP_403_FORBIDDEN,
             )
-        
+
         recipe_id = request.data.get('recipe_id')
         if not recipe_id:
-            return Response(
-                {'error': 'recipe_id est requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'recipe_id est requis'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             recipe = Recipe.objects.get(id=recipe_id)
         except Recipe.DoesNotExist:
-            return Response(
-                {'error': 'Recette non trouvée'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
+            return Response({'error': 'Recette non trouvée'}, status=status.HTTP_404_NOT_FOUND)
+
         # Vérifier si la recette est déjà dans la collection
         if CollectionRecipe.objects.filter(collection=collection, recipe=recipe).exists():
-            return Response(
-                {'error': 'Cette recette est déjà dans la collection'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'Cette recette est déjà dans la collection'}, status=status.HTTP_400_BAD_REQUEST)
+
         # Ajouter la recette
-        CollectionRecipe.objects.create(
-            collection=collection,
-            recipe=recipe,
-            added_by=user
-        )
-        
+        CollectionRecipe.objects.create(collection=collection, recipe=recipe, added_by=user)
+
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def remove_recipe(self, request, pk=None):
         """Retirer une recette de la collection"""
         collection = self.get_object()
         user = request.user
-        
+
         # Vérifier les permissions (owner ou collaborateur)
         is_owner = collection.owner == user
         is_collaborator = collection.members.filter(user=user, role='collaborator').exists()
-        
+
         if not (is_owner or is_collaborator):
             return Response(
-                {'error': 'Vous n\'avez pas la permission de retirer des recettes de cette collection'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': "Vous n'avez pas la permission de retirer des recettes de cette collection"},
+                status=status.HTTP_403_FORBIDDEN,
             )
-        
+
         recipe_id = request.data.get('recipe_id')
         if not recipe_id:
-            return Response(
-                {'error': 'recipe_id est requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'recipe_id est requis'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            collection_recipe = CollectionRecipe.objects.get(
-                collection=collection,
-                recipe_id=recipe_id
-            )
+            collection_recipe = CollectionRecipe.objects.get(collection=collection, recipe_id=recipe_id)
             collection_recipe.delete()
         except CollectionRecipe.DoesNotExist:
-            return Response(
-                {'error': 'Cette recette n\'est pas dans la collection'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
+            return Response({'error': "Cette recette n'est pas dans la collection"}, status=status.HTTP_404_NOT_FOUND)
+
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def add_member(self, request, pk=None):
         """Ajouter un membre à la collection (si collaborative)"""
         collection = self.get_object()
         user = request.user
-        
+
         # Vérifier que l'utilisateur est le propriétaire
         if collection.owner != user:
             return Response(
-                {'error': 'Seul le propriétaire peut ajouter des membres'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': 'Seul le propriétaire peut ajouter des membres'}, status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Vérifier que la collection est collaborative
         if not collection.is_collaborative:
-            return Response(
-                {'error': 'Cette collection n\'est pas collaborative'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': "Cette collection n'est pas collaborative"}, status=status.HTTP_400_BAD_REQUEST)
+
         user_id = request.data.get('user_id')
         if not user_id:
-            return Response(
-                {'error': 'user_id est requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'user_id est requis'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             member_user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response(
-                {'error': 'Utilisateur non trouvé'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
+            return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+
         # Vérifier si l'utilisateur est déjà membre
         if CollectionMember.objects.filter(collection=collection, user=member_user).exists():
             return Response(
-                {'error': 'Cet utilisateur est déjà membre de la collection'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': 'Cet utilisateur est déjà membre de la collection'}, status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Ajouter le membre
-        CollectionMember.objects.create(
-            collection=collection,
-            user=member_user,
-            role='collaborator'
-        )
-        
+        CollectionMember.objects.create(collection=collection, user=member_user, role='collaborator')
+
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=['post'])
     def remove_member(self, request, pk=None):
         """Retirer un membre de la collection"""
         collection = self.get_object()
         user = request.user
-        
+
         # Vérifier que l'utilisateur est le propriétaire
         if collection.owner != user:
             return Response(
-                {'error': 'Seul le propriétaire peut retirer des membres'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': 'Seul le propriétaire peut retirer des membres'}, status=status.HTTP_403_FORBIDDEN
             )
-        
+
         user_id = request.data.get('user_id')
         if not user_id:
-            return Response(
-                {'error': 'user_id est requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'user_id est requis'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            member = CollectionMember.objects.get(
-                collection=collection,
-                user_id=user_id
-            )
+            member = CollectionMember.objects.get(collection=collection, user_id=user_id)
             # Ne pas permettre de retirer le propriétaire
             if member.role == 'owner':
-                return Response(
-                    {'error': 'Impossible de retirer le propriétaire'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({'error': 'Impossible de retirer le propriétaire'}, status=status.HTTP_400_BAD_REQUEST)
             member.delete()
         except CollectionMember.DoesNotExist:
             return Response(
-                {'error': 'Cet utilisateur n\'est pas membre de la collection'},
-                status=status.HTTP_404_NOT_FOUND
+                {'error': "Cet utilisateur n'est pas membre de la collection"}, status=status.HTTP_404_NOT_FOUND
             )
-        
+
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -7288,20 +7457,11 @@ class CollectionViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if collection.owner == user:
-            return Response(
-                {'error': 'Vous possédez déjà ce livre'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'Vous possédez déjà ce livre'}, status=status.HTTP_400_BAD_REQUEST)
         if not collection.is_public:
-            return Response(
-                {'error': 'Ce livre est privé'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({'error': 'Ce livre est privé'}, status=status.HTTP_403_FORBIDDEN)
 
-        _, created = CollectionFollower.objects.get_or_create(
-            collection=collection,
-            user=user
-        )
+        _, created = CollectionFollower.objects.get_or_create(collection=collection, user=user)
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
@@ -7311,37 +7471,41 @@ class CollectionViewSet(viewsets.ModelViewSet):
         collection = self.get_object()
         user = request.user
 
-        deleted, _ = CollectionFollower.objects.filter(
-            collection=collection,
-            user=user
-        ).delete()
+        deleted, _ = CollectionFollower.objects.filter(collection=collection, user=user).delete()
         serializer = self.get_serializer(collection)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     @action(detail=False, methods=['get'])
     def my_collections(self, request):
         """Récupérer les collections de l'utilisateur : ses livres + livres suivis"""
         try:
             from django.db.models import Prefetch
+
             # Livres créés par l'utilisateur
-            owned = Collection.objects.filter(
-                owner=request.user
-            ).select_related('owner').prefetch_related(
-                Prefetch('followers', CollectionFollower.objects.filter(user=request.user)),
-                'collection_recipes__recipe'
-            ).annotate(
-                total_recipes=Count('collection_recipes', distinct=True),
-                last_activity=Max('collection_recipes__added_at')
+            owned = (
+                Collection.objects.filter(owner=request.user)
+                .select_related('owner')
+                .prefetch_related(
+                    Prefetch('followers', CollectionFollower.objects.filter(user=request.user)),
+                    'collection_recipes__recipe',
+                )
+                .annotate(
+                    total_recipes=Count('collection_recipes', distinct=True),
+                    last_activity=Max('collection_recipes__added_at'),
+                )
             )
             # Livres suivis (d'autres utilisateurs)
-            followed = Collection.objects.filter(
-                followers__user=request.user
-            ).select_related('owner').prefetch_related(
-                Prefetch('followers', CollectionFollower.objects.filter(user=request.user)),
-                'collection_recipes__recipe'
-            ).annotate(
-                total_recipes=Count('collection_recipes', distinct=True),
-                last_activity=Max('collection_recipes__added_at')
+            followed = (
+                Collection.objects.filter(followers__user=request.user)
+                .select_related('owner')
+                .prefetch_related(
+                    Prefetch('followers', CollectionFollower.objects.filter(user=request.user)),
+                    'collection_recipes__recipe',
+                )
+                .annotate(
+                    total_recipes=Count('collection_recipes', distinct=True),
+                    last_activity=Max('collection_recipes__added_at'),
+                )
             )
 
             # Fusionner et dédupliquer (owned a priorité)
@@ -7356,27 +7520,24 @@ class CollectionViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
         except Exception as e:
             import traceback
+
             error_trace = traceback.format_exc()
-            print(f"Error in my_collections: {str(e)}")
+            print(f'Error in my_collections: {str(e)}')
             print(error_trace)
             return Response(
                 {'error': f'Erreur serveur: {str(e)}', 'details': error_trace if settings.DEBUG else None},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
     @action(detail=True, methods=['get'])
     def recipes(self, request, pk=None):
         """Lister les recettes d'une collection (paginé)"""
         collection = self.get_object()
-        queryset = CollectionRecipe.objects.filter(
-            collection=collection
-        ).select_related('recipe').order_by('-added_at')
-        
+        queryset = CollectionRecipe.objects.filter(collection=collection).select_related('recipe').order_by('-added_at')
+
         page = self.paginate_queryset(queryset)
         serializer = CollectionRecipeSerializer(
-            page if page is not None else queryset,
-            many=True,
-            context={'request': request}
+            page if page is not None else queryset, many=True, context={'request': request}
         )
         if page is not None:
             return self.get_paginated_response(serializer.data)
@@ -7387,22 +7548,18 @@ class CollectionViewSet(viewsets.ModelViewSet):
         """Proposer des recettes similaires à ajouter dans la collection"""
         collection = self.get_object()
         existing_ids = collection.collection_recipes.values_list('recipe_id', flat=True)
-        
-        queryset = Recipe.objects.filter(
-            Q(is_public=True) | Q(created_by=request.user)
-        ).exclude(
-            id__in=existing_ids
-        ).order_by('-created_at')
+
+        queryset = (
+            Recipe.objects.filter(Q(is_public=True) | Q(created_by=request.user))
+            .exclude(id__in=existing_ids)
+            .order_by('-created_at')
+        )
         queryset = apply_dietary_exclusion(queryset, request.user)
 
         page = self.paginate_queryset(queryset)
         serializer = RecipeLightSerializer(
-            page if page is not None else queryset,
-            many=True,
-            context={'request': request}
+            page if page is not None else queryset, many=True, context={'request': request}
         )
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
-
-

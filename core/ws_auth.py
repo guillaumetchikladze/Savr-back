@@ -15,7 +15,7 @@ async def get_user_from_token(token: str):
     """
     try:
         access = AccessToken(token)
-        user_id = access.get("user_id")
+        user_id = access.get('user_id')
         if not user_id:
             return None
 

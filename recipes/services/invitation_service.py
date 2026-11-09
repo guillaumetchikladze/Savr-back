@@ -37,9 +37,7 @@ def resolve_complices_by_name(
             continue
         candidates = User.objects.filter(
             id__in=complice_ids,
-        ).filter(
-            Q(username__iexact=name) | Q(username__icontains=name)
-        )[:5]
+        ).filter(Q(username__iexact=name) | Q(username__icontains=name))[:5]
         for u in candidates:
             if u.id in seen:
                 continue
@@ -130,9 +128,7 @@ def propose_meal_invitation(
         if already_invited:
             meal_label = meal_plan.get_meal_time_display()
             date_str = meal_plan.date.strftime('%d/%m')
-            already_invited_by_plan.append(
-                f'{meal_label} {date_str}: {", ".join(already_invited)}'
-            )
+            already_invited_by_plan.append(f'{meal_label} {date_str}: {", ".join(already_invited)}')
     if already_invited_by_plan:
         warnings.append('Déjà invité(s) — ' + ' · '.join(already_invited_by_plan))
         if len(already_invited_by_plan) == len(meal_plans):
@@ -191,9 +187,7 @@ def execute_meal_invitation(user: AbstractBaseUser, payload: dict) -> dict:
 
     invitee_ids = payload.get('invitee_ids') or []
 
-    meal_plans = list(
-        MealPlan.objects.filter(id__in=meal_plan_ids, user=user).order_by('date', 'meal_time', 'id')
-    )
+    meal_plans = list(MealPlan.objects.filter(id__in=meal_plan_ids, user=user).order_by('date', 'meal_time', 'id'))
     if len(meal_plans) != len(meal_plan_ids):
         raise ValueError('Un ou plusieurs repas sont introuvables.')
 
@@ -224,19 +218,22 @@ def execute_meal_invitation(user: AbstractBaseUser, payload: dict) -> dict:
                 revived = True
             if created or revived:
                 invitations.append(invitation)
-                notification_data.append({
-                    'user': invitee,
-                    'notification_type': 'meal_invitation',
-                    'title': f'{user.username} vous invite à un repas',
-                    'message': (
-                        f'{user.username} vous invite à {meal_plan.get_meal_time_display()} '
-                        f'le {meal_plan.date.strftime("%d/%m/%Y")}'
-                    ),
-                    'related_user': user,
-                    'meal_plan': meal_plan,
-                })
+                notification_data.append(
+                    {
+                        'user': invitee,
+                        'notification_type': 'meal_invitation',
+                        'title': f'{user.username} vous invite à un repas',
+                        'message': (
+                            f'{user.username} vous invite à {meal_plan.get_meal_time_display()} '
+                            f'le {meal_plan.date.strftime("%d/%m/%Y")}'
+                        ),
+                        'related_user': user,
+                        'meal_plan': meal_plan,
+                    }
+                )
 
     if notification_data:
+
         def create_notifications_and_pushes():
             for notif_data in notification_data:
                 meal_plan = notif_data.pop('meal_plan')
@@ -250,20 +247,22 @@ def execute_meal_invitation(user: AbstractBaseUser, payload: dict) -> dict:
                 ).exclude(expo_push_token='')
                 messages = []
                 for device in devices:
-                    messages.append({
-                        'to': device.expo_push_token,
-                        'title': notification.title,
-                        'body': notification.message,
-                        'data': {
-                            'source': 'social',
-                            'kind': 'meal_invitation',
-                            'notification_id': notification.id,
-                            'meal_plan_id': meal_plan.id,
-                            'meal_plan_date': meal_plan.date.isoformat(),
-                            'meal_time': meal_plan.meal_time,
-                        },
-                        'sound': 'default',
-                    })
+                    messages.append(
+                        {
+                            'to': device.expo_push_token,
+                            'title': notification.title,
+                            'body': notification.message,
+                            'data': {
+                                'source': 'social',
+                                'kind': 'meal_invitation',
+                                'notification_id': notification.id,
+                                'meal_plan_id': meal_plan.id,
+                                'meal_plan_date': meal_plan.date.isoformat(),
+                                'meal_time': meal_plan.meal_time,
+                            },
+                            'sound': 'default',
+                        }
+                    )
                 if messages:
                     send_expo_push_notifications(messages)
 

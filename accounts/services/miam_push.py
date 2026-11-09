@@ -5,6 +5,7 @@ Chaque like crée toujours une Notification en base (l'app agrège déjà
 l'affichage in-app). Les push, elles, sont debouncées : plusieurs likes
 rapides sur le même post → une seule push avec un wording agrégé.
 """
+
 from __future__ import annotations
 
 import logging

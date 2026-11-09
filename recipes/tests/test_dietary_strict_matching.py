@@ -56,4 +56,3 @@ class DietaryStrictMatchingTestCase(TestCase):
         excluded = set(strict_excluded_recipe_ids_for_user(self.user))
         self.assertIn(r_sing.id, excluded)
         self.assertIn(r_plur.id, excluded)
-

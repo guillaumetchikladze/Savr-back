@@ -1,7 +1,21 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter, APIRootView
 from accounts.permissions import IsValidated as IsAuthenticated
-from .views import CategoryViewSet, RecipeViewSet, IngredientViewSet, MealPlanViewSet, MealInvitationViewSet, CookingProgressViewSet, TimerViewSet, PostViewSet, ShoppingListViewSet, ShoppingListItemViewSet, ShoppingListInvitationViewSet, CollectionViewSet, RecipeBatchViewSet
+from .views import (
+    CategoryViewSet,
+    RecipeViewSet,
+    IngredientViewSet,
+    MealPlanViewSet,
+    MealInvitationViewSet,
+    CookingProgressViewSet,
+    TimerViewSet,
+    PostViewSet,
+    ShoppingListViewSet,
+    ShoppingListItemViewSet,
+    ShoppingListInvitationViewSet,
+    CollectionViewSet,
+    RecipeBatchViewSet,
+)
 from .dietary_views import dietary_conflicts_view
 from .preference_views import (
     preference_mappings_list,
@@ -14,11 +28,13 @@ from .preference_views import (
 
 class SecureAPIRootView(APIRootView):
     """API root exigeant une authentification."""
+
     permission_classes = [IsAuthenticated]
 
 
 class SecureRouter(DefaultRouter):
     """Router dont la vue API root exige une authentification."""
+
     APIRootView = SecureAPIRootView
 
     def get_api_root_view(self, api_urls=None):
@@ -49,4 +65,3 @@ urlpatterns = [
     path('preference-mappings/validate/', preference_mapping_validate, name='preference_mapping_validate'),
     path('', include(router.urls)),
 ]
-

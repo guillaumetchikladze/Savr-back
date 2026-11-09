@@ -46,7 +46,11 @@ app.add_middleware(
 
 logger.info('Chargement du modèle %s...', Config.MODEL_NAME)
 model = SentenceTransformer(Config.MODEL_NAME, trust_remote_code=True)
-logger.info('Modèle chargé (dim native=%s, sortie cible=%sd)', model.get_sentence_embedding_dimension(), Config.EMBEDDING_DIMENSION)
+logger.info(
+    'Modèle chargé (dim native=%s, sortie cible=%sd)',
+    model.get_sentence_embedding_dimension(),
+    Config.EMBEDDING_DIMENSION,
+)
 
 
 def prefix_texts(texts: list[str], input_type: str) -> list[str]:
@@ -120,7 +124,7 @@ class HealthResponse(BaseModel):
 
 async def verify_api_key(x_api_key: str = Header(..., alias='X-API-Key')):
     if x_api_key != Config.EMBEDDING_API_SECRET:
-        raise HTTPException(status_code=401, detail="Clé API invalide.")
+        raise HTTPException(status_code=401, detail='Clé API invalide.')
     return x_api_key
 
 

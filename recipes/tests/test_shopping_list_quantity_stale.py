@@ -1,4 +1,5 @@
 """Tests pour le masquage 24h des sous-lignes ShoppingListItemQuantity (with_quantities)."""
+
 from datetime import timedelta
 from types import SimpleNamespace
 

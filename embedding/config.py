@@ -31,9 +31,7 @@ class Config:
             raise ValueError('EMBEDDING_API_SECRET ne peut pas être vide')
 
         if cls.EMBEDDING_API_SECRET == 'change-me-to-a-strong-secret-key-here':
-            logger.warning(
-                'ATTENTION: secret embedding par défaut — changez EMBEDDING_API_SECRET dans .env'
-            )
+            logger.warning('ATTENTION: secret embedding par défaut — changez EMBEDDING_API_SECRET dans .env')
 
         if cls.EMBEDDING_DIMENSION < 1 or cls.EMBEDDING_DIMENSION > 768:
             raise ValueError('EMBEDDING_DIMENSION doit être entre 1 et 768 pour nomic-embed-text-v1.5')

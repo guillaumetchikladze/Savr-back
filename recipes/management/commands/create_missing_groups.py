@@ -10,6 +10,3 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         count = MealPlan.objects.count()
         self.stdout.write(self.style.SUCCESS(f'No-op: {count} meal plans, grouping handled via batches.'))
-
-
-

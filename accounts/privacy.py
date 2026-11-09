@@ -6,6 +6,7 @@ Règles de visibilité entre utilisateurs (amis, profil, feed).
   (invitations repas, listes de courses, etc.).
 - **Amis mutuels** : les deux se suivent (menu allergies, etc.).
 """
+
 from django.db.models import Q
 
 from .blocks import are_blocked_either_way
@@ -18,9 +19,7 @@ def are_complices_in_network(viewer, target) -> bool:
         return False
     if getattr(viewer, 'id', None) == getattr(target, 'id', None):
         return True
-    return Follow.objects.filter(
-        Q(follower=viewer, following=target) | Q(follower=target, following=viewer)
-    ).exists()
+    return Follow.objects.filter(Q(follower=viewer, following=target) | Q(follower=target, following=viewer)).exists()
 
 
 def are_mutual_complices(viewer, target) -> bool:

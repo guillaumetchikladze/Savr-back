@@ -59,9 +59,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, close_code):
         if self.conversation_group:
-            await self.channel_layer.group_discard(
-                self.conversation_group, self.channel_name
-            )
+            await self.channel_layer.group_discard(self.conversation_group, self.channel_name)
 
     async def receive_json(self, content, **kwargs):
         action = content.get('action')
@@ -83,30 +81,30 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         try:
             conversation_id = int(raw_id)
         except (TypeError, ValueError):
-            await self.send_json({
-                'type': 'error',
-                'code': 'invalid_conversation',
-                'message': 'Identifiant de conversation invalide.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'invalid_conversation',
+                    'message': 'Identifiant de conversation invalide.',
+                }
+            )
             return
 
-        conv = await database_sync_to_async(
-            Conversation.objects.filter(id=conversation_id, user=user).first
-        )()
+        conv = await database_sync_to_async(Conversation.objects.filter(id=conversation_id, user=user).first)()
         close_old_connections()
         if not conv:
-            await self.send_json({
-                'type': 'error',
-                'code': 'not_found',
-                'message': 'Conversation introuvable.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'not_found',
+                    'message': 'Conversation introuvable.',
+                }
+            )
             return
 
         if self.conversation_group:
             try:
-                await self.channel_layer.group_discard(
-                    self.conversation_group, self.channel_name
-                )
+                await self.channel_layer.group_discard(self.conversation_group, self.channel_name)
             except Exception:
                 logger.warning('group_discard failed conv=%s', self.conversation_id)
 
@@ -114,10 +112,12 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         self.conversation_group = f'chat_conv_{conv.id}'
 
         # Ack immédiat — ne pas bloquer sur Redis (titres Celery optionnels)
-        await self.send_json({
-            'type': 'conversation_joined',
-            'conversation_id': conv.id,
-        })
+        await self.send_json(
+            {
+                'type': 'conversation_joined',
+                'conversation_id': conv.id,
+            }
+        )
 
         try:
             if self.channel_layer:
@@ -144,51 +144,59 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         has_ai = await database_sync_to_async(user_has_feature)(user, 'ai')
         if not has_ai:
-            await self.send_json({
-                'type': 'error',
-                'code': 'feature_locked',
-                'feature': 'ai',
-                'message': 'Fonctionnalité premium requise.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'feature_locked',
+                    'feature': 'ai',
+                    'message': 'Fonctionnalité premium requise.',
+                }
+            )
             return
 
         if not check_message_rate_limit(user.id):
-            await self.send_json({
-                'type': 'error',
-                'code': 'rate_limit',
-                'message': 'Trop de messages. Réessayez dans une minute.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'rate_limit',
+                    'message': 'Trop de messages. Réessayez dans une minute.',
+                }
+            )
             return
 
-        conv = await database_sync_to_async(
-            Conversation.objects.filter(id=conversation_id, user=user).first
-        )()
+        conv = await database_sync_to_async(Conversation.objects.filter(id=conversation_id, user=user).first)()
         close_old_connections()
         if not conv:
-            await self.send_json({
-                'type': 'error',
-                'code': 'not_found',
-                'message': 'Conversation introuvable.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'not_found',
+                    'message': 'Conversation introuvable.',
+                }
+            )
             return
 
         if not acquire_stream_lock(conv.id):
-            await self.send_json({
-                'type': 'error',
-                'code': 'stream_busy',
-                'message': 'Un message est déjà en cours de traitement.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'stream_busy',
+                    'message': 'Un message est déjà en cours de traitement.',
+                }
+            )
             return
 
         try:
             await self._process_user_message(conv, user, text, context_refs)
         except Exception:
             logger.exception('Chat stream failed conv=%s user=%s', conv.id, user.id)
-            await self.send_json({
-                'type': 'error',
-                'code': 'agent_error',
-                'message': 'Une erreur est survenue. Réessayez.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'agent_error',
+                    'message': 'Une erreur est survenue. Réessayez.',
+                }
+            )
         finally:
             release_stream_lock(conv.id)
 
@@ -212,9 +220,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return
 
         try:
-            conv = await database_sync_to_async(
-                Conversation.objects.filter(id=conv_id, user=user).first
-            )()
+            conv = await database_sync_to_async(Conversation.objects.filter(id=conv_id, user=user).first)()
             close_old_connections()
             if not conv:
                 return
@@ -222,29 +228,35 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await database_sync_to_async(_save_recipe_ready_system_event)(conv, event)
             close_old_connections()
 
-            await self.send_json({
-                'type': 'import_job_finished',
-                'request_id': event.get('request_id'),
-                'recipe_id': event.get('recipe_id'),
-                'recipe_title': event.get('recipe_title'),
-                'job_type': event.get('job_type'),
-            })
+            await self.send_json(
+                {
+                    'type': 'import_job_finished',
+                    'request_id': event.get('request_id'),
+                    'recipe_id': event.get('recipe_id'),
+                    'recipe_title': event.get('recipe_title'),
+                    'job_type': event.get('job_type'),
+                }
+            )
 
             turn_id = str(uuid.uuid4())
-            await self.send_json({
-                'type': 'continuation_turn_start',
-                'turn_id': turn_id,
-                'stream_phase': 'text',
-            })
+            await self.send_json(
+                {
+                    'type': 'continuation_turn_start',
+                    'turn_id': turn_id,
+                    'stream_phase': 'text',
+                }
+            )
 
             await self._run_agent_turn(conv, user, turn_id=turn_id, continuation=True)
         except Exception:
             logger.exception('Recipe job continuation failed conv=%s', conv_id)
-            await self.send_json({
-                'type': 'error',
-                'code': 'agent_error',
-                'message': 'Une erreur est survenue. Réessayez.',
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'agent_error',
+                    'message': 'Une erreur est survenue. Réessayez.',
+                }
+            )
         finally:
             release_stream_lock(conv_id)
 
@@ -286,20 +298,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json(payload)
 
         result = await adapter.run(agent, history, context, emit=emit)
-        assistant_msg_id = await self._finalize_agent_result(
-            conv, turn_id, result, continuation=continuation
-        )
+        assistant_msg_id = await self._finalize_agent_result(conv, turn_id, result, continuation=continuation)
 
         await database_sync_to_async(_touch_conversation)(conv)
         close_old_connections()
 
-        await self.send_json({
-            'type': 'message_complete',
-            'turn_id': turn_id,
-            'stream_phase': 'complete',
-            'message_id': assistant_msg_id,
-            'continuation': continuation,
-        })
+        await self.send_json(
+            {
+                'type': 'message_complete',
+                'turn_id': turn_id,
+                'stream_phase': 'complete',
+                'message_id': assistant_msg_id,
+                'continuation': continuation,
+            }
+        )
 
         if not continuation:
             generate_conversation_title.delay(conv.id)
@@ -315,15 +327,17 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 tool_trace,
             )
             close_old_connections()
-            await self.send_json({
-                'type': 'mutation_card',
-                'turn_id': turn_id,
-                'stream_phase': 'mutation',
-                'action_id': str(action.id),
-                'message_id': msg.id,
-                'payload': result.mutation_proposal.model_dump(),
-                'continuation': continuation,
-            })
+            await self.send_json(
+                {
+                    'type': 'mutation_card',
+                    'turn_id': turn_id,
+                    'stream_phase': 'mutation',
+                    'action_id': str(action.id),
+                    'message_id': msg.id,
+                    'payload': result.mutation_proposal.model_dump(),
+                    'continuation': continuation,
+                }
+            )
             return msg.id
 
         ui_payload = None
@@ -345,16 +359,18 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         close_old_connections()
 
         if result.import_job:
-            await self.send_json({
-                'type': 'import_job_started',
-                'turn_id': turn_id,
-                'stream_phase': 'tool',
-                'request_id': result.import_job.request_id,
-                'url': result.import_job.url,
-                'idea_text': result.import_job.idea_text,
-                'job_type': result.import_job.job_type,
-                'continuation': continuation,
-            })
+            await self.send_json(
+                {
+                    'type': 'import_job_started',
+                    'turn_id': turn_id,
+                    'stream_phase': 'tool',
+                    'request_id': result.import_job.request_id,
+                    'url': result.import_job.url,
+                    'idea_text': result.import_job.idea_text,
+                    'job_type': result.import_job.job_type,
+                    'continuation': continuation,
+                }
+            )
 
         return assistant_msg.id
 
@@ -367,19 +383,23 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             result, system_msg = await database_sync_to_async(_confirm_action)(user, action_id)
             close_old_connections()
         except ValueError as exc:
-            await self.send_json({
-                'type': 'error',
-                'code': 'action_error',
-                'message': str(exc),
-            })
+            await self.send_json(
+                {
+                    'type': 'error',
+                    'code': 'action_error',
+                    'message': str(exc),
+                }
+            )
             return
 
-        await self.send_json({
-            'type': 'action_executed',
-            'action_id': action_id,
-            'result': result,
-            'message_id': system_msg.id,
-        })
+        await self.send_json(
+            {
+                'type': 'action_executed',
+                'action_id': action_id,
+                'result': result,
+                'message_id': system_msg.id,
+            }
+        )
 
     async def _handle_cancel_action(self, content, user):
         action_id = content.get('action_id')
@@ -389,16 +409,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         cancelled = await database_sync_to_async(_cancel_action)(user, action_id)
         close_old_connections()
         if cancelled:
-            await self.send_json({
-                'type': 'action_cancelled',
-                'action_id': action_id,
-            })
+            await self.send_json(
+                {
+                    'type': 'action_cancelled',
+                    'action_id': action_id,
+                }
+            )
 
     async def conversation_title_updated(self, event):
-        await self.send_json({
-            'type': 'conversation_title_updated',
-            'title': event.get('title'),
-        })
+        await self.send_json(
+            {
+                'type': 'conversation_title_updated',
+                'title': event.get('title'),
+            }
+        )
 
 
 def _save_recipe_ready_system_event(conv, event):
@@ -464,10 +488,7 @@ def _save_user_message(conv, text, context_refs=None):
 
 
 def _load_history(conv):
-    msgs = list(
-        Message.objects.filter(conversation=conv)
-        .order_by('-created_at')[:HISTORY_LIMIT]
-    )
+    msgs = list(Message.objects.filter(conversation=conv).order_by('-created_at')[:HISTORY_LIMIT])
     msgs.reverse()
     return msgs
 

@@ -1,6 +1,7 @@
 """
 Service IA pour formaliser les recettes en utilisant PydanticAI et une intégration Google Gemini
 """
+
 import asyncio
 import copy
 import logging
@@ -60,24 +61,24 @@ def flatten_schema(schema: dict) -> dict:
     du SDK Gemini ("Unknown name '$ref' ..."). À retirer si l'API accepte
     un jour les schémas complets ou si l'on repasse sur OpenAI.
     """
-    defs = schema.get("$defs", {})
+    defs = schema.get('$defs', {})
 
     def resolve(ref: str):
-        name = ref.replace("#/$defs/", "")
+        name = ref.replace('#/$defs/', '')
         return defs.get(name, {})
 
     def visit(node):
         if isinstance(node, dict):
-            if "$ref" in node:
-                return visit(resolve(node["$ref"]))
-            return {k: visit(v) for k, v in node.items() if k != "$defs"}
+            if '$ref' in node:
+                return visit(resolve(node['$ref']))
+            return {k: visit(v) for k, v in node.items() if k != '$defs'}
         if isinstance(node, list):
             return [visit(i) for i in node]
         return node
 
     flattened = visit(schema)
     if isinstance(flattened, dict):
-        flattened.pop("$defs", None)
+        flattened.pop('$defs', None)
     return flattened
 
 
@@ -90,24 +91,24 @@ def resolve_model(raw_model: str):
     """
     cleaned = sanitize_model_string(raw_model)
     if not cleaned:
-        raise ValueError("AI_MODEL ne peut pas être vide.")
-    
+        raise ValueError('AI_MODEL ne peut pas être vide.')
+
     provider_hint = None
     model_name = cleaned
-    
+
     if ':' in cleaned:
         provider_hint, model_name = cleaned.split(':', 1)
-    
+
     provider_key = (provider_hint or '').strip().lower()
     if not provider_key:
         provider_key = 'google'
-    
+
     if provider_key in GOOGLE_PROVIDER_ALIASES:
         provider = GOOGLE_PROVIDER_ALIASES[provider_key]
         model_name = model_name.strip().strip('\'"')
         if not model_name:
-            raise ValueError("Nom de modèle Google invalide.")
-        
+            raise ValueError('Nom de modèle Google invalide.')
+
         # Cas provider Google standard avec nom court => utilisons GeminiModel
         if provider == 'google-gla':
             if not model_name.startswith('models/'):
@@ -116,14 +117,14 @@ def resolve_model(raw_model: str):
                 return GeminiModel(
                     model_name=cast(GeminiModelName, model_name),
                 )
-            normalized = model_name if model_name.startswith('models/') else f"models/{model_name}"
+            normalized = model_name if model_name.startswith('models/') else f'models/{model_name}'
             set_google_env_from_api_key()
             logger.info("[AI] Utilisation de GoogleModel '%s' via provider '%s'", normalized, provider)
             return GoogleModel(
                 model_name=cast(GoogleModelName, normalized),
                 provider=provider,
             )
-        
+
         # Providers vertex/gateway nécessitent un chemin complet déjà fourni par l'utilisateur
         set_google_env_from_api_key()
         logger.info("[AI] Utilisation de GoogleModel '%s' via provider '%s'", model_name, provider)
@@ -131,7 +132,7 @@ def resolve_model(raw_model: str):
             model_name=cast(GoogleModelName, model_name),
             provider=provider,
         )
-    
+
     # Aucun provider explicite, mais nom "gemini-..." => GeminiModel par défaut
     if cleaned.startswith('gemini-'):
         set_google_env_from_api_key()
@@ -139,7 +140,7 @@ def resolve_model(raw_model: str):
         return GeminiModel(
             model_name=cast(GeminiModelName, cleaned),
         )
-    
+
     # Fallback: laisser pydantic-ai résoudre (ex: openai:gpt-4o)
     logger.info("[AI] Utilisation du modèle natif '%s'", cleaned)
     return cleaned
@@ -150,10 +151,10 @@ def create_recipe_formalization_agent() -> Agent:
     Crée un agent PydanticAI pour formaliser les recettes
     """
     if not AI_API_KEY:
-        raise ValueError("AI_API_KEY doit être configuré dans .env")
-    
+        raise ValueError('AI_API_KEY doit être configuré dans .env')
+
     model = resolve_model(AI_MODEL)
-    
+
     # Créer l'agent avec le modèle de sortie
     agent = Agent(
         model=model,
@@ -195,7 +196,7 @@ Instructions importantes:
 5. Génère un résumé des étapes (steps_summary)
    - 2-3 phrases concises résumant les étapes principales
 
-Sois précis et structuré dans tes réponses."""
+Sois précis et structuré dans tes réponses.""",
     )
 
     # Les modèles Gemini refusent encore les JSON Schema avec $ref.
@@ -206,24 +207,24 @@ Sois précis et structuré dans tes réponses."""
         object_def = agent._output_schema.object_def  # type: ignore[attr-defined]
         original_schema = copy.deepcopy(object_def.json_schema)
         object_def.json_schema = flatten_schema(original_schema)
-        
+
         toolset = getattr(agent._output_schema, 'toolset', None)  # type: ignore[attr-defined]
         if toolset and hasattr(toolset, '_tool_defs'):
             for tool_def in toolset._tool_defs:
                 tool_def.parameters_json_schema = flatten_schema(copy.deepcopy(tool_def.parameters_json_schema))
-    
+
     return agent
 
 
 class IngredientNormalizationItem(BaseModel):
     original: str = Field(..., description="Nom d'ingrédient en entrée (exactement tel que reçu)")
-    normalized: str = Field(..., description="Nom normalisé/canonique, sans quantité ni unité")
+    normalized: str = Field(..., description='Nom normalisé/canonique, sans quantité ni unité')
 
 
 class IngredientNormalizationResult(BaseModel):
     items: list[IngredientNormalizationItem] = Field(
         default_factory=list,
-        description="Liste des ingrédients normalisés (bijection: 1 entrée -> 1 sortie)",
+        description='Liste des ingrédients normalisés (bijection: 1 entrée -> 1 sortie)',
     )
 
 
@@ -232,7 +233,7 @@ def create_ingredient_normalization_agent() -> Agent:
     Agent dédié: normalise uniquement les noms d'ingrédients, sans changer la liste.
     """
     if not AI_API_KEY:
-        raise ValueError("AI_API_KEY doit être configuré dans .env")
+        raise ValueError('AI_API_KEY doit être configuré dans .env')
 
     model = resolve_model(AI_MODEL)
 
@@ -270,34 +271,34 @@ Retourne STRICTEMENT le schéma attendu.""",
 
 
 class InstagramCaptionParsed(BaseModel):
-    is_recipe: bool = Field(..., description="True si le texte décrit une recette exploitable.")
+    is_recipe: bool = Field(..., description='True si le texte décrit une recette exploitable.')
     reason: str = Field(
-        default="",
+        default='',
         description="Explication courte si ce n'est pas une recette exploitable ou si des informations manquent.",
     )
     title: str = Field(
-        default="",
-        description="Titre proposé pour la recette, si applicable.",
+        default='',
+        description='Titre proposé pour la recette, si applicable.',
     )
     ingredients_text: str = Field(
-        default="",
+        default='',
         description="Liste d'ingrédients, une ligne par ingrédient, idéalement préfixée par '- '.",
     )
     instructions_text: str = Field(
-        default="",
+        default='',
         description="Étapes de la recette, une ligne par étape, idéalement numérotée '1. ...'. Peut être générée à partir du titre + ingrédients.",
     )
     servings: Optional[int] = Field(
         default=None,
-        description="Nombre de portions si inférable.",
+        description='Nombre de portions si inférable.',
     )
     prep_time: Optional[int] = Field(
         default=None,
-        description="Temps de préparation en minutes si inférable.",
+        description='Temps de préparation en minutes si inférable.',
     )
     cook_time: Optional[int] = Field(
         default=None,
-        description="Temps de cuisson en minutes si inférable.",
+        description='Temps de cuisson en minutes si inférable.',
     )
 
 
@@ -355,8 +356,8 @@ IMPORTANT :
         original_schema = copy.deepcopy(object_def.json_schema)
         object_def.json_schema = flatten_schema(original_schema)
 
-        toolset = getattr(agent._output_schema, "toolset", None)  # type: ignore[attr-defined]
-        if toolset and hasattr(toolset, "_tool_defs"):
+        toolset = getattr(agent._output_schema, 'toolset', None)  # type: ignore[attr-defined]
+        if toolset and hasattr(toolset, '_tool_defs'):
             for tool_def in toolset._tool_defs:
                 tool_def.parameters_json_schema = flatten_schema(copy.deepcopy(tool_def.parameters_json_schema))
 
@@ -368,16 +369,16 @@ def parse_instagram_caption(text: str) -> dict:
     Wrapper synchrone pour parser une légende Instagram avec l'IA.
     Retourne un dict sérialisable contenant les champs d'InstagramCaptionParsed.
     """
-    if not (text or "").strip():
+    if not (text or '').strip():
         return {
-            "is_recipe": False,
-            "reason": "Texte vide.",
-            "title": "",
-            "ingredients_text": "",
-            "instructions_text": "",
-            "servings": None,
-            "prep_time": None,
-            "cook_time": None,
+            'is_recipe': False,
+            'reason': 'Texte vide.',
+            'title': '',
+            'ingredients_text': '',
+            'instructions_text': '',
+            'servings': None,
+            'prep_time': None,
+            'cook_time': None,
         }
 
     agent = create_instagram_caption_parser_agent()
@@ -390,27 +391,27 @@ def parse_instagram_caption(text: str) -> dict:
     try:
         parsed = asyncio.run(_run())
     except Exception as e:
-        logger.error("[AI] Échec du parsing de légende Instagram: %s", e, exc_info=True)
+        logger.error('[AI] Échec du parsing de légende Instagram: %s', e, exc_info=True)
         return {
-            "is_recipe": False,
-            "reason": "Erreur technique lors de l'analyse de la légende Instagram.",
-            "title": "",
-            "ingredients_text": "",
-            "instructions_text": "",
-            "servings": None,
-            "prep_time": None,
-            "cook_time": None,
+            'is_recipe': False,
+            'reason': "Erreur technique lors de l'analyse de la légende Instagram.",
+            'title': '',
+            'ingredients_text': '',
+            'instructions_text': '',
+            'servings': None,
+            'prep_time': None,
+            'cook_time': None,
         }
 
     return {
-        "is_recipe": parsed.is_recipe,
-        "reason": parsed.reason,
-        "title": parsed.title,
-        "ingredients_text": parsed.ingredients_text,
-        "instructions_text": parsed.instructions_text,
-        "servings": parsed.servings,
-        "prep_time": parsed.prep_time,
-        "cook_time": parsed.cook_time,
+        'is_recipe': parsed.is_recipe,
+        'reason': parsed.reason,
+        'title': parsed.title,
+        'ingredients_text': parsed.ingredients_text,
+        'instructions_text': parsed.instructions_text,
+        'servings': parsed.servings,
+        'prep_time': parsed.prep_time,
+        'cook_time': parsed.cook_time,
     }
 
 
@@ -420,13 +421,13 @@ async def normalize_ingredient_names(names: list[str]) -> dict[str, str]:
         return {}
 
     agent = create_ingredient_normalization_agent()
-    prompt = "\n".join(
+    prompt = '\n'.join(
         [
             "Voici une liste d'ingrédients (noms seulement).",
             "Retourne un mapping 1:1 sans perdre d'éléments.",
-            "",
-            "Ingrédients:",
-            *[f"- {n}" for n in names_clean],
+            '',
+            'Ingrédients:',
+            *[f'- {n}' for n in names_clean],
         ]
     )
 
@@ -447,7 +448,7 @@ async def normalize_ingredient_names(names: list[str]) -> dict[str, str]:
 
         return mapping
     except Exception as e:
-        logger.warning("[AI] Ingredient normalization failed, fallback to original names: %s", e)
+        logger.warning('[AI] Ingredient normalization failed, fallback to original names: %s', e)
         return {n: n for n in names_clean}
 
 
@@ -463,7 +464,7 @@ async def formalize_recipe(
 ) -> RecipeFormalized:
     """
     Formalise une recette brute en utilisant l'IA
-    
+
     Args:
         title: Titre de la recette
         description: Description optionnelle
@@ -473,73 +474,73 @@ async def formalize_recipe(
         prep_time: Temps de préparation en minutes (optionnel, peut être inféré)
         cook_time: Temps de cuisson en minutes (optionnel, peut être inféré)
         raw_text: Recette collée en vrac (prioritaire si fourni)
-    
+
     Returns:
         RecipeFormalized: Recette formalisée
     """
     if not AI_API_KEY:
         raise ValueError("AI_API_KEY doit être configuré dans .env pour utiliser l'IA")
-    
+
     agent = create_recipe_formalization_agent()
 
     raw = (raw_text or '').strip()
     if raw:
         prompt_parts = [
-            "Voici une recette collée en vrac (texte libre, potentiellement désordonné).",
-            "Extrais et structure : titre, description, ingrédients quantifiés et étapes claires.",
-            "Si un titre est déjà présent dans le texte, privilégie-le.",
+            'Voici une recette collée en vrac (texte libre, potentiellement désordonné).',
+            'Extrais et structure : titre, description, ingrédients quantifiés et étapes claires.',
+            'Si un titre est déjà présent dans le texte, privilégie-le.',
         ]
         suggested = (title or '').strip()
         if suggested and suggested.lower() not in ('ma recette', 'recette'):
-            prompt_parts.append(f"Titre suggéré (optionnel): {suggested}")
+            prompt_parts.append(f'Titre suggéré (optionnel): {suggested}')
         if description:
-            prompt_parts.append(f"Description suggérée: {description}")
-        prompt_parts.append("\nTexte collé:")
+            prompt_parts.append(f'Description suggérée: {description}')
+        prompt_parts.append('\nTexte collé:')
         prompt_parts.append(raw)
     else:
         # Construire le prompt avec toutes les informations
         prompt_parts = [
-            f"Titre: {title}",
+            f'Titre: {title}',
         ]
 
         if description:
-            prompt_parts.append(f"Description: {description}")
+            prompt_parts.append(f'Description: {description}')
 
-        prompt_parts.append("\nIngrédients (texte libre, séparés par sauts de ligne):")
+        prompt_parts.append('\nIngrédients (texte libre, séparés par sauts de ligne):')
         prompt_parts.append(ingredients_text)
 
-        prompt_parts.append("\nInstructions (texte libre, séparées par sauts de ligne):")
+        prompt_parts.append('\nInstructions (texte libre, séparées par sauts de ligne):')
         prompt_parts.append(instructions_text)
 
         if servings:
-            prompt_parts.append(f"\nNombre de portions: {servings}")
+            prompt_parts.append(f'\nNombre de portions: {servings}')
 
         if prep_time:
-            prompt_parts.append(f"Temps de préparation: {prep_time} minutes")
+            prompt_parts.append(f'Temps de préparation: {prep_time} minutes')
 
         if cook_time:
-            prompt_parts.append(f"Temps de cuisson: {cook_time} minutes")
+            prompt_parts.append(f'Temps de cuisson: {cook_time} minutes')
 
-    prompt = "\n".join(prompt_parts)
+    prompt = '\n'.join(prompt_parts)
     prompt_length = len(prompt)
-    
+
     logger.info(
         "[AI] Formalisation lancée pour '%s' (len_prompt=%d chars, raw=%s)",
         title,
         prompt_length,
         bool(raw),
     )
-    
+
     try:
         start_time = time.perf_counter()
         logger.info("[AI] Début de l'appel agent.run() pour '%s'", title)
-        
+
         # Implémentation manuelle de retries pour la validation de sortie
         # PydanticAI a un retry interne par défaut (1), mais on veut plus de tentatives
         # On fait une boucle de retry manuelle pour gérer UnexpectedModelBehavior
         max_retries = 3
         last_error = None
-        
+
         for attempt in range(1, max_retries + 1):
             try:
                 result = await agent.run(prompt)
@@ -549,23 +550,23 @@ async def formalize_recipe(
                     title,
                     api_call_duration,
                     attempt,
-                    max_retries
+                    max_retries,
                 )
-                
+
                 # Récupérer le résultat structuré (PydanticAI utilise .output pour le résultat typé)
                 formalized_recipe = result.output
-                
+
                 duration = time.perf_counter() - start_time
                 logger.info(
                     "[AI] Formalisation terminée pour '%s' en %.2fs (%d ingrédients, %d étapes)",
                     title,
                     duration,
                     len(formalized_recipe.recipe_ingredients),
-                    len(formalized_recipe.steps)
+                    len(formalized_recipe.steps),
                 )
-                
+
                 return formalized_recipe
-                
+
             except UnexpectedModelBehavior as e:
                 last_error = e
                 if attempt < max_retries:
@@ -574,43 +575,30 @@ async def formalize_recipe(
                         title,
                         attempt,
                         max_retries,
-                        e
+                        e,
                     )
                     # Petite pause avant de réessayer
                     await asyncio.sleep(0.5)
                 else:
                     # Dernière tentative échouée
                     logger.error(
-                        "[AI] Erreur de validation de sortie pour '%s' après %d tentatives: %s",
-                        title,
-                        max_retries,
-                        e
+                        "[AI] Erreur de validation de sortie pour '%s' après %d tentatives: %s", title, max_retries, e
                     )
                     raise
-        
+
         # Ne devrait jamais arriver ici, mais au cas où
         if last_error:
             raise last_error
-    
+
     except UnexpectedModelBehavior as e:
         # Cette exception devrait normalement être gérée dans la boucle ci-dessus
         # Mais on la garde comme filet de sécurité au cas où
         duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
-        logger.error(
-            "[AI] Erreur de validation de sortie pour '%s' (%.2fs): %s",
-            title,
-            duration,
-            e
-        )
+        logger.error("[AI] Erreur de validation de sortie pour '%s' (%.2fs): %s", title, duration, e)
         raise
     except PydanticAIUserError as e:
         duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
-        logger.error(
-            "[AI] Erreur PydanticAI pour '%s' (%.2fs): %s",
-            title,
-            duration,
-            e
-        )
+        logger.error("[AI] Erreur PydanticAI pour '%s' (%.2fs): %s", title, duration, e)
         raise
     except Exception as e:
         duration = time.perf_counter() - start_time if 'start_time' in locals() else 0
@@ -619,7 +607,7 @@ async def formalize_recipe(
             title,
             duration,
             e,
-            type(e).__name__
+            type(e).__name__,
         )
         raise
 
@@ -627,7 +615,7 @@ async def formalize_recipe(
 def create_recipe_generation_agent() -> Agent:
     """Agent PydanticAI pour inventer une recette complète à partir d'une idée."""
     if not AI_API_KEY:
-        raise ValueError("AI_API_KEY doit être configuré dans .env")
+        raise ValueError('AI_API_KEY doit être configuré dans .env')
 
     model = resolve_model(AI_MODEL)
     agent = Agent(
@@ -664,9 +652,7 @@ Contraintes :
         toolset = getattr(agent._output_schema, 'toolset', None)  # type: ignore[attr-defined]
         if toolset and hasattr(toolset, '_tool_defs'):
             for tool_def in toolset._tool_defs:
-                tool_def.parameters_json_schema = flatten_schema(
-                    copy.deepcopy(tool_def.parameters_json_schema)
-                )
+                tool_def.parameters_json_schema = flatten_schema(copy.deepcopy(tool_def.parameters_json_schema))
 
     return agent
 
@@ -684,12 +670,12 @@ async def generate_recipe_from_idea(
         raise ValueError("L'idée de recette est trop courte.")
 
     agent = create_recipe_generation_agent()
-    prompt_parts = [f"Idée de recette : {idea}"]
+    prompt_parts = [f'Idée de recette : {idea}']
     if servings:
-        prompt_parts.append(f"Nombre de portions souhaité : {servings}")
-    prompt = "\n".join(prompt_parts)
+        prompt_parts.append(f'Nombre de portions souhaité : {servings}')
+    prompt = '\n'.join(prompt_parts)
 
-    logger.info("[AI] Génération recette depuis idée (len=%d)", len(prompt))
+    logger.info('[AI] Génération recette depuis idée (len=%d)', len(prompt))
     start_time = time.perf_counter()
     max_retries = 3
     last_error = None
@@ -700,7 +686,7 @@ async def generate_recipe_from_idea(
             formalized_recipe = result.output
             duration = time.perf_counter() - start_time
             logger.info(
-                "[AI] Génération terminée en %.2fs (%d ingrédients, %d étapes)",
+                '[AI] Génération terminée en %.2fs (%d ingrédients, %d étapes)',
                 duration,
                 len(formalized_recipe.recipe_ingredients),
                 len(formalized_recipe.steps),
@@ -709,7 +695,7 @@ async def generate_recipe_from_idea(
         except UnexpectedModelBehavior as e:
             last_error = e
             logger.warning(
-                "[AI] Génération tentative %d/%d échouée: %s",
+                '[AI] Génération tentative %d/%d échouée: %s',
                 attempt,
                 max_retries,
                 e,
@@ -717,7 +703,7 @@ async def generate_recipe_from_idea(
         except PydanticAIUserError:
             raise
 
-    raise last_error or RuntimeError("Échec de la génération de recette")
+    raise last_error or RuntimeError('Échec de la génération de recette')
 
 
 async def revise_recipe(
@@ -732,6 +718,7 @@ async def revise_recipe(
     agent = create_recipe_formalization_agent()
 
     import json
+
     recipe_json = json.dumps(current_recipe, ensure_ascii=False, indent=2)
     scope_hint = {
         'ingredients': 'Modifie uniquement les ingrédients et quantités.',
@@ -741,15 +728,15 @@ async def revise_recipe(
     }.get(scope, 'Tu peux modifier tous les aspects de la recette.')
 
     prompt = (
-        "Voici une recette existante au format JSON :\n"
-        f"{recipe_json}\n\n"
-        f"Instruction de modification : {instruction}\n\n"
-        f"{scope_hint}\n"
-        "Retourne la recette complète révisée au format structuré. "
+        'Voici une recette existante au format JSON :\n'
+        f'{recipe_json}\n\n'
+        f'Instruction de modification : {instruction}\n\n'
+        f'{scope_hint}\n'
+        'Retourne la recette complète révisée au format structuré. '
         "Conserve ce qui n'a pas besoin d'être modifié."
     )
 
-    logger.info("[AI] Révision recette scope=%s instruction_len=%d", scope, len(instruction))
+    logger.info('[AI] Révision recette scope=%s instruction_len=%d', scope, len(instruction))
     start_time = time.perf_counter()
     max_retries = 3
     last_error = None
@@ -760,7 +747,7 @@ async def revise_recipe(
             revised = result.output
             duration = time.perf_counter() - start_time
             logger.info(
-                "[AI] Révision terminée en %.2fs (%d ingrédients, %d étapes)",
+                '[AI] Révision terminée en %.2fs (%d ingrédients, %d étapes)',
                 duration,
                 len(revised.recipe_ingredients),
                 len(revised.steps),
@@ -775,7 +762,7 @@ async def revise_recipe(
         except PydanticAIUserError:
             raise
 
-    raise last_error or RuntimeError("Échec de la révision de recette")
+    raise last_error or RuntimeError('Échec de la révision de recette')
 
 
 def formalized_to_response_dict(formalized: RecipeFormalized) -> dict:
@@ -840,8 +827,7 @@ def verify_quantity_consistency(formalized_recipe: RecipeFormalized) -> dict:
                     'recipe_total': float(total_quantity),
                     'steps_total': float(step_total),
                     'difference': float(difference),
-                    'percentage_diff': percentage_diff * 100
+                    'percentage_diff': percentage_diff * 100,
                 }
 
     return inconsistencies
-

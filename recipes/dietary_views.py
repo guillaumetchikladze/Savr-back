@@ -1,4 +1,5 @@
 """Vues API liées au filtrage alimentaire (conflits recettes / préférences)."""
+
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes

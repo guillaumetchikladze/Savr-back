@@ -13,9 +13,7 @@ User = get_user_model()
 
 class SessionContextTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
-            username='planner', email='planner@test.com', password='pass'
-        )
+        self.user = User.objects.create_user(username='planner', email='planner@test.com', password='pass')
 
     def test_includes_today_and_week_bounds(self):
         fixed_now = datetime(2026, 6, 10, 15, 30)  # mercredi

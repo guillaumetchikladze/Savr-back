@@ -37,9 +37,7 @@ class MealPlanServiceTests(TestCase):
         )
 
     def test_get_meal_plans_for_user(self):
-        plans = get_meal_plans_for_user(
-            self.user, '2026-06-01', '2026-06-30'
-        )
+        plans = get_meal_plans_for_user(self.user, '2026-06-01', '2026-06-30')
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].id, self.meal_plan.id)
 
@@ -47,11 +45,7 @@ class MealPlanServiceTests(TestCase):
         result = create_meal_plan_slot(self.user, '2026-06-11', 'dinner')
         self.assertTrue(result.created)
         self.assertEqual(result.meal_time, 'dinner')
-        self.assertTrue(
-            MealPlan.objects.filter(
-                user=self.user, date=date(2026, 6, 11), meal_time='dinner'
-            ).exists()
-        )
+        self.assertTrue(MealPlan.objects.filter(user=self.user, date=date(2026, 6, 11), meal_time='dinner').exists())
 
     def test_create_meal_plan_slot_idempotent(self):
         first = create_meal_plan_slot(self.user, '2026-06-11', 'dinner')
@@ -63,9 +57,7 @@ class MealPlanServiceTests(TestCase):
     def test_add_recipes_to_meal_plan(self):
         result = add_recipes_to_meal_plan(self.user, self.meal_plan.id, [self.recipe.id])
         self.assertEqual(result.added_recipe_ids, [self.recipe.id])
-        self.assertTrue(
-            MealPlanRecipeBatch.objects.filter(meal_plan=self.meal_plan).exists()
-        )
+        self.assertTrue(MealPlanRecipeBatch.objects.filter(meal_plan=self.meal_plan).exists())
 
     def test_remove_recipe_from_meal_plan(self):
         batch = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
@@ -75,9 +67,7 @@ class MealPlanServiceTests(TestCase):
 
     def test_propose_meal_deletion_data(self):
         batch = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
-        mprb = MealPlanRecipeBatch.objects.create(
-            meal_plan=self.meal_plan, recipe_batch=batch, order=1
-        )
+        mprb = MealPlanRecipeBatch.objects.create(meal_plan=self.meal_plan, recipe_batch=batch, order=1)
         proposal = propose_meal_deletion_data(self.user, self.meal_plan.id, batch.id)
         self.assertEqual(proposal.card_type, 'meal_deletion')
         self.assertEqual(proposal.details['recipe_batch_id'], batch.id)
@@ -96,9 +86,7 @@ class MealPlanServiceTests(TestCase):
             is_draft=False,
             uploaded_by=self.user,
         )
-        updated = relink_composer_photos_to_meal_plan(
-            self.user, self.meal_plan, [photo.id]
-        )
+        updated = relink_composer_photos_to_meal_plan(self.user, self.meal_plan, [photo.id])
         self.assertEqual(updated, 1)
         photo.refresh_from_db()
         self.assertEqual(photo.meal_plan_id, self.meal_plan.id)
@@ -111,9 +99,7 @@ class MealPlanServiceTests(TestCase):
         self.assertFalse(second.created)
         self.assertEqual(first.meal_plan_id, second.meal_plan_id)
         self.assertEqual(
-            MealPlan.objects.filter(
-                user=self.user, date=date(2026, 6, 12)
-            ).count(),
+            MealPlan.objects.filter(user=self.user, date=date(2026, 6, 12)).count(),
             1,
         )
 
@@ -127,24 +113,18 @@ class MealPlanServiceTests(TestCase):
             confirmed=False,
         )
         batch = RecipeBatch.objects.create(recipe=self.recipe, created_by=self.user)
-        MealPlanRecipeBatch.objects.create(
-            meal_plan=lunch, recipe_batch=batch, order=1
-        )
+        MealPlanRecipeBatch.objects.create(meal_plan=lunch, recipe_batch=batch, order=1)
 
         first = create_composer_slot(self.user, '2026-06-13', 'lunch')
         second = create_composer_slot(self.user, '2026-06-13', 'lunch')
         self.assertEqual(first.meal_time, 'other')
         self.assertEqual(first.meal_plan_id, second.meal_plan_id)
         self.assertEqual(
-            MealPlan.objects.filter(
-                user=self.user, date=date(2026, 6, 13), meal_time='other'
-            ).count(),
+            MealPlan.objects.filter(user=self.user, date=date(2026, 6, 13), meal_time='other').count(),
             1,
         )
 
     def test_discard_composer_slot(self):
         result = create_composer_slot(self.user, '2026-06-14', 'breakfast')
         discard_composer_slot(self.user, result.meal_plan_id)
-        self.assertFalse(
-            MealPlan.objects.filter(id=result.meal_plan_id).exists()
-        )
+        self.assertFalse(MealPlan.objects.filter(id=result.meal_plan_id).exists())

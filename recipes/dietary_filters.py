@@ -26,6 +26,7 @@ Améliorations possibles côté produit : tagger les ingrédients avec les 14 al
 revue manuelle des faux positifs, signalement utilisateur (« cette recette aurait dû
 être filtrée »).
 """
+
 import logging
 import re
 
@@ -250,9 +251,7 @@ def keywords_for_labels(labels):
     keywords = []
     for lbl in labels:
         db_kws = list(
-            DietaryIngredientMatch.objects.filter(preference_label=lbl).values_list(
-                'match_keyword', flat=True
-            )
+            DietaryIngredientMatch.objects.filter(preference_label=lbl).values_list('match_keyword', flat=True)
         )
         if db_kws:
             keywords.extend(db_kws)
@@ -273,12 +272,12 @@ def keywords_for_labels(labels):
             expanded.append('oeufs')
             expanded.append('œufs')
         # Blanc/jaune d'œuf(s)
-        if low in {"blanc d'oeuf", "blanc d’œuf"}:
+        if low in {"blanc d'oeuf", 'blanc d’œuf'}:
             expanded.append("blanc d'oeufs")
-            expanded.append("blanc d’œufs")
-        if low in {"jaune d'oeuf", "jaune d’œuf"}:
+            expanded.append('blanc d’œufs')
+        if low in {"jaune d'oeuf", 'jaune d’œuf'}:
             expanded.append("jaune d'oeufs")
-            expanded.append("jaune d’œufs")
+            expanded.append('jaune d’œufs')
 
     dedup = []
     seen = set()
@@ -495,12 +494,8 @@ def excluded_recipe_ids_for_labels(labels):
 
     sem_ids = _semantic_ingredient_ids(labels)
     if sem_ids:
-        ri2 = RecipeIngredient.objects.filter(ingredient_id__in=sem_ids).values_list(
-            'recipe_id', flat=True
-        )
-        si2 = StepIngredient.objects.filter(ingredient_id__in=sem_ids).values_list(
-            'step__recipe_id', flat=True
-        )
+        ri2 = RecipeIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('recipe_id', flat=True)
+        si2 = StepIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('step__recipe_id', flat=True)
         recipe_ids.update(ri2)
         recipe_ids.update(si2)
 
@@ -526,12 +521,8 @@ def _recipe_ids_matching_keywords_safe(keywords, semantic=False):
     if semantic:
         sem_ids = _semantic_ingredient_ids(keywords)
         if sem_ids:
-            ri2 = RecipeIngredient.objects.filter(ingredient_id__in=sem_ids).values_list(
-                'recipe_id', flat=True
-            )
-            si2 = StepIngredient.objects.filter(ingredient_id__in=sem_ids).values_list(
-                'step__recipe_id', flat=True
-            )
+            ri2 = RecipeIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('recipe_id', flat=True)
+            si2 = StepIngredient.objects.filter(ingredient_id__in=sem_ids).values_list('step__recipe_id', flat=True)
             recipe_ids.update(ri2)
             recipe_ids.update(si2)
 
@@ -701,9 +692,7 @@ def hits_for_recipe_reasons(recipe_id, reasons, user):
     out = []
     if 'allergy' in reasons:
         labs = _allergy_labels_from_user(user)
-        h = _text_hit_for_labels(ingredients, labs, 'allergy') or _semantic_hit_for_labels(
-            ingredients, labs, 'allergy'
-        )
+        h = _text_hit_for_labels(ingredients, labs, 'allergy') or _semantic_hit_for_labels(ingredients, labs, 'allergy')
         if h:
             out.append(h)
     if 'diet' in reasons:
@@ -715,7 +704,7 @@ def hits_for_recipe_reasons(recipe_id, reasons, user):
         for r in regimes:
             kws = _normalize_label_strings(REGIME_KEYWORDS.get(r, []))
             for ing in ingredients:
-                n = (ing.name or '')
+                n = ing.name or ''
                 for kw in kws:
                     t = (kw or '').strip()
                     if len(t) < 3:
@@ -738,9 +727,7 @@ def hits_for_recipe_reasons(recipe_id, reasons, user):
         # Ignore if no hit found
     if 'dislike' in reasons:
         labs = _dislike_labels_from_user(user)
-        h = _text_hit_for_labels(ingredients, labs, 'dislike') or _semantic_hit_for_labels(
-            ingredients, labs, 'dislike'
-        )
+        h = _text_hit_for_labels(ingredients, labs, 'dislike') or _semantic_hit_for_labels(ingredients, labs, 'dislike')
         if h:
             out.append(h)
     return out
@@ -769,9 +756,7 @@ def meal_plan_dietary_flag_summary(meal_plan, request_user):
     dislike_any = False
     allergy_any = False
     diet_any = False
-    qs = MealInvitation.objects.filter(meal_plan=meal_plan).exclude(status='declined').select_related(
-        'invitee'
-    )
+    qs = MealInvitation.objects.filter(meal_plan=meal_plan).exclude(status='declined').select_related('invitee')
     for inv in qs:
         target = inv.invitee
         if not target or not are_complices_in_network(request_user, target):

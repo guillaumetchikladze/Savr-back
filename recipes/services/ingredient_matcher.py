@@ -2,6 +2,7 @@
 Service pour identifier et créer des ingrédients par correspondance textuelle exacte.
 Les embeddings restent disponibles pour la recherche de recettes, pas pour fusionner des ingrédients.
 """
+
 import logging
 import time
 from typing import List, Literal, Optional, Tuple
@@ -40,7 +41,7 @@ def get_batch_embeddings(
 ) -> List[Optional[list]]:
     """Récupère les embeddings de plusieurs textes en une seule requête (batch)."""
     if not EMBEDDING_API_SECRET:
-        logger.warning("EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings")
+        logger.warning('EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings')
         return [None] * len(texts)
 
     if not texts:
@@ -52,38 +53,35 @@ def get_batch_embeddings(
     try:
         start_time = time.perf_counter()
         logger.info(
-            "[Embeddings][Batch] %d textes type=%s dim=%s",
+            '[Embeddings][Batch] %d textes type=%s dim=%s',
             len(texts),
             input_type,
             dims,
         )
         response = requests.post(
-            f"{EMBEDDING_API_URL}/embed/batch",
-            headers={
-                "X-API-Key": EMBEDDING_API_SECRET,
-                "Content-Type": "application/json"
-            },
+            f'{EMBEDDING_API_URL}/embed/batch',
+            headers={'X-API-Key': EMBEDDING_API_SECRET, 'Content-Type': 'application/json'},
             json={
-                "texts": texts,
-                "normalize": True,
-                "input_type": input_type,
-                "dimensions": dims,
+                'texts': texts,
+                'normalize': True,
+                'input_type': input_type,
+                'dimensions': dims,
             },
             timeout=req_timeout,
         )
         response.raise_for_status()
         data = response.json()
-        embeddings = data.get("embeddings", [])
+        embeddings = data.get('embeddings', [])
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "[Embeddings][Batch] %d embeddings générés en %.1f ms (dimension=%s)",
+            '[Embeddings][Batch] %d embeddings générés en %.1f ms (dimension=%s)',
             len(embeddings),
             duration_ms,
-            len(embeddings[0]) if embeddings else "n/a"
+            len(embeddings[0]) if embeddings else 'n/a',
         )
         return embeddings
     except requests.exceptions.RequestException as e:
-        logger.error("[Embeddings][Batch] Erreur (%s): %s", type(e).__name__, e)
+        logger.error('[Embeddings][Batch] Erreur (%s): %s', type(e).__name__, e)
         return [None] * len(texts)
 
 
@@ -94,7 +92,7 @@ def get_embedding(
 ) -> Optional[list]:
     """Récupère l'embedding d'un texte via l'API d'embedding."""
     if not EMBEDDING_API_SECRET:
-        logger.warning("EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings")
+        logger.warning('EMBEDDING_API_SECRET non configuré, impossible de générer des embeddings')
         return None
 
     dims = getattr(django_settings, 'EMBEDDING_DIMENSION', 512)
@@ -102,34 +100,31 @@ def get_embedding(
 
     try:
         start_time = time.perf_counter()
-        truncated_text = text[:60] + ("..." if len(text) > 60 else "")
+        truncated_text = text[:60] + ('...' if len(text) > 60 else '')
         logger.info("[Embeddings][Single] Génération pour '%s' type=%s", truncated_text, input_type)
         response = requests.post(
-            f"{EMBEDDING_API_URL}/embed",
-            headers={
-                "X-API-Key": EMBEDDING_API_SECRET,
-                "Content-Type": "application/json"
-            },
+            f'{EMBEDDING_API_URL}/embed',
+            headers={'X-API-Key': EMBEDDING_API_SECRET, 'Content-Type': 'application/json'},
             json={
-                "text": text,
-                "normalize": True,
-                "input_type": input_type,
-                "dimensions": dims,
+                'text': text,
+                'normalize': True,
+                'input_type': input_type,
+                'dimensions': dims,
             },
             timeout=req_timeout,
         )
         response.raise_for_status()
         data = response.json()
-        embedding = data.get("embedding")
+        embedding = data.get('embedding')
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "[Embeddings][Single] Embedding généré (dimension=%s) en %.1f ms",
-            len(embedding) if embedding else "n/a",
-            duration_ms
+            '[Embeddings][Single] Embedding généré (dimension=%s) en %.1f ms',
+            len(embedding) if embedding else 'n/a',
+            duration_ms,
         )
         return embedding
     except requests.exceptions.RequestException as e:
-        logger.error("[Embeddings][Single] Erreur (%s): %s", type(e).__name__, e)
+        logger.error('[Embeddings][Single] Erreur (%s): %s', type(e).__name__, e)
         return None
 
 
@@ -180,4 +175,3 @@ def get_or_create_ingredient(ingredient_name: str) -> Tuple[Ingredient, bool]:
             ingredient_name,
         )
     return ingredient, True
-

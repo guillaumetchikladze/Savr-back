@@ -56,4 +56,3 @@ class RecipeSummaryAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data.get('count'), 1)
         self.assertIn('last_activity', response.data)
-

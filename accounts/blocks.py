@@ -1,4 +1,5 @@
 """Helpers de filtrage pour les blocages utilisateurs (Guideline Apple 1.2)."""
+
 from __future__ import annotations
 
 from django.db.models import Q
@@ -14,9 +15,7 @@ def are_blocked_either_way(user_a, user_b) -> bool:
     b_id = getattr(user_b, 'id', None)
     if not a_id or not b_id or a_id == b_id:
         return False
-    return UserBlock.objects.filter(
-        Q(blocker_id=a_id, blocked_id=b_id) | Q(blocker_id=b_id, blocked_id=a_id)
-    ).exists()
+    return UserBlock.objects.filter(Q(blocker_id=a_id, blocked_id=b_id) | Q(blocker_id=b_id, blocked_id=a_id)).exists()
 
 
 def blocked_user_ids_for(user) -> set[int]:

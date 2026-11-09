@@ -11,9 +11,9 @@ from recipes.supermarket_categories import (
 
 class Command(BaseCommand):
     help = (
-        "Crée la taxonomie magasin (parents + feuilles), rattache les ingrédients "
-        "(mots-clés > catégorie actuelle si déjà une feuille sluguée > mapping legacy > Autres), "
-        "puis supprime les anciennes catégories sans slug."
+        'Crée la taxonomie magasin (parents + feuilles), rattache les ingrédients '
+        '(mots-clés > catégorie actuelle si déjà une feuille sluguée > mapping legacy > Autres), '
+        'puis supprime les anciennes catégories sans slug.'
     )
 
     def add_arguments(self, parser):
@@ -94,9 +94,7 @@ class Command(BaseCommand):
                 )
 
             self.stdout.write(
-                self.style.SUCCESS(
-                    f'Ingrédients mis à jour: {updated}, inchangés (déjà feuille sans mot-clé): {kept}'
-                )
+                self.style.SUCCESS(f'Ingrédients mis à jour: {updated}, inchangés (déjà feuille sans mot-clé): {kept}')
             )
 
         if dry:

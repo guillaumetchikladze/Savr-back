@@ -71,4 +71,3 @@ class CollectionAPITestCase(APITestCase):
         suggestion_ids = [item['id'] for item in response.data['results']]
         self.assertIn(self.suggestion_recipe.id, suggestion_ids)
         self.assertNotIn(self.recipe_in_collection.id, suggestion_ids)
-

@@ -89,9 +89,7 @@ async def propose_meal_deletion(
 ) -> MutationProposal:
     """Propose de retirer une recette d'un créneau (nécessite confirmation utilisateur)."""
     user = ctx.context.user
-    return await _run_sync(
-        propose_meal_deletion_data, user, meal_plan_id, recipe_batch_id
-    )
+    return await _run_sync(propose_meal_deletion_data, user, meal_plan_id, recipe_batch_id)
 
 
 @function_tool(strict_mode=False)
@@ -131,9 +129,7 @@ async def send_invitation_proposal(
     if not resolved_invitee_ids:
         raise ValueError('Aucun ami trouvé (invitee_ids ou invitee_usernames requis).')
 
-    return await _run_sync(
-        propose_meal_invitation, user, normalized_meal_plan_ids, resolved_invitee_ids
-    )
+    return await _run_sync(propose_meal_invitation, user, normalized_meal_plan_ids, resolved_invitee_ids)
 
 
 @function_tool(strict_mode=False)
@@ -174,9 +170,7 @@ async def import_recipe_from_url(
 ) -> ImportJobStarted:
     """Lance l'import asynchrone d'une recette depuis une URL externe."""
     user = ctx.context.user
-    return await _run_sync(
-        _start_import_from_url, user, url, ctx.context.conversation_id
-    )
+    return await _run_sync(_start_import_from_url, user, url, ctx.context.conversation_id)
 
 
 @function_tool(strict_mode=False)
@@ -223,9 +217,7 @@ async def generate_recipe_from_idea(
 ) -> ImportJobStarted:
     """Génère une recette à partir d'une idée ou d'un concept (asynchrone)."""
     user = ctx.context.user
-    return await _run_sync(
-        _start_generate_from_idea, user, idea, servings, ctx.context.conversation_id
-    )
+    return await _run_sync(_start_generate_from_idea, user, idea, servings, ctx.context.conversation_id)
 
 
 def _chat_payload(conversation_id: int | None, base: dict) -> dict:
@@ -263,9 +255,7 @@ def _start_import_from_url(
         .first()
     )
     if existing:
-        raise ValueError(
-            f'Cette recette est déjà importée (id={existing.id}, titre="{existing.title}").'
-        )
+        raise ValueError(f'Cette recette est déjà importée (id={existing.id}, titre="{existing.title}").')
 
     import_request = RecipeImportRequest.objects.create(
         user=user,
@@ -320,8 +310,10 @@ def _start_generate_from_idea(
 
 
 # Tools de mutation — identifiés par le consumer pour arrêter le stream
-MUTATION_TOOL_NAMES = frozenset({
-    'propose_meal_deletion',
-    'send_invitation_proposal',
-    'propose_recipe_revision',
-})
+MUTATION_TOOL_NAMES = frozenset(
+    {
+        'propose_meal_deletion',
+        'send_invitation_proposal',
+        'propose_recipe_revision',
+    }
+)

@@ -104,8 +104,7 @@ def _resolve_recipe_details(user: AbstractBaseUser, ref: dict) -> list[str]:
 
     lines = [
         f'  Titre : {recipe.title}',
-        f'  Durée : {recipe.prep_time + recipe.cook_time} min '
-        f'(prépa {recipe.prep_time}, cuisson {recipe.cook_time})',
+        f'  Durée : {recipe.prep_time + recipe.cook_time} min (prépa {recipe.prep_time}, cuisson {recipe.cook_time})',
         f'  Difficulté : {_DIFFICULTY_LABELS.get(recipe.difficulty, recipe.difficulty)}',
         f'  Portions : {recipe.servings}',
     ]
@@ -115,9 +114,7 @@ def _resolve_recipe_details(user: AbstractBaseUser, ref: dict) -> list[str]:
         lines.append(f'  Résumé des étapes : {_truncate(recipe.steps_summary, 500)}')
 
     ingredients = list(
-        RecipeIngredient.objects.filter(recipe_id=recipe.id)
-        .select_related('ingredient')
-        .order_by('id')[:20]
+        RecipeIngredient.objects.filter(recipe_id=recipe.id).select_related('ingredient').order_by('id')[:20]
     )
     if ingredients:
         ing_lines = []
@@ -157,9 +154,7 @@ def _resolve_meal_plan_details(user: AbstractBaseUser, ref: dict) -> list[str]:
         .prefetch_related(
             Prefetch(
                 'meal_plan_recipe_batches',
-                queryset=MealPlanRecipeBatch.objects.select_related(
-                    'recipe_batch__recipe'
-                ).order_by('order'),
+                queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
             )
         )
         .first()
@@ -253,9 +248,7 @@ def format_context_refs_prompt(context_refs: list[dict] | None) -> str:
         meta = ref.get('meta')
         if isinstance(meta, dict):
             lines.extend(_format_meta(meta))
-    lines.append(
-        "Utilise ces éléments comme point de départ : l'utilisateur parle probablement de ce contenu."
-    )
+    lines.append("Utilise ces éléments comme point de départ : l'utilisateur parle probablement de ce contenu.")
     return '\n'.join(lines)
 
 
@@ -321,7 +314,7 @@ def build_context_prompt_for_agent(
             f'Ami(s) attaché(s) via @ (ids={ids_literal}). '
             "Si l'utilisateur demande d'inviter : invitee_ids dans send_invitation_proposal. "
             "Si l'utilisateur demande qui est invité / qui vient : get_meal_plans + champ invitees — "
-            "pas send_invitation_proposal."
+            'pas send_invitation_proposal.'
         )
 
     if detail_sections:

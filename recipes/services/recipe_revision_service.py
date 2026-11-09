@@ -17,21 +17,25 @@ def build_recipe_state_dict(recipe: Recipe) -> dict:
     ingredients = []
     for ri in RecipeIngredient.objects.filter(recipe=recipe).select_related('ingredient'):
         name = ri.ingredient.name if ri.ingredient_id else ''
-        ingredients.append({
-            'ingredient_name': name,
-            'quantity': float(ri.quantity) if ri.quantity is not None else 0,
-            'unit': ri.unit or 'g',
-        })
+        ingredients.append(
+            {
+                'ingredient_name': name,
+                'quantity': float(ri.quantity) if ri.quantity is not None else 0,
+                'unit': ri.unit or 'g',
+            }
+        )
 
     steps = []
     for step in Step.objects.filter(recipe=recipe).order_by('order'):
-        steps.append({
-            'title': step.title or '',
-            'instruction': step.instruction or '',
-            'tip': step.tip or '',
-            'has_timer': bool(step.has_timer),
-            'timer_duration': step.timer_duration,
-        })
+        steps.append(
+            {
+                'title': step.title or '',
+                'instruction': step.instruction or '',
+                'tip': step.tip or '',
+                'has_timer': bool(step.has_timer),
+                'timer_duration': step.timer_duration,
+            }
+        )
 
     return {
         'title': recipe.title or '',
@@ -77,7 +81,7 @@ def propose_recipe_revision_data(
     after_formalized = formalized_to_response_dict(revised)
 
     if not has_recipe_changes(before_state, after_formalized):
-        raise ValueError('Tchikook n\'a proposé aucun changement pour cette recette.')
+        raise ValueError("Tchikook n'a proposé aucun changement pour cette recette.")
 
     return MutationProposal(
         card_type='recipe_revision',
@@ -96,8 +100,15 @@ def propose_recipe_revision_data(
 
 def _apply_edit_payload(recipe: Recipe, data: dict) -> None:
     meta_fields = [
-        'title', 'description', 'steps_summary', 'meal_type', 'difficulty',
-        'prep_time', 'cook_time', 'servings', 'image_path',
+        'title',
+        'description',
+        'steps_summary',
+        'meal_type',
+        'difficulty',
+        'prep_time',
+        'cook_time',
+        'servings',
+        'image_path',
     ]
     for field in meta_fields:
         if field in data:
@@ -112,10 +123,7 @@ def _apply_edit_payload(recipe: Recipe, data: dict) -> None:
             if not isinstance(item, dict):
                 continue
             ingredient_name = (
-                item.get('ingredient_name')
-                or (item.get('ingredient') or {}).get('name')
-                or item.get('name')
-                or ''
+                item.get('ingredient_name') or (item.get('ingredient') or {}).get('name') or item.get('name') or ''
             ).strip()
             if not ingredient_name:
                 continue
@@ -155,23 +163,27 @@ def _formalized_to_edit_payload(formalized: dict) -> dict:
     for ing in formalized.get('recipe_ingredients') or formalized.get('ingredients') or []:
         if not isinstance(ing, dict):
             continue
-        ingredients.append({
-            'ingredient_name': ing.get('ingredient_name') or ing.get('name') or '',
-            'quantity': ing.get('quantity', 0),
-            'unit': ing.get('unit') or 'g',
-        })
+        ingredients.append(
+            {
+                'ingredient_name': ing.get('ingredient_name') or ing.get('name') or '',
+                'quantity': ing.get('quantity', 0),
+                'unit': ing.get('unit') or 'g',
+            }
+        )
 
     steps = []
     for step in formalized.get('steps') or []:
         if not isinstance(step, dict):
             continue
-        steps.append({
-            'title': step.get('title', '') or '',
-            'instruction': step.get('instruction') or '',
-            'tip': step.get('tip', '') or '',
-            'has_timer': bool(step.get('has_timer', False)),
-            'timer_duration': step.get('timer_duration'),
-        })
+        steps.append(
+            {
+                'title': step.get('title', '') or '',
+                'instruction': step.get('instruction') or '',
+                'tip': step.get('tip', '') or '',
+                'has_timer': bool(step.get('has_timer', False)),
+                'timer_duration': step.get('timer_duration'),
+            }
+        )
 
     return {
         'title': formalized.get('title'),

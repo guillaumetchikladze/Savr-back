@@ -12,12 +12,8 @@ User = get_user_model()
 
 class ChatAPITests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
-            username='chatuser', email='chatuser@test.com', password='pass'
-        )
-        self.other = User.objects.create_user(
-            username='other', email='other@test.com', password='pass'
-        )
+        self.user = User.objects.create_user(username='chatuser', email='chatuser@test.com', password='pass')
+        self.other = User.objects.create_user(username='other', email='other@test.com', password='pass')
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 

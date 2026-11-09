@@ -2,6 +2,7 @@
 Service pour importer des recettes depuis des URLs externes
 Supporte : Bergamot, Marmiton, Elle & Cuisine, etc.
 """
+
 import logging
 import re
 import json
@@ -20,9 +21,9 @@ REQUEST_TIMEOUT = 10
 
 
 RECIPE_SCRAPERS_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/121.0.0.0 Safari/537.36"
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/121.0.0.0 Safari/537.36'
 )
 
 
@@ -74,7 +75,7 @@ def _normalize_multiline_steps(text: str) -> str:
     lines = [ln.strip() for ln in re.split(r'[\r\n]+', raw) if ln.strip()]
     if len(lines) <= 1:
         return raw
-    return '\n'.join([f"{i+1}. {ln}" for i, ln in enumerate(lines)])
+    return '\n'.join([f'{i + 1}. {ln}' for i, ln in enumerate(lines)])
 
 
 def extract_with_recipe_scrapers(url: str) -> Optional[Dict]:
@@ -90,7 +91,7 @@ def extract_with_recipe_scrapers(url: str) -> Optional[Dict]:
     # (schema.org), mais c’est plus coûteux; on log uniquement.
     supported = _is_recipe_scrapers_supported(url)
     logger.info(
-        "[RecipeScrapers] Starting extraction (supported=%s) for url=%s",
+        '[RecipeScrapers] Starting extraction (supported=%s) for url=%s',
         supported,
         url,
     )
@@ -128,7 +129,7 @@ def extract_with_recipe_scrapers(url: str) -> Optional[Dict]:
         for ing in ingredients_list:
             s = str(ing).strip()
             if s:
-                ingredients_lines.append(f"- {s}" if not s.startswith('-') else s)
+                ingredients_lines.append(f'- {s}' if not s.startswith('-') else s)
         ingredients_text = '\n'.join(ingredients_lines).strip()
 
         instructions_raw = ''
@@ -197,7 +198,7 @@ def extract_with_recipe_scrapers(url: str) -> Optional[Dict]:
 
         return None
     except Exception as e:
-        logger.warning("[RecipeScrapers] Extraction failed for url=%s: %s", url, e)
+        logger.warning('[RecipeScrapers] Extraction failed for url=%s: %s', url, e)
         return None
 
 
@@ -221,7 +222,7 @@ def is_ingredients_suspicious(ingredients_text: str) -> tuple[bool, str]:
 
     txt = (ingredients_text or '').strip()
     if not txt:
-        return True, "Aucun ingrédient extrait."
+        return True, 'Aucun ingrédient extrait.'
 
     if len(txt) < min_chars:
         return True, f"Texte d'ingrédients trop court ({len(txt)} caractères)."
@@ -230,14 +231,14 @@ def is_ingredients_suspicious(ingredients_text: str) -> tuple[bool, str]:
     if n < min_lines:
         return True, f"Nombre d'ingrédients trop faible ({n} < {min_lines})."
 
-    return False, ""
+    return False, ''
 
 
 def detect_source_type(url: str) -> Optional[str]:
     """Détecte le type de source depuis l'URL"""
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
-    
+
     if 'instagram.com' in domain or 'instagr.am' in domain:
         return 'instagram'
     if 'bergamot.app' in domain or 'dashboard.bergamot.app' in domain:
@@ -254,7 +255,7 @@ def detect_source_type(url: str) -> Optional[str]:
         return 'chefclub'
     elif 'jow.fr' in domain:
         return 'jow'
-    
+
     return None
 
 
@@ -282,16 +283,16 @@ def extract_instagram_recipe(url: str) -> Optional[Dict]:
     try:
         client = ApifyClient(token)
         run_input = {
-            "directUrls": [url],
-            "resultsType": "posts",
-            "resultsLimit": 1,
+            'directUrls': [url],
+            'resultsType': 'posts',
+            'resultsLimit': 1,
         }
-        logger.info("[InstagramExtractor] Lancement actor apify/instagram-scraper pour url=%s", url)
+        logger.info('[InstagramExtractor] Lancement actor apify/instagram-scraper pour url=%s', url)
         # apify-client v3 returns a Pydantic Run model (not a dict).
-        run = client.actor("apify/instagram-scraper").call(run_input=run_input)
-        dataset_id = getattr(run, "default_dataset_id", None) if run is not None else None
+        run = client.actor('apify/instagram-scraper').call(run_input=run_input)
+        dataset_id = getattr(run, 'default_dataset_id', None) if run is not None else None
         if not dataset_id:
-            logger.warning("[InstagramExtractor] Aucun datasetId retourné par Apify pour url=%s", url)
+            logger.warning('[InstagramExtractor] Aucun datasetId retourné par Apify pour url=%s', url)
             raise InstagramImportError(
                 code='apify_failed',
                 message="Aucun résultat retourné par l'API Apify.",
@@ -309,45 +310,45 @@ def extract_instagram_recipe(url: str) -> Optional[Dict]:
         )
 
     if not first_item:
-        logger.info("[InstagramExtractor] Dataset Apify vide pour url=%s", url)
+        logger.info('[InstagramExtractor] Dataset Apify vide pour url=%s', url)
         raise InstagramImportError(
             code='post_not_found',
-            message="Aucun post trouvé pour cette URL Instagram.",
+            message='Aucun post trouvé pour cette URL Instagram.',
         )
 
-    caption = (first_item.get("caption") or "").strip()
-    first_comment = (first_item.get("firstComment") or "").strip()
+    caption = (first_item.get('caption') or '').strip()
+    first_comment = (first_item.get('firstComment') or '').strip()
     full_text_parts = []
     if caption:
         full_text_parts.append(caption)
     if first_comment:
         full_text_parts.append(first_comment)
-    full_text = "\n\n".join(full_text_parts).strip()
+    full_text = '\n\n'.join(full_text_parts).strip()
 
     if not full_text:
-        logger.info("[InstagramExtractor] Aucun texte exploitable (caption/firstComment) pour url=%s", url)
+        logger.info('[InstagramExtractor] Aucun texte exploitable (caption/firstComment) pour url=%s', url)
         raise InstagramImportError(
             code='no_recipe_text',
-            message="Aucune description de recette trouvée dans ce post Instagram.",
+            message='Aucune description de recette trouvée dans ce post Instagram.',
         )
 
     # Appel IA pour parser la légende et structurer ingrédients/instructions
     from .ai_service import parse_instagram_caption  # import local pour éviter les cycles
 
     parsed = parse_instagram_caption(full_text)
-    if not parsed.get("is_recipe"):
+    if not parsed.get('is_recipe'):
         logger.info(
-            "[InstagramExtractor] Post identifié comme non-recette (code=no_recipe) pour url=%s, reason=%s",
+            '[InstagramExtractor] Post identifié comme non-recette (code=no_recipe) pour url=%s, reason=%s',
             url,
-            parsed.get("reason", ""),
+            parsed.get('reason', ''),
         )
         raise InstagramImportError(
             code='no_recipe',
-            message=parsed.get("reason", "Ce post ne semble pas contenir de recette exploitable."),
+            message=parsed.get('reason', 'Ce post ne semble pas contenir de recette exploitable.'),
         )
 
-    ingredients_text = (parsed.get("ingredients_text") or "").strip()
-    instructions_text = (parsed.get("instructions_text") or "").strip()
+    ingredients_text = (parsed.get('ingredients_text') or '').strip()
+    instructions_text = (parsed.get('instructions_text') or '').strip()
 
     if not ingredients_text:
         logger.info(
@@ -359,38 +360,38 @@ def extract_instagram_recipe(url: str) -> Optional[Dict]:
             message="Impossible d'identifier une liste d'ingrédients exploitable dans ce post Instagram.",
         )
 
-    image_url = first_item.get("displayUrl") or first_item.get("display_url") or ""
-    image_url = (image_url or "").strip()
+    image_url = first_item.get('displayUrl') or first_item.get('display_url') or ''
+    image_url = (image_url or '').strip()
 
-    title = (parsed.get("title") or "").strip()
+    title = (parsed.get('title') or '').strip()
     if not title:
-        owner_username = (first_item.get("ownerUsername") or first_item.get("owner_username") or "").strip()
-        short_code = (first_item.get("shortCode") or first_item.get("short_code") or "").strip()
+        owner_username = (first_item.get('ownerUsername') or first_item.get('owner_username') or '').strip()
+        short_code = (first_item.get('shortCode') or first_item.get('short_code') or '').strip()
         title_parts = []
         if owner_username:
             title_parts.append(owner_username)
-        title_parts.append("Recette Instagram")
+        title_parts.append('Recette Instagram')
         if short_code:
             title_parts.append(short_code)
-        title = " - ".join(title_parts)
+        title = ' - '.join(title_parts)
 
     description = (caption or full_text)[:600]
 
     recipe_data: Dict[str, object] = {
-        "title": title,
-        "description": description,
-        "ingredients_text": ingredients_text,
-        "instructions_text": instructions_text,
-        "prep_time": parsed.get("prep_time"),
-        "cook_time": parsed.get("cook_time"),
-        "servings": parsed.get("servings"),
-        "image_path": image_url,
-        "instagram_meta": {
-            "id": first_item.get("id"),
-            "shortCode": first_item.get("shortCode") or first_item.get("short_code"),
-            "ownerUsername": first_item.get("ownerUsername") or first_item.get("owner_username"),
-            "type": first_item.get("type"),
-            "timestamp": first_item.get("timestamp"),
+        'title': title,
+        'description': description,
+        'ingredients_text': ingredients_text,
+        'instructions_text': instructions_text,
+        'prep_time': parsed.get('prep_time'),
+        'cook_time': parsed.get('cook_time'),
+        'servings': parsed.get('servings'),
+        'image_path': image_url,
+        'instagram_meta': {
+            'id': first_item.get('id'),
+            'shortCode': first_item.get('shortCode') or first_item.get('short_code'),
+            'ownerUsername': first_item.get('ownerUsername') or first_item.get('owner_username'),
+            'type': first_item.get('type'),
+            'timestamp': first_item.get('timestamp'),
         },
     }
 
@@ -431,10 +432,9 @@ def _extract_recipe_from_json_ld(data, title_fallback: str = '') -> Optional[Dic
 
     # Ingrédients
     ingredients_list = data.get('recipeIngredient', [])
-    ingredients_text = '\n'.join([
-        f"- {ing}" if isinstance(ing, str) else f"- {ing.get('name', '')}"
-        for ing in ingredients_list
-    ])
+    ingredients_text = '\n'.join(
+        [f'- {ing}' if isinstance(ing, str) else f'- {ing.get("name", "")}' for ing in ingredients_list]
+    )
 
     # Instructions (schema.org varie beaucoup: string, list[str], list[HowToStep], HowToSection, ItemList)
     raw_instructions = data.get('recipeInstructions', [])
@@ -466,7 +466,7 @@ def _extract_recipe_from_json_ld(data, title_fallback: str = '') -> Optional[Dic
 
     _push_step(raw_instructions)
 
-    instructions_text = '\n'.join([f"{i+1}. {s}" for i, s in enumerate(steps)])
+    instructions_text = '\n'.join([f'{i + 1}. {s}' for i, s in enumerate(steps)])
 
     # Image
     image = data.get('image', '')
@@ -536,14 +536,18 @@ def _fallback_extract_from_soup(soup: BeautifulSoup, title_hint: str = '') -> Op
                 continue
             if re.search(r'\d+\s*(g|kg|ml|l|cl|tasse|cuill|pincée|gousse|pers\.|pers|personnes?)', text, re.IGNORECASE):
                 ingredients.append(text)
-            elif re.search(r'^(faire|mélanger|melanger|ajouter|cuire|chauffer|découper|decouper|verser|mettre|préchauffer|prechauffer)', text, re.IGNORECASE):
+            elif re.search(
+                r'^(faire|mélanger|melanger|ajouter|cuire|chauffer|découper|decouper|verser|mettre|préchauffer|prechauffer)',
+                text,
+                re.IGNORECASE,
+            ):
                 instructions.append(text)
 
     if title and (ingredients or instructions):
         return {
             'title': title,
-            'ingredients_text': '\n'.join([f"- {ing}" for ing in ingredients[:40]]),
-            'instructions_text': '\n'.join([f"{i+1}. {inst}" for i, inst in enumerate(instructions[:40])]),
+            'ingredients_text': '\n'.join([f'- {ing}' for ing in ingredients[:40]]),
+            'instructions_text': '\n'.join([f'{i + 1}. {inst}' for i, inst in enumerate(instructions[:40])]),
             'image_path': image_url,
         }
 
@@ -553,17 +557,19 @@ def _fallback_extract_from_soup(soup: BeautifulSoup, title_hint: str = '') -> Op
 def extract_bergamot_recipe(url: str) -> Optional[Dict]:
     """Extrait une recette depuis Bergamot"""
     try:
-        logger.info("[BergamotExtractor] Transforme url to api call : %s", url)
-        recipe_id = url.split('/')[-1]    # Pour Bergamot, on peut essayer d'accéder à l'API ou parser le HTML
+        logger.info('[BergamotExtractor] Transforme url to api call : %s', url)
+        recipe_id = url.split('/')[-1]  # Pour Bergamot, on peut essayer d'accéder à l'API ou parser le HTML
         # Si c'est un lien partagé, il faut peut-être une clé API
-        response = requests.get(f"https://api.bergamot.app/recipes/shared?r={recipe_id}", timeout=REQUEST_TIMEOUT, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        response = requests.get(
+            f'https://api.bergamot.app/recipes/shared?r={recipe_id}',
+            timeout=REQUEST_TIMEOUT,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+        )
         response.raise_for_status()
-       
+
         data = response.json()
-        logger.info("[BergamotExtractor] API response received")
-        
+        logger.info('[BergamotExtractor] API response received')
+
         # Extraire les ingrédients : conversion simple en texte
         ingredients_list = data.get('ingredients', [])
         ingredients_lines = []
@@ -573,9 +579,9 @@ def extract_bergamot_recipe(url: str) -> Optional[Dict]:
                     ingredients_lines.append(ing)
             elif isinstance(ing_group, list):
                 ingredients_lines.extend(ing_group)
-        
+
         ingredients_text = '\n'.join(ingredients_lines)
-       
+
         # Extraire les instructions : conversion simple en texte
         instructions_list = data.get('instructions', [])
         instructions_lines = []
@@ -585,13 +591,13 @@ def extract_bergamot_recipe(url: str) -> Optional[Dict]:
                     instructions_lines.append(step)
             elif isinstance(step_group, list):
                 instructions_lines.extend(step_group)
-        
+
         instructions_text = '\n'.join(instructions_lines)
-        
+
         # Extraire l'image
         photos = data.get('photos', [])
         image_path = photos[0].get('photoUrl', '') if photos else ''
-        
+
         return {
             'title': data.get('title', ''),
             'description': data.get('description', ''),
@@ -610,53 +616,54 @@ def extract_bergamot_recipe(url: str) -> Optional[Dict]:
 def extract_marmiton_recipe(url: str) -> Optional[Dict]:
     """Extrait une recette depuis Marmiton"""
     try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+        )
         response.raise_for_status()
-        
+
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
         # Essayer d'abord d'extraire depuis JSON-LD (données structurées)
         json_ld_scripts = soup.find_all('script', type='application/ld+json')
         for script in json_ld_scripts:
             try:
                 import json
+
                 data = json.loads(script.string)
-                
+
                 # Gérer les listes de données structurées
                 if isinstance(data, list):
                     for item in data:
                         if item.get('@type') == 'Recipe':
                             data = item
                             break
-                
+
                 if isinstance(data, dict) and data.get('@type') == 'Recipe':
                     # Extraire les ingrédients
                     ingredients_list = data.get('recipeIngredient', [])
-                    ingredients_text = '\n'.join([
-                        ing if isinstance(ing, str) else ing.get('name', '')
-                        for ing in ingredients_list
-                    ])
-                    
+                    ingredients_text = '\n'.join(
+                        [ing if isinstance(ing, str) else ing.get('name', '') for ing in ingredients_list]
+                    )
+
                     # Extraire les instructions
                     instructions_list = data.get('recipeInstructions', [])
-                    instructions_text = '\n'.join([
-                        step.get('text', '') if isinstance(step, dict) else str(step)
-                        for step in instructions_list
-                    ])
-                    
+                    instructions_text = '\n'.join(
+                        [step.get('text', '') if isinstance(step, dict) else str(step) for step in instructions_list]
+                    )
+
                     # Extraire les temps (format ISO 8601)
                     prep_time_str = data.get('prepTime', '')
                     cook_time_str = data.get('cookTime', '')
-                    
+
                     # Extraire l'image
                     image = data.get('image', '')
                     if isinstance(image, dict):
                         image = image.get('url', '')
                     elif isinstance(image, list) and image:
                         image = image[0] if isinstance(image[0], str) else image[0].get('url', '')
-                    
+
                     return {
                         'title': data.get('name', ''),
                         'description': data.get('description', ''),
@@ -668,19 +675,19 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
                         'image_path': image,
                     }
             except (json.JSONDecodeError, KeyError, AttributeError) as e:
-                logger.debug(f"Erreur lors du parsing JSON-LD Marmiton: {e}")
+                logger.debug(f'Erreur lors du parsing JSON-LD Marmiton: {e}')
                 continue
-        
+
         # Fallback : extraction HTML classique
         title_elem = soup.find('h1', class_=re.compile('recipe-title|title'))
         if not title_elem:
             title_elem = soup.find('h1')
         title = title_elem.get_text(strip=True) if title_elem else ''
-        
+
         # Description
         desc_elem = soup.find('div', class_=re.compile('recipe-description|description'))
         description = desc_elem.get_text(strip=True) if desc_elem else ''
-        
+
         # Ingrédients
         ingredients = []
         ingredients_section = soup.find('div', class_=re.compile('recipe-ingredients|ingredients'))
@@ -689,7 +696,7 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
                 text = li.get_text(strip=True)
                 if text:
                     ingredients.append(text)
-        
+
         # Instructions
         instructions = []
         instructions_section = soup.find('div', class_=re.compile('recipe-steps|steps|instructions'))
@@ -698,12 +705,12 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
                 text = step.get_text(strip=True)
                 if text and len(text) > 10:  # Filtrer les textes trop courts
                     instructions.append(text)
-        
+
         # Temps et portions
         prep_time = None
         cook_time = None
         servings = None
-        
+
         time_elem = soup.find(text=re.compile(r'Préparation|Temps de préparation'))
         if time_elem:
             parent = time_elem.find_parent()
@@ -712,7 +719,7 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
                 match = re.search(r'(\d+)\s*min', time_text)
                 if match:
                     prep_time = int(match.group(1))
-        
+
         cook_elem = soup.find(text=re.compile(r'Cuisson|Temps de cuisson'))
         if cook_elem:
             parent = cook_elem.find_parent()
@@ -721,7 +728,7 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
                 match = re.search(r'(\d+)\s*min', cook_text)
                 if match:
                     cook_time = int(match.group(1))
-        
+
         servings_elem = soup.find(text=re.compile(r'Personnes|Portions'))
         if servings_elem:
             parent = servings_elem.find_parent()
@@ -730,20 +737,20 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
                 match = re.search(r'(\d+)', servings_text)
                 if match:
                     servings = int(match.group(1))
-        
+
         if title and (ingredients or instructions):
             return {
                 'title': title,
                 'description': description,
-                'ingredients_text': '\n'.join([f"- {ing}" for ing in ingredients]),
-                'instructions_text': '\n'.join([f"{i+1}. {inst}" for i, inst in enumerate(instructions)]),
+                'ingredients_text': '\n'.join([f'- {ing}' for ing in ingredients]),
+                'instructions_text': '\n'.join([f'{i + 1}. {inst}' for i, inst in enumerate(instructions)]),
                 'prep_time': prep_time,
                 'cook_time': cook_time,
                 'servings': servings,
             }
-        
+
         return None
-        
+
     except Exception as e:
         logger.error(f"Erreur lors de l'extraction Marmiton: {e}")
         return None
@@ -752,9 +759,11 @@ def extract_marmiton_recipe(url: str) -> Optional[Dict]:
 def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
     """Extrait une recette depuis CuisineAZ (JSON-LD prioritaire)"""
     try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+        )
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -771,7 +780,9 @@ def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
                 if recipe and (recipe.get('ingredients_text') or recipe.get('instructions_text')):
                     # CuisineAZ met souvent l'image via og:image même si JSON-LD est incomplet
                     if not recipe.get('image_path'):
-                        og_image = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
+                        og_image = soup.find('meta', property='og:image') or soup.find(
+                            'meta', attrs={'name': 'twitter:image'}
+                        )
                         if og_image and og_image.has_attr('content'):
                             recipe['image_path'] = og_image['content']
                     return recipe
@@ -787,7 +798,7 @@ def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
                 qty = li.select_one('.ingredient_qte')
                 label_text = label.get_text(strip=True) if label else ''
                 qty_text = qty.get_text(strip=True) if qty else ''
-                combined = f"{qty_text} {label_text}".strip()
+                combined = f'{qty_text} {label_text}'.strip()
                 if combined:
                     ingredients_items.append(combined)
 
@@ -802,8 +813,8 @@ def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
                     if txt:
                         steps_items.append(txt)
 
-        ingredients_text = '\n'.join([f"- {ing}" for ing in ingredients_items]) if ingredients_items else ''
-        instructions_text = '\n'.join([f"{i+1}. {step}" for i, step in enumerate(steps_items)]) if steps_items else ''
+        ingredients_text = '\n'.join([f'- {ing}' for ing in ingredients_items]) if ingredients_items else ''
+        instructions_text = '\n'.join([f'{i + 1}. {step}' for i, step in enumerate(steps_items)]) if steps_items else ''
 
         # Image via og:image
         og_image = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
@@ -832,9 +843,11 @@ def extract_cuisineaz_recipe(url: str) -> Optional[Dict]:
 def extract_jow_recipe(url: str) -> Optional[Dict]:
     """Extrait une recette depuis Jow.fr (JSON-LD prioritaire, fallback HTML ciblé)"""
     try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+        )
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -849,7 +862,9 @@ def extract_jow_recipe(url: str) -> Optional[Dict]:
                 recipe = _extract_recipe_from_json_ld(data, title)
                 if recipe and (recipe.get('ingredients_text') or recipe.get('instructions_text')):
                     if not recipe.get('image_path'):
-                        og_image = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
+                        og_image = soup.find('meta', property='og:image') or soup.find(
+                            'meta', attrs={'name': 'twitter:image'}
+                        )
                         if og_image and og_image.has_attr('content'):
                             recipe['image_path'] = og_image['content']
                     return recipe
@@ -859,13 +874,16 @@ def extract_jow_recipe(url: str) -> Optional[Dict]:
         # 2) Fallback HTML ciblé Jow (sections "ingredients" / "instructions")
         def _find_section(name_fragment: str):
             return soup.find(
-                lambda tag: tag.name in ['section', 'div'] and any(
-                    name_fragment in (attr_val.lower() if isinstance(attr_val, str) else ' '.join(attr_val).lower())
-                    for attr_val in [
-                        tag.get('id') or '',
-                        tag.get('aria-label') or '',
-                        ' '.join(tag.get('class', []))
-                    ]
+                lambda tag: (
+                    tag.name in ['section', 'div']
+                    and any(
+                        name_fragment in (attr_val.lower() if isinstance(attr_val, str) else ' '.join(attr_val).lower())
+                        for attr_val in [
+                            tag.get('id') or '',
+                            tag.get('aria-label') or '',
+                            ' '.join(tag.get('class', [])),
+                        ]
+                    )
                 )
             )
 
@@ -895,9 +913,15 @@ def extract_jow_recipe(url: str) -> Optional[Dict]:
             if extra:
                 # Merge uniquement si besoin pour garder le contexte Jow
                 if not ingredients_items and extra.get('ingredients_text'):
-                    ingredients_items = [line.lstrip('- ').strip() for line in extra['ingredients_text'].splitlines() if line.strip()]
+                    ingredients_items = [
+                        line.lstrip('- ').strip() for line in extra['ingredients_text'].splitlines() if line.strip()
+                    ]
                 if not steps_items and extra.get('instructions_text'):
-                    steps_items = [line.split('. ', 1)[-1].strip() if '. ' in line else line for line in extra['instructions_text'].splitlines() if line.strip()]
+                    steps_items = [
+                        line.split('. ', 1)[-1].strip() if '. ' in line else line
+                        for line in extra['instructions_text'].splitlines()
+                        if line.strip()
+                    ]
 
         image_url = ''
         og_image = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
@@ -912,8 +936,8 @@ def extract_jow_recipe(url: str) -> Optional[Dict]:
             return {
                 'title': title,
                 'description': '',
-                'ingredients_text': '\n'.join([f"- {ing}" for ing in ingredients_items]),
-                'instructions_text': '\n'.join([f"{i+1}. {step}" for i, step in enumerate(steps_items)]),
+                'ingredients_text': '\n'.join([f'- {ing}' for ing in ingredients_items]),
+                'instructions_text': '\n'.join([f'{i + 1}. {step}' for i, step in enumerate(steps_items)]),
                 'prep_time': None,
                 'cook_time': None,
                 'servings': None,
@@ -931,17 +955,19 @@ def extract_jow_recipe(url: str) -> Optional[Dict]:
 def extract_generic_recipe(url: str) -> Optional[Dict]:
     """Extraction générique pour les sites non supportés spécifiquement"""
     try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+        )
         response.raise_for_status()
-        
+
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
         # Titre
         title_elem = soup.find('h1') or soup.find('title')
         title = title_elem.get_text(strip=True) if title_elem else ''
-        
+
         # Chercher les données structurées (JSON-LD, microdata)
         for json_ld in soup.find_all('script', type='application/ld+json'):
             try:
@@ -951,10 +977,10 @@ def extract_generic_recipe(url: str) -> Optional[Dict]:
                     return recipe
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
-        
+
         # Fallback : extraction basique
         return _fallback_extract_from_soup(soup, title)
-        
+
     except Exception as e:
         logger.error(f"Erreur lors de l'extraction générique: {e}")
         return None
@@ -964,29 +990,29 @@ def extract_with_jina(url: str) -> Optional[Dict]:
     """Extraction via Jina Reader (fallback générique)"""
     token = config('JINA_API_TOKEN', default=None)
     if not token:
-        logger.warning("[JinaExtractor] JINA_API_TOKEN manquant, fallback ignoré")
+        logger.warning('[JinaExtractor] JINA_API_TOKEN manquant, fallback ignoré')
         return None
 
     try:
-        jina_url = f"https://r.jina.ai/{url}"
-        logger.info("[JinaExtractor] Fetching via Jina: %s", jina_url)
+        jina_url = f'https://r.jina.ai/{url}'
+        logger.info('[JinaExtractor] Fetching via Jina: %s', jina_url)
         response = requests.get(
             jina_url,
             timeout=REQUEST_TIMEOUT,
             headers={
-                'Authorization': f"Bearer {token}",
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'Authorization': f'Bearer {token}',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             },
         )
         if response.status_code >= 400:
             logger.warning(
-                "[JinaExtractor] Non-2xx (status=%s) for url=%s (body_len=%s)",
+                '[JinaExtractor] Non-2xx (status=%s) for url=%s (body_len=%s)',
                 response.status_code,
                 url,
                 len(response.text or ''),
             )
         response.raise_for_status()
-        logger.info("[JinaExtractor] Success (status=%s) for url=%s", response.status_code, url)
+        logger.info('[JinaExtractor] Success (status=%s) for url=%s', response.status_code, url)
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -1018,35 +1044,35 @@ from ..utils import canonicalize_import_url
 def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
     """
     Importe une recette depuis une URL
-    
+
     Returns:
         Tuple[Optional[Dict], Optional[str]]: (données de la recette, type de source)
     """
     if not url or not url.startswith(('http://', 'https://')):
         return None, None
-    
+
     source_type = detect_source_type(url)
-    logger.info(f"Import de recette depuis {url} (source detectée: {source_type})")
-    
+    logger.info(f'Import de recette depuis {url} (source detectée: {source_type})')
+
     recipe_data = None
     used_source = None
-    
+
     if source_type == 'instagram':
-        logger.info("[RecipeImporter] Trying extractor=instagram")
+        logger.info('[RecipeImporter] Trying extractor=instagram')
         recipe_data = extract_instagram_recipe(url)
         used_source = 'instagram' if recipe_data else None
     elif source_type == 'bergamot':
-        logger.info("[RecipeImporter] Trying extractor=bergamot")
+        logger.info('[RecipeImporter] Trying extractor=bergamot')
         recipe_data = extract_bergamot_recipe(url)
         used_source = 'bergamot' if recipe_data else None
     else:
         # Tous les autres sites passent d'abord par recipe-scrapers
-        logger.info("[RecipeImporter] Trying extractor=recipe-scrapers")
+        logger.info('[RecipeImporter] Trying extractor=recipe-scrapers')
         recipe_data = extract_with_recipe_scrapers(url)
         # Si la lib renvoie un résultat mais sans ingrédients / instructions, on tente nos fallbacks
         if recipe_data and not (recipe_data.get('ingredients_text') and recipe_data.get('instructions_text')):
             logger.warning(
-                "[RecipeImporter] recipe-scrapers returned partial data (has_ingredients=%s, has_instructions=%s); falling back",
+                '[RecipeImporter] recipe-scrapers returned partial data (has_ingredients=%s, has_instructions=%s); falling back',
                 bool(recipe_data.get('ingredients_text')),
                 bool(recipe_data.get('instructions_text')),
             )
@@ -1055,37 +1081,36 @@ def import_recipe_from_url(url: str) -> Tuple[Optional[Dict], Optional[str]]:
 
         # Fallback legacy extractors (pour les domaines historiques)
         if not recipe_data and source_type == 'marmiton':
-            logger.info("[RecipeImporter] Fallback extractor=marmiton_legacy")
+            logger.info('[RecipeImporter] Fallback extractor=marmiton_legacy')
             recipe_data = extract_marmiton_recipe(url)
             used_source = 'marmiton' if recipe_data else None
         if not recipe_data and source_type == 'cuisineaz':
-            logger.info("[RecipeImporter] Fallback extractor=cuisineaz_legacy")
+            logger.info('[RecipeImporter] Fallback extractor=cuisineaz_legacy')
             recipe_data = extract_cuisineaz_recipe(url)
             used_source = 'cuisineaz' if recipe_data else None
         if not recipe_data and source_type == 'jow':
-            logger.info("[RecipeImporter] Fallback extractor=jow_legacy")
+            logger.info('[RecipeImporter] Fallback extractor=jow_legacy')
             recipe_data = extract_jow_recipe(url)
             used_source = 'jow' if recipe_data else None
-    
+
     # Fallback Jina (scraping générique)
     if not recipe_data:
-        logger.info("[RecipeImporter] Trying extractor=jina_fallback")
+        logger.info('[RecipeImporter] Trying extractor=jina_fallback')
         recipe_data = extract_with_jina(url)
         if recipe_data:
             used_source = 'jina'
-    
+
     # Fallback générique direct (HTML original)
     if not recipe_data:
-        logger.info("[RecipeImporter] Trying extractor=generic_html_fallback")
+        logger.info('[RecipeImporter] Trying extractor=generic_html_fallback')
         recipe_data = extract_generic_recipe(url)
         if recipe_data:
             used_source = used_source or 'generic'
-    
+
     if recipe_data:
         # Stocker la version canonique de l'URL pour faciliter la déduplication
         canonical_url = canonicalize_import_url(url)
         recipe_data['import_source_url'] = canonical_url
         return recipe_data, used_source or source_type or 'generic'
-    
-    return None, source_type
 
+    return None, source_type

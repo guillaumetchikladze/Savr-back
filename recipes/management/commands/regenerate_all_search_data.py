@@ -58,6 +58,4 @@ class Command(BaseCommand):
                 else:
                     failed += 1
 
-        self.stdout.write(
-            self.style.SUCCESS(f'Terminé: {ok} ok, {failed} échecs, {skipped} ignorées (déjà à jour)')
-        )
+        self.stdout.write(self.style.SUCCESS(f'Terminé: {ok} ok, {failed} échecs, {skipped} ignorées (déjà à jour)'))

@@ -1,6 +1,7 @@
 """
 URL configuration for savr_back project.
 """
+
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
@@ -10,7 +11,7 @@ from django.urls import path, include
 
 
 def health_view(request):
-    return JsonResponse({"status": "ok"})
+    return JsonResponse({'status': 'ok'})
 
 
 def legal_index_view(request):
@@ -40,7 +41,11 @@ urlpatterns = [
     path('legal/delete-account/', legal_delete_account_view, name='legal_delete_account'),
     path('privacy-policy/', lambda r: redirect('legal_privacy', permanent=True), name='privacy_policy_redirect'),
     path('admin/', admin.site.urls),
-    path('auth/password-reset/<str:uidb64>/<str:token>/', __import__('accounts.views').views.password_reset_confirm_view, name='password_reset_confirm'),
+    path(
+        'auth/password-reset/<str:uidb64>/<str:token>/',
+        __import__('accounts.views').views.password_reset_confirm_view,
+        name='password_reset_confirm',
+    ),
     path('api/health/', health_view),
     path('api/auth/', include('accounts.urls')),
     path('api/', include('recipes.urls')),
@@ -51,4 +56,3 @@ urlpatterns = [
 # En DEBUG local, WHITENOISE_USE_FINDERS + ce fallback couvrent l'admin sans collectstatic.
 if settings.DEBUG:
     urlpatterns += staticfiles_urlpatterns()
-

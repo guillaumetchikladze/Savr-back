@@ -28,13 +28,13 @@ def persistable_recipe_image_path(path: Any) -> str:
         return ''
     if value.startswith('http://') or value.startswith('https://'):
         logger.info(
-            "[FormalizationPipeline] Ignoring external image URL at create time (len=%d)",
+            '[FormalizationPipeline] Ignoring external image URL at create time (len=%d)',
             len(value),
         )
         return ''
     if len(value) > RECIPE_IMAGE_PATH_MAX_LENGTH:
         logger.warning(
-            "[FormalizationPipeline] Truncating image_path from %d to %d chars",
+            '[FormalizationPipeline] Truncating image_path from %d to %d chars',
             len(value),
             RECIPE_IMAGE_PATH_MAX_LENGTH,
         )
@@ -49,7 +49,7 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
     """
     inconsistencies = verify_quantity_consistency(formalized_recipe)
     if inconsistencies:
-        logger.warning(f"Incohérences de quantités détectées: {inconsistencies}")
+        logger.warning(f'Incohérences de quantités détectées: {inconsistencies}')
 
     with transaction.atomic():
         # Collecter tous les noms uniques
@@ -61,10 +61,7 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
             for step_ingredient in step.step_ingredients:
                 all_ingredient_names.add(step_ingredient.ingredient_name)
 
-        logger.info(
-            "[FormalizationPipeline] %d ingrédients uniques détectés",
-            len(all_ingredient_names)
-        )
+        logger.info('[FormalizationPipeline] %d ingrédients uniques détectés', len(all_ingredient_names))
 
         ingredient_map = {}
         created_count = 0
@@ -77,7 +74,7 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
             ingredient_map[ingredient_name] = ingredient
 
         logger.info(
-            "[FormalizationPipeline] %d ingrédients résolus (%d créés), catégories assurées",
+            '[FormalizationPipeline] %d ingrédients résolus (%d créés), catégories assurées',
             len(ingredient_map),
             created_count,
         )
@@ -108,15 +105,12 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
                 logger.warning(
                     "[FormalizationPipeline] Ingredient '%s' (id=%d) already added to recipe, skipping duplicate",
                     ingredient.name,
-                    ingredient.id
+                    ingredient.id,
                 )
                 continue
-            
+
             RecipeIngredient.objects.create(
-                recipe=recipe,
-                ingredient=ingredient,
-                quantity=recipe_ingredient.quantity,
-                unit=recipe_ingredient.unit
+                recipe=recipe, ingredient=ingredient, quantity=recipe_ingredient.quantity, unit=recipe_ingredient.unit
             )
             added_ingredients.add(ingredient.id)
 
@@ -128,7 +122,7 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
                 instruction=step_data.instruction,
                 tip=step_data.tip or '',
                 has_timer=step_data.has_timer,
-                timer_duration=step_data.timer_duration
+                timer_duration=step_data.timer_duration,
             )
 
             # Utiliser un set pour éviter les doublons d'ingrédients dans ce step
@@ -141,18 +135,17 @@ def create_recipe_from_formalized(formalized_recipe, data: Dict[str, Any], user)
                         "[FormalizationPipeline] Ingredient '%s' (id=%d) already added to step %d, skipping duplicate",
                         ingredient.name,
                         ingredient.id,
-                        step.order
+                        step.order,
                     )
                     continue
-                
+
                 StepIngredient.objects.create(
                     step=step,
                     ingredient=ingredient,
                     quantity=step_ingredient_data.quantity,
-                    unit=step_ingredient_data.unit
+                    unit=step_ingredient_data.unit,
                 )
                 step_added_ingredients.add(ingredient.id)
 
     schedule_recipe_search_reindex(recipe.id)
     return recipe
-

@@ -50,9 +50,7 @@ def get_meal_plans_for_user(
         .prefetch_related(
             Prefetch(
                 'meal_plan_recipe_batches',
-                queryset=MealPlanRecipeBatch.objects.select_related(
-                    'recipe_batch__recipe'
-                ).order_by('order'),
+                queryset=MealPlanRecipeBatch.objects.select_related('recipe_batch__recipe').order_by('order'),
             ),
             Prefetch(
                 'invitations',
@@ -130,9 +128,7 @@ def create_meal_plan_slot(
 
     meal_time = (meal_time or '').strip().lower()
     if meal_time not in _STANDARD_MEAL_TIMES and meal_time != 'other':
-        raise ValueError(
-            'meal_time invalide (breakfast, lunch, dinner ou other).'
-        )
+        raise ValueError('meal_time invalide (breakfast, lunch, dinner ou other).')
 
     custom_label_save = ''
     scheduled_save = None
@@ -190,13 +186,10 @@ def add_recipes_to_meal_plan(
         raise ValueError('recipe_ids doit être une liste non vide.')
 
     existing_recipe_ids = set(
-        MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).values_list(
-            'recipe_batch__recipe_id', flat=True
-        )
+        MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).values_list('recipe_batch__recipe_id', flat=True)
     )
     current_max_order = (
-        MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).aggregate(Max('order'))['order__max']
-        or 0
+        MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).aggregate(Max('order'))['order__max'] or 0
     )
     already_present = [rid for rid in recipe_ids if rid in existing_recipe_ids]
     to_add = [rid for rid in recipe_ids if rid not in existing_recipe_ids]
@@ -579,9 +572,7 @@ def complete_recipe_batch_workflow(user: AbstractBaseUser, batch: RecipeBatch) -
 
 def complete_meal_plan_batches_for_publish(user: AbstractBaseUser, meal_plan: MealPlan) -> None:
     """Finalise tous les batches d'un meal plan (publication du repas)."""
-    batch_ids = list(
-        meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)
-    )
+    batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
     batch_ids = [bid for bid in batch_ids if bid]
     if not batch_ids:
         return
@@ -603,17 +594,17 @@ def relink_composer_photos_to_meal_plan(
     """
     if not photo_ids:
         return 0
-    return PostPhoto.objects.filter(
-        id__in=photo_ids,
-        post__isnull=True,
-        is_draft=False,
-        uploaded_by=user,
-    ).filter(
-        Q(meal_plan__isnull=True)
-        | Q(meal_plan__user=user, meal_plan__confirmed=False)
-    ).exclude(
-        meal_plan_id=meal_plan.id
-    ).update(meal_plan_id=meal_plan.id)
+    return (
+        PostPhoto.objects.filter(
+            id__in=photo_ids,
+            post__isnull=True,
+            is_draft=False,
+            uploaded_by=user,
+        )
+        .filter(Q(meal_plan__isnull=True) | Q(meal_plan__user=user, meal_plan__confirmed=False))
+        .exclude(meal_plan_id=meal_plan.id)
+        .update(meal_plan_id=meal_plan.id)
+    )
 
 
 def update_composer_slot(
@@ -658,9 +649,7 @@ def update_composer_slot(
 
     update_fields = ['date', 'meal_time', 'slot_key', 'custom_label', 'updated_at']
     if update_scheduled_time:
-        meal_plan.scheduled_time = (
-            _parse_scheduled_time(scheduled_time) if scheduled_time else None
-        )
+        meal_plan.scheduled_time = _parse_scheduled_time(scheduled_time) if scheduled_time else None
         update_fields.append('scheduled_time')
     if guest_count is not None:
         meal_plan.guest_count = max(0, int(guest_count))

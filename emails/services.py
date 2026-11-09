@@ -16,21 +16,21 @@ class RenderedEmail:
 def render_email_from_queue(row: EmailQueue) -> RenderedEmail:
     content = row.content or {}
 
-    html = (content.get("html") or "").strip()
-    text = (content.get("text") or "").strip()
-    template_name = (content.get("template_name") or content.get("template") or "").strip()
-    context = content.get("context") or content.get("props") or {}
+    html = (content.get('html') or '').strip()
+    text = (content.get('text') or '').strip()
+    template_name = (content.get('template_name') or content.get('template') or '').strip()
+    context = content.get('context') or content.get('props') or {}
 
     if (html or text) and not template_name:
         return RenderedEmail(html=html, text=text)
 
     if not template_name:
-        raise ValueError("EmailQueue.content must include template_name or html/text.")
+        raise ValueError('EmailQueue.content must include template_name or html/text.')
 
     # Autoriser "emails/welcome" ou "emails/welcome.html"
-    base = template_name[:-5] if template_name.endswith(".html") else template_name
-    html_name = f"{base}.html"
-    txt_name = f"{base}.txt"
+    base = template_name[:-5] if template_name.endswith('.html') else template_name
+    html_name = f'{base}.html'
+    txt_name = f'{base}.txt'
 
     rendered_html = render_to_string(html_name, context)
     rendered_text = render_to_string(txt_name, context)
@@ -40,12 +40,12 @@ def render_email_from_queue(row: EmailQueue) -> RenderedEmail:
 def priority_to_celery_queue(priority: str) -> str:
     p = (priority or EmailPriority.NORMAL).upper()
     if p == EmailPriority.URGENT:
-        return "emails_urgent"
+        return 'emails_urgent'
     if p == EmailPriority.HIGH:
-        return "emails_high"
+        return 'emails_high'
     if p == EmailPriority.LOW:
-        return "emails_low"
-    return "emails_normal"
+        return 'emails_low'
+    return 'emails_normal'
 
 
 def enqueue_email(
@@ -78,4 +78,3 @@ def enqueue_email(
         queue=priority_to_celery_queue(priority),
     )
     return row
-

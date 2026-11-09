@@ -36,11 +36,7 @@ def get_co_cooked_users(post: Post):
         users.append(post.user)
     reposts = getattr(post, '_prefetched_objects_cache', {}).get('reposts')
     if reposts is None:
-        reposts = (
-            PostRepost.objects.filter(original_post=post)
-            .select_related('user')
-            .order_by('created_at')
-        )
+        reposts = PostRepost.objects.filter(original_post=post).select_related('user').order_by('created_at')
     for repost in reposts:
         repost_user = repost.user
         if repost_user.id not in seen:

@@ -1,4 +1,5 @@
 """Tests d'intégration API pour shopping-list-items/with_quantities (masquage 24h des quantités)."""
+
 import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import patch

@@ -26,24 +26,20 @@ def send_queued_email(self, email_id: int) -> str:
     - re-queue avec backoff si retries < max_retries
     """
     with transaction.atomic():
-        row = (
-            EmailQueue.objects.select_for_update()
-            .filter(pk=email_id)
-            .first()
-        )
+        row = EmailQueue.objects.select_for_update().filter(pk=email_id).first()
         if not row:
-            return "missing"
+            return 'missing'
         if row.status not in (EmailStatus.PENDING, EmailStatus.FAILED):
-            return f"skip:{row.status}"
+            return f'skip:{row.status}'
         if row.retries >= row.max_retries:
             row.status = EmailStatus.FAILED
-            row.error = row.error or "Max retries reached."
-            row.save(update_fields=["status", "error", "updated_at"])
-            return "max_retries"
+            row.error = row.error or 'Max retries reached.'
+            row.save(update_fields=['status', 'error', 'updated_at'])
+            return 'max_retries'
 
         row.status = EmailStatus.PROCESSING
         row.error = None
-        row.save(update_fields=["status", "error", "updated_at"])
+        row.save(update_fields=['status', 'error', 'updated_at'])
 
     try:
         rendered = render_email_from_queue(row)
@@ -61,7 +57,7 @@ def send_queued_email(self, email_id: int) -> str:
             row.retries = row.retries + 1
             row.status = EmailStatus.FAILED
             row.error = err[:4000]
-            row.save(update_fields=["retries", "status", "error", "updated_at"])
+            row.save(update_fields=['retries', 'status', 'error', 'updated_at'])
 
             should_retry = row.retries < row.max_retries and isinstance(e, GraphEmailError)
 
@@ -72,14 +68,13 @@ def send_queued_email(self, email_id: int) -> str:
                 countdown=countdown,
                 queue=priority_to_celery_queue(row.priority),
             )
-            return f"retry_in:{countdown}"
-        return "failed"
+            return f'retry_in:{countdown}'
+        return 'failed'
 
     with transaction.atomic():
         row = EmailQueue.objects.select_for_update().get(pk=email_id)
         row.status = EmailStatus.SENT
         row.sent_at = timezone.now()
         row.error = None
-        row.save(update_fields=["status", "sent_at", "error", "updated_at"])
-    return "sent"
-
+        row.save(update_fields=['status', 'sent_at', 'error', 'updated_at'])
+    return 'sent'

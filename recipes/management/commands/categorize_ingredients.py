@@ -8,6 +8,7 @@ Usage prod (recommandé) :
 Par défaut : uniquement category NULL ou feuille « Autres ».
 Avec --force : re-trie tous les ingrédients (écrase les rayons déjà posés).
 """
+
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
@@ -20,8 +21,8 @@ from recipes.supermarket_categories import match_leaf_slug_from_name
 
 class Command(BaseCommand):
     help = (
-        "Assigne les catégories magasin aux ingrédients (mots-clés → Autres). "
-        "Par défaut : NULL + Autres uniquement. Utiliser --force pour tout re-trier."
+        'Assigne les catégories magasin aux ingrédients (mots-clés → Autres). '
+        'Par défaut : NULL + Autres uniquement. Utiliser --force pour tout re-trier.'
     )
 
     def add_arguments(self, parser):
@@ -54,16 +55,12 @@ class Command(BaseCommand):
         limit = options['limit'] or 0
         batch_size = max(1, options['batch_size'] or 500)
 
-        leaf_by_slug = {
-            c.slug: c
-            for c in Category.objects.exclude(slug__isnull=True).exclude(slug='')
-        }
+        leaf_by_slug = {c.slug: c for c in Category.objects.exclude(slug__isnull=True).exclude(slug='')}
         autres = leaf_by_slug.get('autres')
         if autres is None:
             self.stderr.write(
                 self.style.ERROR(
-                    'Catégorie « autres » introuvable. '
-                    'Lancer d’abord : python manage.py migrate_supermarket_categories'
+                    'Catégorie « autres » introuvable. Lancer d’abord : python manage.py migrate_supermarket_categories'
                 )
             )
             return
@@ -141,7 +138,6 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f'Terminé : mis à jour={updated}, inchangés={unchanged}, '
-                f'match mots-clés={matched}, fallback Autres={to_autres}'
-                + (' [dry-run]' if dry else '')
+                f'match mots-clés={matched}, fallback Autres={to_autres}' + (' [dry-run]' if dry else '')
             )
         )

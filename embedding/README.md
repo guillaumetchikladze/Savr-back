@@ -183,31 +183,23 @@ curl -X POST http://localhost:8001/embed/batch \
 ```python
 import requests
 
-API_URL = "http://localhost:8001"
-API_KEY = "votre-secret-depuis-.env"
+API_URL = 'http://localhost:8001'
+API_KEY = 'votre-secret-depuis-.env'
 
 # Générer un embedding
 response = requests.post(
-    f"{API_URL}/embed",
-    headers={"X-API-Key": API_KEY},
-    json={
-        "text": "Hello, world!",
-        "normalize": True
-    }
+    f'{API_URL}/embed', headers={'X-API-Key': API_KEY}, json={'text': 'Hello, world!', 'normalize': True}
 )
-embedding = response.json()["embedding"]
-print(f"Dimension: {len(embedding)}")
+embedding = response.json()['embedding']
+print(f'Dimension: {len(embedding)}')
 
 # Générer plusieurs embeddings
 response = requests.post(
-    f"{API_URL}/embed/batch",
-    headers={"X-API-Key": API_KEY},
-    json={
-        "texts": ["Texte 1", "Texte 2", "Texte 3"],
-        "normalize": True
-    }
+    f'{API_URL}/embed/batch',
+    headers={'X-API-Key': API_KEY},
+    json={'texts': ['Texte 1', 'Texte 2', 'Texte 3'], 'normalize': True},
 )
-embeddings = response.json()["embeddings"]
+embeddings = response.json()['embeddings']
 print(f"Nombre d'embeddings: {len(embeddings)}")
 ```
 

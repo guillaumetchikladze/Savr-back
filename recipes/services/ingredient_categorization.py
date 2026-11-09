@@ -1,4 +1,5 @@
 """Classification d'ingrédient : mots-clés → Autres (pas d'appel LLM ici)."""
+
 from __future__ import annotations
 
 from typing import Optional

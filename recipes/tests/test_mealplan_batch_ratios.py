@@ -7,6 +7,7 @@ Couverture :
 - Breakdown / helpers de portions
 - Cas multi–meal-plans avec portions différentes
 """
+
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
@@ -63,9 +64,7 @@ class MealPlanBatchPortionsTestCase(APITestCase):
             'date': str(self.test_date),
             'meal_time': 'dinner',
             'meal_type': 'recipe',
-            'entries': [
-                {'recipe_id': self.recipe_1.id, 'batch_id': None, 'order': 0}
-            ],
+            'entries': [{'recipe_id': self.recipe_1.id, 'batch_id': None, 'order': 0}],
         }
 
         response = self.client.post(url, data, format='json')
@@ -111,9 +110,7 @@ class MealPlanBatchPortionsTestCase(APITestCase):
             'date': str(self.test_date),
             'meal_time': 'dinner',
             'meal_type': 'recipe',
-            'entries': [
-                {'recipe_id': self.recipe_1.id, 'batch_id': None, 'portions': 5, 'order': 0}
-            ],
+            'entries': [{'recipe_id': self.recipe_1.id, 'batch_id': None, 'portions': 5, 'order': 0}],
         }
 
         response = self.client.put(url, data, format='json')

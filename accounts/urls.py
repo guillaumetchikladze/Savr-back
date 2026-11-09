@@ -23,7 +23,9 @@ urlpatterns = [
     path('users/<int:user_id>/follow/', views.follow_user_view, name='follow_user'),
     path('users/<int:user_id>/block/', views.block_user_view, name='block_user'),
     path('users/<int:user_id>/follow-request/accept/', views.accept_follow_request_view, name='accept_follow_request'),
-    path('users/<int:user_id>/follow-request/decline/', views.decline_follow_request_view, name='decline_follow_request'),
+    path(
+        'users/<int:user_id>/follow-request/decline/', views.decline_follow_request_view, name='decline_follow_request'
+    ),
     path('users/<int:user_id>/followers/', views.user_followers_view, name='user_followers'),
     path('users/<int:user_id>/following/', views.user_following_view, name='user_following'),
     path('notifications/', views.notifications_view, name='notifications'),
@@ -42,4 +44,3 @@ urlpatterns = [
     path('loyalty-cards/<int:card_id>/barcode/', views.loyalty_card_barcode_view, name='loyalty_card_barcode'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
-

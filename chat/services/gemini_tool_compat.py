@@ -12,15 +12,17 @@ logger = logging.getLogger(__name__)
 
 _INSTALLED = False
 
-_GEMINI_UNSUPPORTED_CREATE_PARAMS = frozenset({
-    'reasoning_effort',
-    'verbosity',
-    'top_logprobs',
-    'prompt_cache_retention',
-    'store',
-    'stream_options',
-    'metadata',
-})
+_GEMINI_UNSUPPORTED_CREATE_PARAMS = frozenset(
+    {
+        'reasoning_effort',
+        'verbosity',
+        'top_logprobs',
+        'prompt_cache_retention',
+        'store',
+        'stream_options',
+        'metadata',
+    }
+)
 
 
 def _extract_first_json_object(raw: str) -> str | None:
@@ -49,7 +51,7 @@ def _extract_first_json_object(raw: str) -> str | None:
         elif ch == '}':
             depth -= 1
             if depth == 0 and start is not None:
-                candidate = raw[start:i + 1]
+                candidate = raw[start : i + 1]
                 try:
                     json.loads(candidate)
                     return candidate

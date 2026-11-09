@@ -16,17 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 def _recipe_base_queryset(user: AbstractBaseUser):
-    return Recipe.objects.filter(
-        Q(is_public=True) | Q(created_by=user)
-    ).defer(
-        'description',
-        'created_at',
-        'updated_at',
-        'created_by_id',
-        'search_index_text',
-        'search_context_tags',
-        'search_index_hash',
-    ).order_by('-created_at')
+    return (
+        Recipe.objects.filter(Q(is_public=True) | Q(created_by=user))
+        .defer(
+            'description',
+            'created_at',
+            'updated_at',
+            'created_by_id',
+            'search_index_text',
+            'search_context_tags',
+            'search_index_hash',
+        )
+        .order_by('-created_at')
+    )
 
 
 def _penalty(reasons):
@@ -59,7 +61,7 @@ def search_recipes_for_user(
 
     base_qs = _recipe_base_queryset(user)
     queryset = hybrid_recipe_queryset(base_qs, query, vector)
-    items = list(queryset[:limit * 2])
+    items = list(queryset[: limit * 2])
 
     try:
         ids = [r.id for r in items if getattr(r, 'id', None) is not None]

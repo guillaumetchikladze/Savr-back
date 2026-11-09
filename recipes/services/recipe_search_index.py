@@ -40,10 +40,7 @@ def format_recipe_search_text(recipe, ctx: RecipeSearchContext | None = None) ->
     if recipe.steps_summary:
         parts.append(recipe.steps_summary.strip())
 
-    ingredient_names = [
-        ri.ingredient.name
-        for ri in recipe.recipe_ingredients.all()
-    ]
+    ingredient_names = [ri.ingredient.name for ri in recipe.recipe_ingredients.all()]
     if ingredient_names:
         parts.append('Ingrédients: ' + ', '.join(ingredient_names))
 
@@ -64,12 +61,7 @@ def compute_content_hash(recipe, ctx: RecipeSearchContext | None) -> str:
             recipe.difficulty or '',
             str(recipe.prep_time),
             str(recipe.cook_time),
-            ','.join(
-                sorted(
-                    ri.ingredient.name
-                    for ri in recipe.recipe_ingredients.all()
-                )
-            ),
+            ','.join(sorted(ri.ingredient.name for ri in recipe.recipe_ingredients.all())),
             str(_tag_lists(ctx)),
         ]
     )
@@ -100,11 +92,7 @@ def schedule_recipe_search_reindex(recipe_id: int, *, force: bool = False) -> No
 
 def index_recipe(recipe_id: int, *, force: bool = False) -> bool:
     """Indexe une recette (Gemini + embedding). Ne vide jamais l'embedding existant avant succès."""
-    recipe = (
-        Recipe.objects.filter(pk=recipe_id)
-        .prefetch_related('recipe_ingredients__ingredient')
-        .first()
-    )
+    recipe = Recipe.objects.filter(pk=recipe_id).prefetch_related('recipe_ingredients__ingredient').first()
     if not recipe:
         logger.warning('[RecipeSearchIndex] recipe %s introuvable', recipe_id)
         return False
@@ -112,7 +100,11 @@ def index_recipe(recipe_id: int, *, force: bool = False) -> bool:
     ctx = generate_recipe_search_context(recipe)
     content_hash = compute_content_hash(recipe, ctx)
 
-    if not force and recipe.search_index_hash == content_hash and recipe.search_index_status == Recipe.SearchIndexStatus.READY:
+    if (
+        not force
+        and recipe.search_index_hash == content_hash
+        and recipe.search_index_status == Recipe.SearchIndexStatus.READY
+    ):
         logger.info('[RecipeSearchIndex] recipe %s déjà à jour (hash=%s)', recipe_id, content_hash[:12])
         return True
 

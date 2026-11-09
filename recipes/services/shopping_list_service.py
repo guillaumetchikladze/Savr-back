@@ -62,18 +62,13 @@ def _canonicalize_quantity(quantity: float, unit: str) -> tuple[float, str]:
 def _normalize_unit(unit: str) -> str:
     normalized = (unit or 'piece').lower()
     if normalized not in _VALID_UNITS:
-        raise ValueError(
-            f"Unité invalide « {unit} ». Unités valides : {', '.join(sorted(_VALID_UNITS))}."
-        )
+        raise ValueError(f'Unité invalide « {unit} ». Unités valides : {", ".join(sorted(_VALID_UNITS))}.')
     return normalized
 
 
 def _summarize_item(item: ShoppingListItem, *, now, include_purchased: bool) -> ShoppingListItemSummary | None:
     quantities = list(item.quantities.all())
-    active_quantities = [
-        q for q in quantities
-        if not shopping_list_item_quantity_is_stale(q, now, _HIDE_AFTER)
-    ]
+    active_quantities = [q for q in quantities if not shopping_list_item_quantity_is_stale(q, now, _HIDE_AFTER)]
     if not active_quantities:
         return None
 

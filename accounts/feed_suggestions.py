@@ -3,6 +3,7 @@ Suggestions de profils pour le feed : complices en commun + comptes récents + p
 Les comptes qui vous suivent sans que vous les suiviez en retour sont éligibles et listés en premier.
 Reste borné en coût (pool limité, requêtes Follow en masse).
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -33,12 +34,8 @@ def _recency_score(created_at, now) -> float:
 
 
 def _viewer_network_ids(viewer_id: int) -> set[int]:
-    following = set(
-        Follow.objects.filter(follower_id=viewer_id).values_list('following_id', flat=True)
-    )
-    followers = set(
-        Follow.objects.filter(following_id=viewer_id).values_list('follower_id', flat=True)
-    )
+    following = set(Follow.objects.filter(follower_id=viewer_id).values_list('following_id', flat=True))
+    followers = set(Follow.objects.filter(following_id=viewer_id).values_list('follower_id', flat=True))
     return following | followers
 
 
@@ -68,16 +65,16 @@ def _mutual_sets(network: set[int], pool_ids: list[int]) -> dict[int, set[int]]:
         return mutual
 
     pool_set = set(pool_ids)
-    for row in Follow.objects.filter(
-        follower_id__in=network, following_id__in=pool_set
-    ).values_list('follower_id', 'following_id'):
+    for row in Follow.objects.filter(follower_id__in=network, following_id__in=pool_set).values_list(
+        'follower_id', 'following_id'
+    ):
         u, c = row
         if u != c:
             mutual[c].add(u)
 
-    for row in Follow.objects.filter(
-        follower_id__in=pool_set, following_id__in=network
-    ).values_list('follower_id', 'following_id'):
+    for row in Follow.objects.filter(follower_id__in=pool_set, following_id__in=network).values_list(
+        'follower_id', 'following_id'
+    ):
         c, u = row
         if u != c:
             mutual[c].add(u)

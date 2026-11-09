@@ -29,10 +29,12 @@ STREAM_PHASE_TOOL = 'tool'
 STREAM_PHASE_MUTATION = 'mutation'
 STREAM_PHASE_COMPLETE = 'complete'
 
-RECIPE_JOB_TOOL_NAMES = frozenset({
-    'import_recipe_from_url',
-    'generate_recipe_from_idea',
-})
+RECIPE_JOB_TOOL_NAMES = frozenset(
+    {
+        'import_recipe_from_url',
+        'generate_recipe_from_idea',
+    }
+)
 
 
 @dataclass
@@ -147,7 +149,7 @@ class BlockStreamAdapter:
                                     if leaked_args_text:
                                         full = ''.join(self._text_buffer)
                                         if full.endswith(leaked_args_text):
-                                            trimmed = full[:-len(leaked_args_text)]
+                                            trimmed = full[: -len(leaked_args_text)]
                                             self._text_buffer = [trimmed] if trimmed else []
                                 else:
                                     self._flush_pending_text_block()
@@ -155,15 +157,16 @@ class BlockStreamAdapter:
                             self.stream_phase = STREAM_PHASE_TOOL
                             self._pending_text = []
                             current_tool = getattr(item, 'name', '') or getattr(item, 'tool_name', '')
-                            current_tool_request = (
-                                extract_tool_args_from_item(item)
-                                or parse_tool_args_json(leaked_args_text)
+                            current_tool_request = extract_tool_args_from_item(item) or parse_tool_args_json(
+                                leaked_args_text
                             )
-                            await emit(self._evt(
-                                'tool_running',
-                                tool_name=current_tool,
-                                request=current_tool_request,
-                            ))
+                            await emit(
+                                self._evt(
+                                    'tool_running',
+                                    tool_name=current_tool,
+                                    request=current_tool_request,
+                                )
+                            )
 
                         elif item_type == 'tool_call_output_item':
                             output = getattr(item, 'output', None)
@@ -182,25 +185,29 @@ class BlockStreamAdapter:
                                 self._mutation = output
                                 self._mutation_tool = current_tool
                                 self.stream_phase = STREAM_PHASE_MUTATION
-                                await emit(self._evt(
-                                    'tool_done',
-                                    tool_name=current_tool,
-                                    summary=summary,
-                                    request=current_tool_request,
-                                    result=result_data,
-                                ))
+                                await emit(
+                                    self._evt(
+                                        'tool_done',
+                                        tool_name=current_tool,
+                                        summary=summary,
+                                        request=current_tool_request,
+                                        result=result_data,
+                                    )
+                                )
                                 break
 
                             if current_tool in RECIPE_JOB_TOOL_NAMES and isinstance(output, ImportJobStarted):
                                 self._import_job = output
 
-                            await emit(self._evt(
-                                'tool_done',
-                                tool_name=current_tool,
-                                summary=summary,
-                                request=current_tool_request,
-                                result=result_data,
-                            ))
+                            await emit(
+                                self._evt(
+                                    'tool_done',
+                                    tool_name=current_tool,
+                                    summary=summary,
+                                    request=current_tool_request,
+                                    result=result_data,
+                                )
+                            )
                             self.stream_phase = STREAM_PHASE_TEXT
                             self.block_index += 1
                             self._pending_text = []
@@ -258,7 +265,7 @@ def _summarize_tool_output(output) -> str:
     if hasattr(output, 'model_dump'):
         data = output.model_dump()
         if 'count' in data:
-            return f"{data['count']} résultat(s)"
+            return f'{data["count"]} résultat(s)'
         if 'message' in data:
             return str(data['message'])
         if 'title' in data:
@@ -267,7 +274,7 @@ def _summarize_tool_output(output) -> str:
             details = data.get('details') or {}
             names = details.get('invitee_usernames') or []
             if names:
-                return f"Inviter {', '.join(names)}"
+                return f'Inviter {", ".join(names)}'
             if data.get('subtitle'):
                 return str(data['subtitle'])
     return str(output)[:200]
