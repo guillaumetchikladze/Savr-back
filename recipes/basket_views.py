@@ -26,7 +26,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from accounts.permissions import IsValidated as IsAuthenticated
+from accounts.permissions import IsValidated
 
 from .models import BasketItem
 from .serializers import ShoppingListSerializer, UserLightSerializer
@@ -122,7 +122,7 @@ def _items_payload(items, request, week_now, context: dict | None = None) -> lis
 class BasketViewSet(viewsets.ViewSet):
     """Panier « Cette semaine » : envies sans date, datables, cuisinables, reportables."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsValidated]  # compte validé (liste d'attente exclue)
 
     def _week_payload(self, request, week):
         user = request.user
