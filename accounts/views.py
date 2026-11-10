@@ -22,7 +22,7 @@ from core.client_ip import get_client_ip
 from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
 from recipes.serializers import RecipeSerializer
 from savr_back.settings import build_s3_client, build_s3_url
-from tables.services import cancel_invitations_between
+from tables.services import cancel_invitations_between, shared_tables
 
 from .blocks import are_blocked_either_way, blocked_user_ids_for, exclude_blocked_from_user_qs
 from .feed_suggestions import build_feed_user_suggestions
@@ -247,7 +247,11 @@ def confirm_avatar_upload_view(request):
 @api_view(['GET'])
 @permission_classes([IsValidated])
 def user_detail_view(request, user_id):
-    """Récupérer les informations d'un utilisateur spécifique avec les statuts de suivi"""
+    """
+    Un profil avec les statuts de suivi, + `cooked_count` (tout ce que la personne a cuisiné, même nombre que
+    son propre carnet) et `shared_tables` ([{id, name, emoji, color}] : tablées où le lecteur et elle sont
+    membres acceptés ; [] pour soi).
+    """
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
@@ -259,8 +263,14 @@ def user_detail_view(request, user_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    serializer = UserSerializer(target_user, context={'request': request})
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    from recipes.services.carnet_service import cooked_total
+
+    data = dict(UserSerializer(target_user, context={'request': request}).data)
+    # Profil unifié (prf3) : « plats » = tout ce qu'il ou elle a cuisiné (un nombre, pas le contenu) ;
+    # tablées en commun = seulement celles dont le lecteur est membre.
+    data['cooked_count'] = cooked_total(target_user)
+    data['shared_tables'] = shared_tables(request.user, target_user)
+    return Response(data, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

@@ -243,6 +243,10 @@ Aucun modèle ni migration.
   posts « rien que pour moi », batches ni convives ; les reposts (co-cuisinés) ne sont pas ses plats.
 - Curseur = (date, `created_at`, type, id) sur une `UNION ALL` des sources ; 2 requêtes de clés + chargement en lot
   par type : nombre de requêtes constant (test). Tests : `recipes/tests/test_posts_carnet_api.py`.
+- Profil unifié (prf3) : `GET /api/auth/users/<id>/` ajoute `cooked_count` (`carnet_service.cooked_total` = le
+  `count` de son propre carnet, privé compris : **un nombre seulement**, visible de tous sauf blocage) et
+  `shared_tables` (`tables.services.shared_tables` : `[{id, name, emoji, color}]`, tablées où lecteur et profil
+  sont membres acceptés ; `[]` pour soi). Tests : `accounts/tests/test_auth_profile_summary_api.py`.
 
 ## Foyer + invités (`accounts/services/household_service.py`, `recipes/services/diners_service.py`)
 

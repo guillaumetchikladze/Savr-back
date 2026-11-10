@@ -92,6 +92,25 @@ def accepted_tables_count(user) -> int:
     return TableMember.objects.filter(user=user, status=ACCEPTED).count()
 
 
+def shared_tables(viewer, other) -> list[dict]:
+    """
+    Tablées où le lecteur **et** `other` sont membres acceptés (profil d'un ami : « Vos tablées »).
+    Seulement celles dont le lecteur fait partie : jamais les autres tablées de `other`, ni ses invitations,
+    ni les membres. Vide pour soi-même ou en cas de blocage. Une requête.
+    """
+    if viewer is None or other is None or viewer.id == other.id:
+        return []
+    if are_blocked_either_way(viewer, other):
+        return []
+    mine = TableMember.objects.filter(user=viewer, status=ACCEPTED).values('table_id')
+    tables = (
+        Table.objects.filter(id__in=mine, memberships__user=other, memberships__status=ACCEPTED)
+        .order_by('created_at', 'id')
+        .distinct()
+    )
+    return [{'id': t.id, 'name': t.name, 'emoji': t.emoji, 'color': t.color} for t in tables]
+
+
 def are_friends(a_id: int, b_id: int) -> bool:
     """Ami·e = suivi approuvé dans un sens ou l'autre (le blocage est vérifié à part)."""
     return Follow.objects.filter(

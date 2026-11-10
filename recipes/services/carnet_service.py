@@ -370,6 +370,15 @@ def carnet_count(viewer, owner_id: int) -> int:
     return _union(_sources(owner_id, viewer)).count()
 
 
+def cooked_total(owner) -> int:
+    """
+    Tout ce que `owner` a cuisiné (compteur « plats » de son profil, vu par n'importe qui) : le même nombre
+    que son propre carnet, plats privés et repas sans post compris. Un nombre seulement : le contenu
+    reste soumis à la visibilité (`build_carnet_page`).
+    """
+    return carnet_count(owner, owner.id)
+
+
 def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: int = DEFAULT_PAGE_SIZE) -> dict:
     """`{count, next_cursor, results}` ; `InvalidCursor` si le curseur est illisible."""
     page_size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
