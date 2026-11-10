@@ -8,10 +8,18 @@ from rest_framework_simplejwt.tokens import AccessToken
 User = get_user_model()
 
 
+def get_active_user(pk):
+    """Utilisateur actif pour cet id, sinon None (compte désactivé = jeton inutilisable)."""
+    try:
+        return User.objects.get(pk=pk, is_active=True)
+    except User.DoesNotExist:
+        return None
+
+
 async def get_user_from_token(token: str):
     """
     Decode a JWT access token and return the associated user instance.
-    Returns None if the token is invalid or the user does not exist.
+    Returns None if the token is invalid or the user does not exist / is inactive.
     """
     try:
         access = AccessToken(token)
@@ -19,14 +27,7 @@ async def get_user_from_token(token: str):
         if not user_id:
             return None
 
-        @sync_to_async
-        def _get_user(pk):
-            try:
-                return User.objects.get(pk=pk)
-            except User.DoesNotExist:
-                return None
-
-        user = await _get_user(user_id)
+        user = await sync_to_async(get_active_user)(user_id)
         close_old_connections()
         return user
     except Exception:
