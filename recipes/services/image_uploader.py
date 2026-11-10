@@ -9,6 +9,8 @@ from io import BytesIO
 import requests
 from django.conf import settings
 
+from core.url_safety import safe_get
+
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 30
@@ -32,7 +34,7 @@ def download_and_upload_image(image_url: str, user_id: int, recipe_id: int | Non
     try:
         # Télécharger l'image depuis l'URL externe
         logger.info('[ImageUploader] Downloading image from: %s', image_url)
-        response = requests.get(
+        response = safe_get(
             image_url,
             timeout=REQUEST_TIMEOUT,
             stream=True,

@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from decouple import config
 from recipe_scrapers import SCRAPERS, scrape_html
 
+from core.url_safety import safe_get
+
 logger = logging.getLogger(__name__)
 
 # Timeout pour les requêtes HTTP
@@ -97,7 +99,7 @@ def extract_with_recipe_scrapers(url: str) -> dict | None:
     )
 
     try:
-        response = requests.get(
+        response = safe_get(
             url,
             timeout=REQUEST_TIMEOUT,
             headers={
@@ -616,7 +618,7 @@ def extract_bergamot_recipe(url: str) -> dict | None:
 def extract_marmiton_recipe(url: str) -> dict | None:
     """Extrait une recette depuis Marmiton"""
     try:
-        response = requests.get(
+        response = safe_get(
             url,
             timeout=REQUEST_TIMEOUT,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
@@ -759,7 +761,7 @@ def extract_marmiton_recipe(url: str) -> dict | None:
 def extract_cuisineaz_recipe(url: str) -> dict | None:
     """Extrait une recette depuis CuisineAZ (JSON-LD prioritaire)"""
     try:
-        response = requests.get(
+        response = safe_get(
             url,
             timeout=REQUEST_TIMEOUT,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
@@ -843,7 +845,7 @@ def extract_cuisineaz_recipe(url: str) -> dict | None:
 def extract_jow_recipe(url: str) -> dict | None:
     """Extrait une recette depuis Jow.fr (JSON-LD prioritaire, fallback HTML ciblé)"""
     try:
-        response = requests.get(
+        response = safe_get(
             url,
             timeout=REQUEST_TIMEOUT,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
@@ -955,7 +957,7 @@ def extract_jow_recipe(url: str) -> dict | None:
 def extract_generic_recipe(url: str) -> dict | None:
     """Extraction générique pour les sites non supportés spécifiquement"""
     try:
-        response = requests.get(
+        response = safe_get(
             url,
             timeout=REQUEST_TIMEOUT,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
