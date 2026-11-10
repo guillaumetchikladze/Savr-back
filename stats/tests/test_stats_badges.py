@@ -88,7 +88,8 @@ def test_badges_me_lists_earned_and_progress(api, user, make_recipe, make_meal_p
 
     assert resp.status_code == 200
     assert [b['code'] for b in resp.data['earned'] if b['code'] in HISTORIC] == ['first_cooked']  # rattrapé
-    assert resp.data['total_count'] == len(enabled_badges())  # météo masquée sans WEATHER_BADGES_ENABLED
+    introuvables_count = sum(1 for b in enabled_badges() if b.mystery == 'introuvable')
+    assert resp.data['total_count'] == len(enabled_badges()) - introuvables_count  # météo et introuvables masqués
     nxt = {b['code']: b['progress'] for b in resp.data['next']}
     assert nxt['cuisines_5'] == {'current': 1, 'target': 5, 'ratio': 0.2}
 

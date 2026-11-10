@@ -52,7 +52,11 @@ def test_registry_is_big_unique_and_well_written():
     codes = [b.code for b in BADGES]
     assert len(codes) == len(set(codes)) and len(QUIRKY_BADGES) >= 50
     secrets = [b for b in QUIRKY_BADGES if b.secret]
-    assert len(secrets) >= 10 and all(b.hint for b in secrets)
+    assert len(secrets) >= 15
+    enigmes = [b for b in secrets if b.mystery == 'enigme']
+    assert all(b.hint for b in enigmes)
+    introuvables = [b for b in secrets if b.mystery == 'introuvable']
+    assert len(introuvables) == 6
     for b in QUIRKY_BADGES:
         assert b.family and b.phrase and b.rarity_guess in badge_rarity.TIERS
         for text in (b.title, b.description, b.phrase, b.hint):
@@ -357,3 +361,73 @@ def test_v3_new_badges_evaluation(user, cook, make_recipe):
     assert 'grand_retour' in new
     assert 'herboriste' in new
     assert 'pyramide' in new
+
+
+def test_v3_lot2_badges_and_introuvables_mechanics(user, make_user, cook, make_recipe, make_meal_plan):
+    from django.utils import timezone
+
+    from recipes.models import MealInvitation, Post, PostComment, PostPhoto, Timer
+    from stats.services.badges import BADGES_BY_CODE, badges_overview, share_text
+    from tables.models import Table, TableMember
+
+    # 1. Pique-assiette (5 invitations acceptées)
+    host = make_user('host')
+    for i in range(5):
+        m = make_meal_plan(host, day=date(2025, 8, i + 1), confirmed=True)
+        MealInvitation.objects.create(inviter=host, invitee=user, meal_plan=m, status='accepted')
+
+    # 2. Débat culinaire (10 commentaires)
+    post_meal = cook(date(2025, 9, 1), 'Chili con carne', ['haricots rouges'])
+    post = Post.objects.create(user=user, meal_plan=post_meal, label='Mon super chili')
+    commenter = make_user('commenter')
+    for i in range(10):
+        PostComment.objects.create(post=post, user=commenter, text=f'Super {i}')
+
+    # 3. Making-of (photo pendant la cuisine + au repas)
+    PostPhoto.objects.create(post=post, photo_type='during_cooking')
+    PostPhoto.objects.create(post=post, photo_type='at_meal_time')
+
+    # 4. Chef d'orchestre (3 minuteurs simultanés)
+    now = timezone.now()
+    timer_recipe = make_recipe(user, 'Chili rapide', ingredients=['haricots'])
+    step = timer_recipe.steps.create(order=1, instruction='Cuire')
+    for _i in range(3):
+        Timer.objects.create(
+            user=user,
+            step=step,
+            duration_minutes=15,
+            remaining_seconds=900,
+            expires_at=now + timezone.timedelta(minutes=15),
+        )
+
+    # 5. Télépathie (même recette le même jour qu'un membre de tablée)
+    member = make_user('tablemate')
+    table = Table.objects.create(name='Les gourmets', created_by=user)
+    TableMember.objects.create(table=table, user=user, status=TableMember.STATUS_ACCEPTED)
+    TableMember.objects.create(table=table, user=member, status=TableMember.STATUS_ACCEPTED)
+
+    alice_meal = cook(date(2025, 9, 10), 'Risotto', ['riz'])
+    alice_recipe = alice_meal.meal_plan_recipe_batches.first().recipe_batch.recipe
+    make_meal_plan(member, day=date(2025, 9, 10), recipes=[alice_recipe], confirmed=True)
+
+    new = {b['code']: b for b in evaluate_badges(user, notify=False)}
+    assert 'pique_assiette' in new
+    assert 'debat_culinaire' in new
+    assert 'making_of' in new
+    assert 'chef_orchestre' in new
+    assert 'telepathie' in new
+    assert new['telepathie']['celebration'] == 'introuvable'
+
+    # Vérification partage introuvable : ne divulgue pas la condition
+    tele_share = share_text(BADGES_BY_CODE['telepathie'], 'https://tchikook.fr/i/abc')
+    assert 'J’ai trouvé un badge introuvable sur Tchikook' in tele_share
+    assert 'Sauras-tu comment' in tele_share
+    assert 'même plat cuisiné' not in tele_share
+
+    # Vérification masquage avant déblocage dans badges_overview
+    other_user = make_user('other_user')
+    overview = badges_overview(other_user, next_limit=None)
+    next_codes = [b['code'] for b in overview['next']]
+    # Aucun introuvable dans next avant déblocage (0 mention)
+    for code in ('telepathie', 'bouche_a_oreille', 'poisson_avril', 'bissextile', 'tchikiversaire', 'midi_pile'):
+        assert code not in next_codes

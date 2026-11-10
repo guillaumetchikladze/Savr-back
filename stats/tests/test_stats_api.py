@@ -125,7 +125,8 @@ def test_badges_me_all_returns_every_locked_badge(api, user):
     client = api.as_user(user)
     assert len(client.get('/api/badges/me/').data['next']) == 5
     locked = client.get('/api/badges/me/', {'all': '1'}).data['next']
-    assert len(locked) == len(enabled_badges())  # secrets compris (« ??? »), météo masquée par défaut
+    introuvables_count = sum(1 for b in enabled_badges() if b.mystery == 'introuvable')
+    assert len(locked) == len(enabled_badges()) - introuvables_count  # introuvables masqués avant déblocage
     assert all({'current', 'target', 'ratio'} == set(b['progress']) for b in locked)
 
 

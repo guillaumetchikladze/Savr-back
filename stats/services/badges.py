@@ -205,7 +205,14 @@ def badge_public(badge: BadgeDef, rmap: dict | None = None) -> dict:
 
 
 def _badge_payload(badge: BadgeDef, ub: UserBadge, rmap: dict | None = None) -> dict:
-    return {**badge_public(badge, rmap), 'earned_at': ub.earned_at.isoformat(), 'context': ub.context or {}}
+    payload = {
+        **badge_public(badge, rmap),
+        'earned_at': ub.earned_at.isoformat(),
+        'context': ub.context or {},
+    }
+    if badge.mystery == 'introuvable':
+        payload['celebration'] = 'introuvable'
+    return payload
 
 
 def is_fresh(payload: dict, today: date | None = None) -> bool:
@@ -361,6 +368,9 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
     for badge in badges:
         if badge.code in owned:
             continue
+        if badge.mystery == 'introuvable':
+            # Introuvable : totalement invisible avant déblocage (0 mention).
+            continue
         if badge.secret:
             # Jamais dans les « prochains » (aperçu) ; « ??? » + indice dans la liste complète.
             if next_limit is None:
@@ -375,17 +385,18 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
         )
     # Les plus proches d'abord ; les badges ingrédient (0/1) passent après les progressions entamées.
     upcoming.sort(key=lambda b: (-b['progress']['ratio'], b['progress']['target'] == 1))
+    visible_badges = [b for b in badges if b.code in owned or b.mystery != 'introuvable']
     families = []
     for code, label in FAMILIES.items():
-        total = sum(1 for b in badges if b.family_code == code)
+        total = sum(1 for b in visible_badges if b.family_code == code)
         if total:
-            got = sum(1 for b in badges if b.family_code == code and b.code in owned)
+            got = sum(1 for b in visible_badges if b.family_code == code and b.code in owned)
             families.append({'code': code, 'label': label, 'earned': got, 'total': total})
     return {
         'earned': earned,
         'next': upcoming + secrets if next_limit is None else upcoming[:next_limit],
         'earned_count': len(earned),
-        'total_count': len(badges),
+        'total_count': len(visible_badges),
         'families': families,
     }
 
@@ -394,6 +405,11 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
 # Carte à partager (GET /api/badges/<code>/share/)
 # ---------------------------------------------------------------------------
 def share_text(badge: BadgeDef, invite_url: str) -> str:
+    if badge.mystery == 'introuvable':
+        return (
+            f'J’ai trouvé un badge introuvable sur Tchikook : « {badge.title} » {badge.emoji}. '
+            f'Sauras-tu comment ? Rejoins-moi : {invite_url}'
+        )
     phrase = (badge.phrase or badge.description).strip()
     return f'J’ai débloqué le badge « {badge.title} » {badge.emoji} sur Tchikook. {phrase} Rejoins-moi : {invite_url}'
 
