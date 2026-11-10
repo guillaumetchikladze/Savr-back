@@ -8,6 +8,8 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
+from core.celery_dispatch import publish
+
 from ..models import Recipe
 from .ingredient_matcher import get_batch_embeddings
 from .recipe_search_context import generate_recipe_search_context
@@ -84,7 +86,7 @@ def schedule_recipe_search_reindex(recipe_id: int, *, force: bool = False) -> No
         from ..tasks import reindex_recipe_search
 
         mark_search_pending(recipe_id)
-        reindex_recipe_search.delay(recipe_id, force=force)
+        publish(reindex_recipe_search, args=[recipe_id], kwargs={'force': force})
 
     transaction.on_commit(_enqueue)
 

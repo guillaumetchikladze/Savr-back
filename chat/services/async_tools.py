@@ -26,6 +26,7 @@ from chat.services.tool_schemas import (
     TableInvitationResult,
     UndoCookedResult,
 )
+from core.celery_dispatch import publish_tracked
 from recipes.services.invitation_service import (
     _normalize_meal_plan_ids,
     propose_meal_invitation,
@@ -449,9 +450,15 @@ def _start_generate_from_idea(
         ),
         status=RecipeImportRequest.STATUS_PENDING,
     )
-    task = process_recipe_generate_from_idea.delay(str(import_request.id))
-    import_request.task_id = task.id
-    import_request.save(update_fields=['task_id'])
+    task_id = publish_tracked(process_recipe_generate_from_idea, args=[str(import_request.id)])
+    if task_id:
+        import_request.task_id = task_id
+        import_request.save(update_fields=['task_id'])
+    else:
+        import_request.status = RecipeImportRequest.STATUS_ERROR
+        import_request.error_message = 'queue_unavailable'
+        import_request.save(update_fields=['status', 'error_message'])
+        raise ValueError('File d’attente indisponible, réessaie dans un instant.')
 
     return ImportJobStarted(
         request_id=str(import_request.id),

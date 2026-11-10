@@ -94,6 +94,7 @@ PHOTO_TYPES = [choice[0] for choice in PostPhoto.PHOTO_TYPE_CHOICES]
 RESTRICTED_PHOTO_TYPES = PostPhoto.UNIQUE_TYPES
 from accounts.serializers import LoyaltyCardSerializer
 from accounts.tasks import send_meal_time_photo_reminder_push, send_timer_almost_finished_push
+from core.celery_dispatch import publish, publish_tracked
 from core.idempotency import idempotent
 from notifications.services import notify
 from notifications.text import quoted
@@ -151,6 +152,20 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+
+def _mark_import_queue_unavailable(import_request) -> None:
+    """Broker injoignable : la demande d'import est marquée en erreur (le client peut relancer)."""
+    import_request.status = RecipeImportRequest.STATUS_ERROR
+    import_request.error_message = 'queue_unavailable'
+    import_request.save(update_fields=['status', 'error_message'])
+
+
+def queue_unavailable_response() -> Response:
+    return Response(
+        {'error': 'queue_unavailable', 'detail': 'File de tâches indisponible, réessaie dans un instant.'},
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
@@ -493,11 +508,7 @@ class RecipeBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
                 delay = int(getattr(settings, 'MEAL_TIME_PHOTO_REMINDER_DELAY_SECONDS', 10800))
                 eta = timezone.now() + timedelta(seconds=max(30, delay))
-                result = send_meal_time_photo_reminder_push.apply_async(
-                    args=[user_pk, mp_pk],
-                    eta=eta,
-                )
-                new_tid = getattr(result, 'id', None)
+                new_tid = publish_tracked(send_meal_time_photo_reminder_push, args=[user_pk, mp_pk], eta=eta)
                 if new_tid:
                     MealPlan.objects.filter(pk=mp_pk).update(meal_time_photo_reminder_task_id=str(new_tid))
             except Exception as exc:
@@ -1813,7 +1824,9 @@ class RecipeViewSet(viewsets.ModelViewSet):
                 payload=data,
                 status=RecipeImportRequest.STATUS_PENDING,
             )
-            process_recipe_import.delay(str(import_request.id))
+            if not publish(process_recipe_import, args=[str(import_request.id)]):
+                _mark_import_queue_unavailable(import_request)
+                return queue_unavailable_response()
 
             logger.info(
                 "[RecipeFormalize] Requête %s en file d'attente (%.2fs)",
@@ -1881,8 +1894,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
 
             from .tasks import process_recipe_generate_from_idea
 
-            task = process_recipe_generate_from_idea.delay(str(import_request.id))
-            import_request.task_id = task.id
+            task_id = publish_tracked(process_recipe_generate_from_idea, args=[str(import_request.id)])
+            if not task_id:
+                _mark_import_queue_unavailable(import_request)
+                return queue_unavailable_response()
+            import_request.task_id = task_id
             import_request.save(update_fields=['task_id'])
 
             logger.info(
@@ -1975,8 +1991,11 @@ class RecipeViewSet(viewsets.ModelViewSet):
             # Lancer la tâche Celery qui fait l'extraction + formalisation
             from .tasks import process_recipe_import_from_url
 
-            task = process_recipe_import_from_url.delay(str(import_request.id))
-            import_request.task_id = task.id
+            task_id = publish_tracked(process_recipe_import_from_url, args=[str(import_request.id)])
+            if not task_id:
+                _mark_import_queue_unavailable(import_request)
+                return queue_unavailable_response()
+            import_request.task_id = task_id
             import_request.save(update_fields=['task_id'])
 
             logger.info('[RecipeImportURL] Import depuis %s - request_id=%s', url, import_request.id)
@@ -4571,7 +4590,7 @@ class TimerViewSet(viewsets.ModelViewSet):
         if expires_at and expires_at > now:
             almost_eta = expires_at - timedelta(seconds=3)
             if almost_eta > now:
-                send_timer_almost_finished_push.apply_async(args=[timer.id], eta=almost_eta)
+                publish(send_timer_almost_finished_push, args=[timer.id], eta=almost_eta)
 
     @action(detail=False, methods=['get'])
     def active(self, request):

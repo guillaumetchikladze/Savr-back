@@ -26,6 +26,8 @@ from datetime import date, timedelta
 from django.conf import settings
 from django.utils import timezone
 
+from core.celery_dispatch import publish
+
 from ..models import UserBadge
 from .badge_rarity import rarity_fields, rarity_map
 from .badge_types import FAMILIES, TIER_RARE, TIER_TRES_RARE, BadgeDef, Metric
@@ -276,7 +278,7 @@ def _schedule_notification(user_id: int, codes: list[str], *, push: bool) -> Non
     try:
         from ..tasks import send_new_badge_push
 
-        send_new_badge_push.apply_async(args=[user_id, codes, push], retry=False)
+        publish(send_new_badge_push, args=[user_id, codes, push])
     except Exception:
         logger.warning('[badges] notification non planifiée pour user=%s', user_id, exc_info=True)
 

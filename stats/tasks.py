@@ -9,6 +9,8 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 
+from core.celery_dispatch import publish
+
 logger = logging.getLogger(__name__)
 
 CLASSIFY_DEBOUNCE_KEY = 'stats:classify-ingredients:pending'
@@ -23,7 +25,7 @@ def schedule_ingredient_classification() -> None:
         return
     try:
         if cache.add(CLASSIFY_DEBOUNCE_KEY, 1, CLASSIFY_DEBOUNCE_SECONDS):
-            classify_new_ingredients.apply_async(countdown=CLASSIFY_DEBOUNCE_SECONDS, retry=False)
+            publish(classify_new_ingredients, countdown=CLASSIFY_DEBOUNCE_SECONDS)
     except Exception:
         logger.warning('[stats] classification ingrédients non planifiée', exc_info=True)
 
@@ -32,7 +34,7 @@ def schedule_badge_evaluation(user_id: int) -> None:
     """Évaluation des badges en différé (chemins « cuisiné » hors POST /posts/cooked/). Ne lève jamais."""
     try:
         if cache.add(f'stats:badges:pending:{user_id}', 1, BADGES_DEBOUNCE_SECONDS):
-            evaluate_user_badges.apply_async(args=[user_id], countdown=BADGES_DEBOUNCE_SECONDS, retry=False)
+            publish(evaluate_user_badges, args=[user_id], countdown=BADGES_DEBOUNCE_SECONDS)
     except Exception:
         logger.warning('[stats] évaluation badges non planifiée user=%s', user_id, exc_info=True)
 

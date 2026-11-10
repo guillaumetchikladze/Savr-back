@@ -105,7 +105,7 @@ def test_generate_from_idea_tool_queues_job_linked_to_conversation(user, celery_
 
     req = RecipeImportRequest.objects.get(id=started.request_id)
     assert req.payload['chat_context'] == {'conversation_id': 42}
-    assert req.task_id == 'fake-task-1'
+    assert req.task_id
     assert celery_delay.calls == [('recipes.tasks.process_recipe_generate_from_idea', (str(req.id),), {})]
 
     with pytest.raises(ValueError):

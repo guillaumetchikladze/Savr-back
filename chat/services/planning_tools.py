@@ -37,6 +37,7 @@ from chat.services.tool_schemas import (
     TableInvitee,
     UndoHint,
 )
+from core.celery_dispatch import publish_tracked
 from recipes.models import BasketItem, MealInvitation, MealPlan, MealPlanRecipeBatch, Post, PostPhoto
 from recipes.services import basket_service as basket
 from recipes.services.basket_service import BasketError
@@ -137,9 +138,15 @@ def start_recipe_import(user: AbstractBaseUser, url: str, conversation_id: int |
             payload=_chat_payload(conversation_id, {'url': url, 'source_type': 'imported', 'job_type': 'import'}),
             status=RecipeImportRequest.STATUS_PENDING,
         )
-        task = process_recipe_import_from_url.delay(str(import_request.id))
-        import_request.task_id = task.id
-        import_request.save(update_fields=['task_id'])
+        task_id = publish_tracked(process_recipe_import_from_url, args=[str(import_request.id)])
+        if task_id:
+            import_request.task_id = task_id
+            import_request.save(update_fields=['task_id'])
+        else:
+            import_request.status = RecipeImportRequest.STATUS_ERROR
+            import_request.error_message = 'queue_unavailable'
+            import_request.save(update_fields=['status', 'error_message'])
+            raise ValueError('File d’attente indisponible, réessaie dans un instant.')
 
     request_id = str(import_request.id)
     return RecipeImportResult(

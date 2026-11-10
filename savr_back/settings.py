@@ -420,7 +420,13 @@ CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localho
 CELERY_TASK_DEFAULT_QUEUE = 'savr_default'
 CELERY_TASK_DEFAULT_EXCHANGE = 'savr'
 CELERY_TASK_DEFAULT_ROUTING_KEY = 'savr.default'
+# Personne ne lit d'AsyncResult (le suivi passe par RecipeImportRequest) : ignorer les résultats évite que
+# `apply_async` s'abonne au backend Redis (~19 s de reconnexion dans la requête si Redis est absent).
+CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_TRACK_STARTED = True
+# Publication depuis une requête : ne jamais attendre longtemps un broker injoignable.
+CELERY_BROKER_CONNECTION_TIMEOUT = 2
+CELERY_BROKER_TRANSPORT_OPTIONS = {'socket_connect_timeout': 1, 'socket_timeout': 5, 'retry_on_timeout': True}
 CELERY_TASK_TIME_LIMIT = 60 * 10  # 10 minutes
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'

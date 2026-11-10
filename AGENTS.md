@@ -581,5 +581,14 @@ ou `push(type, user, …)` (push seule). Spec et contrat front : `.claude-work/s
 - Publier depuis une requête : `core.celery_dispatch.enqueue_on_commit(task, args=…, queue=…)` (ou `publish`) —
   publication bornée, broker absent → log, jamais d'exception. La tâche doit être `ignore_result=True` : sinon
   `apply_async` s'abonne au backend Redis et un Redis absent coûte ~19 s dans la requête.
+- Aucun `.delay()` / `.apply_async()` direct depuis une requête, un service appelé par une vue ou un consumer :
+  `publish` / `enqueue_on_commit`, ou `publish_tracked` (renvoie l'`task_id` généré en amont, None si le broker
+  refuse) quand l'id est stocké (`RecipeImportRequest.task_id`, `meal_time_photo_reminder_task_id`).
+- `CELERY_TASK_IGNORE_RESULT = True` (aucun `AsyncResult` lu : le suivi passe par `RecipeImportRequest`,
+  `GET /recipes/formalize/status/{request_id}/`) ; `CELERY_BROKER_CONNECTION_TIMEOUT` et
+  `CELERY_BROKER_TRANSPORT_OPTIONS` (socket_connect_timeout 1 s) bornent la connexion au broker.
+- Import / génération de recette (formalize, `import_from_url`, `generate_from_idea`) : broker indisponible →
+  demande marquée `error` (`error_message='queue_unavailable'`) et réponse **503** `{"error": "queue_unavailable"}`
+  (jamais 500) ; outils chat : `ValueError` lisible par l'agent.
 - Clients HTTP : délais explicites (connexion, lecture) — Graph/MSAL (5, 15), Expo (3, 10).
 - Tests : `accounts/tests/test_auth_emails_api.py` (`celery_delay` + `django_capture_on_commit_callbacks`).

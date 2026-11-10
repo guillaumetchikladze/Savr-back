@@ -14,6 +14,8 @@ import logging
 import redis
 from django.conf import settings
 
+from core.celery_dispatch import publish
+
 logger = logging.getLogger(__name__)
 
 _redis_client: redis.Redis | None = None
@@ -63,9 +65,9 @@ def schedule_grouped_push(*, user_id: int, type_key: str, object_id: int) -> Non
             logger.warning('[notify] incr version groupée en échec — envoi direct', exc_info=True)
             version = None
     if version is None:
-        send_grouped_push_task.apply_async(args=[user_id, type_key, object_id, None])
+        publish(send_grouped_push_task, args=[user_id, type_key, object_id, None])
         return
-    send_grouped_push_task.apply_async(args=[user_id, type_key, object_id, version], countdown=window)
+    publish(send_grouped_push_task, args=[user_id, type_key, object_id, version], countdown=window)
 
 
 def is_latest_version(*, user_id: int, type_key: str, object_id: int, version: int | None) -> bool:

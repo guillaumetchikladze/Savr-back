@@ -63,7 +63,7 @@ def test_import_from_url_queues_the_pipeline_and_returns_a_pending_card(user, ap
         'job_type': 'import',
         'chat_context': {'conversation_id': 42},
     }
-    assert req.task_id == 'fake-task-1'
+    assert req.task_id
     assert isinstance(card, ImportJobStarted)  # l'app 1.0.9 reçoit toujours import_job_started
     assert (card.card_type, card.status, card.recipe_id, card.title) == ('recipe_import', 'pending', None, None)
     assert card.status_path == f'/api/recipes/formalize/status/{req.id}/'
