@@ -15,6 +15,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'password', 'level', 'experience_points')
+        # Progression calculée par le serveur : jamais fixée par le client à l'inscription.
+        read_only_fields = ('id', 'level', 'experience_points')
         extra_kwargs = {
             'password': {'write_only': True},
         }

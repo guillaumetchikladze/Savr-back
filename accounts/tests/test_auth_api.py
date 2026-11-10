@@ -120,3 +120,52 @@ def test_auto_publish_cooked_preference_round_trip(api, make_user):
     # Préférence privée : absente du profil vu par un autre utilisateur.
     seen = api.as_user(other).get(f'/api/auth/users/{me.id}/')
     assert seen.status_code == 200 and 'auto_publish_cooked' not in seen.data
+
+
+def test_register_and_profile_ignore_server_managed_fields(api, make_user):
+    """Assignation de masse : niveau, XP, validation, offre ne se fixent ni à l'inscription ni via le profil."""
+    resp = APIClient().post(
+        '/api/auth/register/',
+        {
+            'email': 'mass@example.test',
+            'username': 'mass',
+            'password': 'Sup3r-secret!',
+            'level': 99,
+            'experience_points': 123456,
+            'validated_at': '2026-01-01T00:00:00Z',
+            'is_staff': True,
+            'is_superuser': True,
+            'plan': 'premium',
+        },
+        format='json',
+    )
+    assert resp.status_code == 201
+    from django.contrib.auth import get_user_model
+
+    created = get_user_model().objects.get(username='mass')
+    assert (created.level, created.experience_points) == (1, 0)
+    assert created.validated_at is None
+    assert not created.is_staff and not created.is_superuser
+    assert resp.data['user']['level'] == 1
+
+    me = make_user('lea')
+    original_plan = me.plan
+    patch = api.as_user(me).patch(
+        '/api/auth/profile/',
+        {
+            'level': 50,
+            'experience_points': 9999,
+            'validated_at': None,
+            'plan': 'premium',
+            'is_staff': True,
+            'onboarding_completed': True,
+        },
+        format='json',
+    )
+    assert patch.status_code == 200
+    me.refresh_from_db()
+    assert (me.level, me.experience_points) == (1, 0)
+    assert me.validated_at is not None
+    assert me.plan == original_plan
+    assert not me.is_staff
+    assert me.onboarding_completed is True
