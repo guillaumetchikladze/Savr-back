@@ -336,8 +336,9 @@ async def add_to_shopping_list_from_basket(
     week: str | None = None,
     shopping_list_id: int | None = None,
     name: str | None = None,
-) -> BasketShoppingResult:
-    """Met les ingrédients des envies du panier (avec recette) dans une liste de courses (exécution immédiate).
+) -> BasketShoppingResult | MutationProposal:
+    """Met les ingrédients des envies du panier (avec recette) dans une liste de courses (nouvelle liste ou sa propre
+    liste : exécution immédiate ; liste existante partagée avec d'autres : carte de confirmation, rien n'est écrit avant « Confirmer »).
 
     Args:
         basket_item_ids: envies précises ; défaut : toutes les envies ouvertes avec recette de la semaine.
@@ -613,5 +614,6 @@ MUTATION_TOOL_NAMES = frozenset(
         # Carte seulement quand d'autres personnes sont touchées (sortie MutationProposal) :
         'invite_to_table',
         'add_shopping_list_item',  # liste partagée ; sa propre liste → ajout immédiat
+        'add_to_shopping_list_from_basket',  # liste existante partagée ; nouvelle / propre liste → immédiat
     }
 )

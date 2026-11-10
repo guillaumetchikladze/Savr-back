@@ -25,6 +25,8 @@ def execute_pending_action(user: AbstractBaseUser, action: PendingAction) -> dic
         result = _execute_table_invitation(user, payload)
     elif action.action_type == PendingAction.ACTION_SHOPPING_LIST_ITEM:
         result = _execute_shopping_list_item(user, payload)
+    elif action.action_type == PendingAction.ACTION_BASKET_SHOPPING_LIST:
+        result = _execute_basket_shopping_list(user, payload)
     else:
         raise ValueError(f"Type d'action inconnu: {action.action_type}")
 
@@ -52,4 +54,15 @@ def _execute_shopping_list_item(user: AbstractBaseUser, payload: dict) -> dict:
         payload.get('ingredient_name') or '',
         quantity=payload.get('quantity') or 1,
         unit=payload.get('unit') or 'piece',
+    ).model_dump(mode='json')
+
+
+def _execute_basket_shopping_list(user: AbstractBaseUser, payload: dict) -> dict:
+    """Carte `basket_shopping_list_proposal` confirmée : envies et accès à la liste revérifiés."""
+    from chat.services.kitchen_tools import execute_basket_to_shopping_list
+
+    return execute_basket_to_shopping_list(
+        user,
+        basket_item_ids=payload.get('basket_item_ids') or [],
+        shopping_list_id=payload.get('shopping_list_id'),
     ).model_dump(mode='json')

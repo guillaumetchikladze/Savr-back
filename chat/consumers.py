@@ -51,7 +51,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4003)
             return
 
-        if getattr(user, 'validated_at', None) is None:
+        if not user.is_active or getattr(user, 'validated_at', None) is None:
             await self.close(code=4003)
             return
 
@@ -530,6 +530,7 @@ def _save_mutation(conv, turn_id, proposal, tool_name, tool_trace=None):
         'propose_recipe_revision': PendingAction.ACTION_RECIPE_REVISION,
         'invite_to_table': PendingAction.ACTION_TABLE_INVITATION,
         'add_shopping_list_item': PendingAction.ACTION_SHOPPING_LIST_ITEM,
+        'add_to_shopping_list_from_basket': PendingAction.ACTION_BASKET_SHOPPING_LIST,
     }
     action_type = action_type_map.get(tool_name, PendingAction.ACTION_MEAL_DELETION)
 

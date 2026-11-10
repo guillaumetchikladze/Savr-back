@@ -25,6 +25,7 @@ from chat.services.tool_schemas import (
     BattlePlanResult,
     EquipmentAdaptationResult,
     LogCookedResult,
+    MutationProposal,
     PlanWeekResult,
     SkippedDish,
     UndoCookedResult,
@@ -396,8 +397,66 @@ def basket_to_shopping_list(
     week: str | None = None,
     shopping_list_id: int | None = None,
     name: str | None = None,
+) -> BasketShoppingResult | MutationProposal:
+    """
+    Ingrédients des envies (avec recette) → liste de courses (même service que POST /basket/shopping-list/).
+    Nouvelle liste ou liste dont on est le seul membre → exécution immédiate. Liste existante partagée avec
+    d'autres → carte `basket_shopping_list_proposal` (rien n'est écrit avant « Confirmer »).
+    """
+    if shopping_list_id is not None:
+        from recipes.models import ShoppingList, ShoppingListMember
+
+        try:
+            lid = int(shopping_list_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Liste de courses introuvable.') from exc
+        shopping_list = ShoppingList.objects.filter(id=lid, members__user=user).first()
+        if shopping_list is None:
+            raise ValueError('Liste de courses introuvable.')
+        others = list(
+            ShoppingListMember.objects.filter(shopping_list=shopping_list)
+            .exclude(user=user)
+            .order_by('joined_at')
+            .values_list('user__username', flat=True)[:6]
+        )
+        if others:
+            try:
+                items = basket.items_for_shopping(user, item_ids=basket_item_ids or None, week=week)
+            except BasketError as exc:
+                raise ValueError(exc.message) from exc
+            items = [i for i in items if i.recipe_id]
+            if not items:
+                raise ValueError(
+                    'Aucune envie avec recette à ajouter (les plats libres n’ont pas d’ingrédients) : '
+                    'propose de créer leur recette.'
+                )
+            list_name = shopping_list.name or 'Liste de courses'
+            shared = ', '.join(others[:5]) + ('…' if len(others) > 5 else '')
+            return MutationProposal(
+                card_type='basket_shopping_list_proposal',
+                title=f'Ajouter les courses de {len(items)} plat(s) à « {list_name} »',
+                subtitle=f'Liste partagée avec {shared}.',
+                details={
+                    'shopping_list_id': shopping_list.id,
+                    'shopping_list_name': list_name,
+                    'basket_item_ids': [i.id for i in items],
+                    'shared_with': others[:5],
+                },
+            )
+    return execute_basket_to_shopping_list(
+        user, basket_item_ids=basket_item_ids, week=week, shopping_list_id=shopping_list_id, name=name
+    )
+
+
+def execute_basket_to_shopping_list(
+    user: AbstractBaseUser,
+    *,
+    basket_item_ids=None,
+    week: str | None = None,
+    shopping_list_id: int | None = None,
+    name: str | None = None,
 ) -> BasketShoppingResult:
-    """Ingrédients des envies (avec recette) → liste de courses (même service que POST /basket/shopping-list/)."""
+    """Écriture effective (appelée directement, ou à la confirmation de la carte : accès revérifié)."""
     try:
         items = basket.items_for_shopping(user, item_ids=basket_item_ids or None, week=week)
         if not items:

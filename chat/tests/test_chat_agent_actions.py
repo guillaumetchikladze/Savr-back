@@ -488,3 +488,54 @@ def test_meal_plan_recipe_batches_untouched_by_schedule_of_free_dish(user):
     item = basket_service.add_item(user, label='Raclette')
     card = planning_tools.schedule_basket_item_for_user(user, basket_item_id=item.id, date='demain')
     assert not MealPlanRecipeBatch.objects.filter(meal_plan_id=card.meal_plan_id).exists()
+
+
+def test_basket_to_shopping_list_needs_confirmation_only_on_an_existing_shared_list(
+    user, make_user, make_shopping_list, make_recipe
+):
+    from chat.services import kitchen_tools
+    from chat.services.tool_schemas import BasketShoppingResult, MutationProposal
+    from recipes.models import ShoppingListBatch
+    from recipes.services import basket_service
+
+    assert 'add_to_shopping_list_from_basket' in MUTATION_TOOL_NAMES
+    recipe = make_recipe(user, ingredients=['Sel'])
+    item = basket_service.add_item(user, recipe_id=recipe.id)
+    mine = make_shopping_list(user, name='Perso')
+    shared = make_shopping_list(user, name='Coloc', collaborators=[make_user('pauline')])
+
+    # Sa propre liste : immédiat, pas de carte.
+    own = kitchen_tools.basket_to_shopping_list(user, basket_item_ids=[item.id], shopping_list_id=mine.id)
+    assert isinstance(own, BasketShoppingResult)
+    assert ShoppingListBatch.objects.filter(shopping_list=mine).exists()
+
+    # Liste existante partagée : carte, rien d'écrit.
+    proposal = kitchen_tools.basket_to_shopping_list(user, basket_item_ids=[item.id], shopping_list_id=shared.id)
+    assert isinstance(proposal, MutationProposal)
+    assert proposal.card_type == 'basket_shopping_list_proposal'
+    assert proposal.details['shared_with'] == ['pauline']
+    assert proposal.details['basket_item_ids'] == [item.id]
+    assert not ShoppingListBatch.objects.filter(shopping_list=shared).exists()
+
+    # Nouvelle liste : toujours immédiat.
+    fresh = kitchen_tools.basket_to_shopping_list(user, basket_item_ids=[item.id], name='Neuve')
+    assert isinstance(fresh, BasketShoppingResult) and fresh.created_list
+
+    action = _save_card(user, proposal, 'add_to_shopping_list_from_basket')
+    assert action.action_type == PendingAction.ACTION_BASKET_SHOPPING_LIST
+    result = execute_pending_action(user, action)
+    assert result['shopping_list_id'] == shared.id and result['added_basket_item_ids'] == [item.id]
+    assert ShoppingListBatch.objects.filter(shopping_list=shared).exists()
+
+    # Liste d'un autre : refusée à la proposition comme à l'exécution d'un payload forgé.
+    foreign = make_shopping_list(make_user('marc'), name='Marc')
+    with pytest.raises(ValueError):
+        kitchen_tools.basket_to_shopping_list(user, basket_item_ids=[item.id], shopping_list_id=foreign.id)
+    forged = _save_card(
+        user, proposal.model_copy(update={'details': {**proposal.details, 'shopping_list_id': foreign.id}}), 'x'
+    )
+    forged.action_type = PendingAction.ACTION_BASKET_SHOPPING_LIST
+    forged.save(update_fields=['action_type'])
+    with pytest.raises(ValueError):
+        execute_pending_action(user, forged)
+    assert not ShoppingListBatch.objects.filter(shopping_list=foreign).exists()
