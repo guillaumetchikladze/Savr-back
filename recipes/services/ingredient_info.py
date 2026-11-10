@@ -27,7 +27,7 @@ import time
 from decouple import config
 from django.conf import settings
 from django.core.cache import cache
-from django.db import IntegrityError, connection, transaction
+from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.utils import timezone
 
 from recipes.models import Ingredient, IngredientInfo
@@ -209,9 +209,19 @@ def _text(data: dict, key: str) -> str:
     return text
 
 
+_FENCE_RE = re.compile(r'^```(?:json)?\s*(.*?)\s*```$', re.S | re.I)
+
+
+def _strip_fences(raw: str) -> str:
+    """Certains modèles entourent le JSON de ```json … ``` malgré `response_format` : on l'accepte."""
+    text = (raw or '').strip()
+    match = _FENCE_RE.match(text)
+    return match.group(1) if match else text
+
+
 def parse_response(raw: str) -> dict:
     """Réponse LLM → champs validés ; ValueError si inutilisable (rien n'est alors stocké)."""
-    data = json.loads(raw)
+    data = json.loads(_strip_fences(raw))
     if not isinstance(data, dict):
         raise ValueError('objet JSON attendu')
     fields = {key: _text(data, key) for key in _LIMITS}
@@ -275,7 +285,12 @@ def generate(ingredient: Ingredient) -> IngredientInfo:
         # Échec récent : pas de nouvel appel LLM avant la fin du délai (coût, latence).
         raise InfoUnavailable('échec récent')
     budget = float(getattr(settings, 'INGREDIENT_INFO_LLM_TIMEOUT_SECONDS', 8))
-    if not _try_lock(ingredient.id):
+    try:
+        locked = _try_lock(ingredient.id)
+    except DatabaseError as exc:
+        logger.warning('[ingredient_info] verrou impossible ingredient=%s : %s', ingredient.id, exc)
+        raise InfoUnavailable('verrou indisponible') from exc
+    if not locked:
         # Une autre requête génère déjà cette fiche : on attend qu'elle apparaisse.
         info = _wait_for_info(ingredient.id, time.monotonic() + budget)
         if info:
@@ -289,7 +304,9 @@ def generate(ingredient: Ingredient) -> IngredientInfo:
             raw, model = _generate_raw(ingredient)
             fields = parse_response(raw)
         except Exception as exc:  # noqa: BLE001 — modèle refusé / réseau / délai / JSON / validation
-            logger.info('[ingredient_info] fiche refusée ingredient=%s : %s', ingredient.id, exc)
+            logger.warning(
+                '[ingredient_info] fiche refusée ingredient=%s : %s: %s', ingredient.id, type(exc).__name__, exc
+            )
             cooldown = int(getattr(settings, 'INGREDIENT_INFO_FAILURE_COOLDOWN_SECONDS', 600))
             if cooldown > 0:
                 cache.set(_failure_key(ingredient.id), 1, timeout=cooldown)
@@ -374,7 +391,7 @@ def generate_many(ingredient_ids: list[int]) -> dict:
         try:
             generate(ingredient)
             stats['generated'] += 1
-        except InfoUnavailable as exc:
+        except Exception as exc:  # noqa: BLE001 — un échec ne bloque pas le lot
             stats['failed'] += 1
             logger.info('[ingredient_info] pré-génération échouée ingredient=%s : %s', ingredient.id, exc)
     return stats

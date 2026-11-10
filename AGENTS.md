@@ -483,6 +483,10 @@ Le front met en file les actions faites en magasin sans réseau et les rejoue. C
   protéines végétales », « riche en protéines »). Le prompt demande toujours d'éviter la nutrition. Invalide, erreur, délai → **503 `info_unavailable`** +
   `Retry-After`, rien n'est stocké, pas de nouvel appel pour cet ingrédient pendant
   `INGREDIENT_INFO_FAILURE_COOLDOWN_SECONDS` (600 s). `INGREDIENT_INFO_LLM_ENABLED=False` : cache seul.
+- **Jamais de 500** : toute erreur inattendue (base, verrou, cache, réponse fournisseur bizarre) est journalisée
+  (`logger.exception`) puis rendue en 503 `info_unavailable`. Les 404 de la vue portent `code: not_found` ; un 404
+  sans `code` (page HTML de Django) = serveur pas encore à jour → l'app affiche « Bientôt disponible ». JSON
+  entouré de ```json … ``` accepté.
 - Concurrence : verrou consultatif Postgres par ingrédient (`pg_try_advisory_lock`, inter-processus) ; une requête
   concurrente attend la ligne (≤ budget) au lieu d'appeler le LLM ; unicité `ingredient` + relecture sur
   `IntegrityError`. Débit par utilisateur (cache, par processus comme les invitations) :

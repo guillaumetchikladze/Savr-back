@@ -316,3 +316,86 @@ def test_pregenerate_command_most_used_first(user, make_shopping_list, celery_de
     assert IngredientInfo.objects.filter(ingredient=popular).exists()
     assert not IngredientInfo.objects.filter(ingredient=rare).exists()
     assert not IngredientInfo.objects.filter(ingredient=unused).exists()
+
+
+# ---------------------------------------------------------------------------
+# Jamais de 500 (ITEM-20261110-0846-shp3 : « Oups » côté app = toute réponse hors 503 / 429 / 404)
+# ---------------------------------------------------------------------------
+def _assert_unavailable(resp):
+    assert resp.status_code == 503, resp.content
+    assert resp.data['code'] == 'info_unavailable'
+    assert resp['Retry-After']
+
+
+def test_unknown_ingredient_or_line_is_a_coded_404(api, user, make_user, make_shopping_list, ingredient):
+    # `code` = 404 de la vue ; un 404 sans `code` (HTML de Django) = serveur qui ne connaît pas la route.
+    resp = api.as_user(user).get(_url(999999))
+    assert resp.status_code == 404 and resp.data['code'] == 'not_found'
+    item = ShoppingListItem.objects.create(shopping_list=make_shopping_list(user), ingredient=ingredient)
+    resp = api.as_user(make_user()).get(f'/api/shopping-list-items/{item.id}/info/')
+    assert resp.status_code == 404 and resp.data['code'] == 'not_found'
+
+
+@pytest.mark.parametrize(
+    'target', ['get_or_generate', 'get_cached', 'payload'], ids=['generation', 'lecture', 'serialisation']
+)
+def test_unexpected_error_anywhere_is_503_not_500(api, user, ingredient, target, caplog):
+    caplog.set_level(logging.ERROR, logger='recipes.ingredient_info_views')
+    if target == 'payload':
+        _store(ingredient)  # fiche en base : l'erreur arrive à la sérialisation
+    with mock.patch.object(service, target, side_effect=RuntimeError('boom')):
+        _assert_unavailable(api.as_user(user).get(_url(ingredient.id)))
+    assert any('erreur inattendue' in r.getMessage() for r in caplog.records)
+
+
+def test_unexpected_error_on_the_line_route_is_503(api, user, make_shopping_list, ingredient):
+    item = ShoppingListItem.objects.create(shopping_list=make_shopping_list(user), ingredient=ingredient)
+    with mock.patch.object(service, 'get_or_generate', side_effect=KeyError('x')):
+        _assert_unavailable(api.as_user(user).get(f'/api/shopping-list-items/{item.id}/info/'))
+
+
+def test_database_error_on_lookup_is_503(api, user):
+    from django.db import OperationalError
+
+    with mock.patch('recipes.ingredient_info_views.Ingredient.objects.select_related', side_effect=OperationalError):
+        _assert_unavailable(api.as_user(user).get(_url(1)))
+
+
+def test_lock_database_error_is_unavailable_and_nothing_stored(api, user, ingredient):
+    from django.db import OperationalError
+
+    with (
+        mock.patch.object(service, '_try_lock', side_effect=OperationalError('verrou')),
+        mock.patch.object(service, '_call_llm') as llm,
+    ):
+        _assert_unavailable(api.as_user(user).get(_url(ingredient.id)))
+    llm.assert_not_called()
+    assert not IngredientInfo.objects.exists()
+
+
+@pytest.mark.parametrize(
+    'exc',
+    [IndexError('choices vides'), AttributeError("'NoneType' object has no attribute 'content'"), TypeError('x')],
+)
+def test_odd_provider_response_is_503(api, user, ingredient, exc):
+    with _llm(exc):
+        _assert_unavailable(api.as_user(user).get(_url(ingredient.id)))
+    assert not IngredientInfo.objects.exists()
+
+
+def test_fenced_json_from_the_model_is_accepted(api, user, ingredient):
+    with _llm('```json\n' + json.dumps(GOOD) + '\n```'):
+        resp = api.as_user(user).get(_url(ingredient.id))
+    assert resp.status_code == 200, resp.data
+    assert resp.data['what'] == GOOD['what']
+
+
+def test_ingredient_without_category_on_the_line_route(api, user, make_shopping_list):
+    lonely = Ingredient.objects.create(name='sumac', category=None)
+    item = ShoppingListItem.objects.create(shopping_list=make_shopping_list(user), ingredient=lonely)
+    with _llm(json.dumps(GOOD)):
+        resp = api.as_user(user).get(f'/api/shopping-list-items/{item.id}/info/')
+    assert resp.status_code == 200, resp.data
+    assert resp.data['ingredient'] == {'id': lonely.id, 'name': 'sumac', 'category': None}
+    for key in ('what', 'uses', 'aisle', 'choose', 'keep', 'substitutes', 'source', 'cached'):
+        assert key in resp.data
