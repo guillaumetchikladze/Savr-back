@@ -327,3 +327,54 @@ def test_meal_without_recipe_batches_uses_its_label(api, lea, make_meal_plan):
     assert not MealPlanRecipeBatch.objects.filter(meal_plan=mp).exists()
     entry = api.as_user(lea).get(ME).data['results'][0]
     assert entry['title'] == 'Restes' and entry['recipe'] is None
+
+
+def test_guests_and_guests_count_on_carnet(api, lea, reader, make_user, make_meal_plan, follow):
+    from recipes.models import MealInvitation
+
+    tom = make_user('tom', first_name='Tom', avatar_url='https://cdn.test/tom.jpg')
+    pauline = make_user('pauline', first_name='Pauline', avatar_url='https://cdn.test/pauline.jpg')
+    jules = make_user('jules', first_name='Jules')
+    maxime = make_user('maxime', first_name='Maxime')
+    pending_user = make_user('pending_user', first_name='Pending')
+
+    # Léa cuisine un repas et invite 4 personnes (acceptées) + 1 en attente
+    mp = make_meal_plan(lea, day=date(2026, 11, 8), confirmed=True, custom_label='Grand dîner')
+    Post.objects.create(user=lea, meal_plan=mp, label='Grand dîner', is_published=True)
+
+    MealInvitation.objects.create(inviter=lea, invitee=tom, meal_plan=mp, status='accepted')
+    MealInvitation.objects.create(inviter=lea, invitee=pauline, meal_plan=mp, status='accepted')
+    MealInvitation.objects.create(inviter=lea, invitee=jules, meal_plan=mp, status='accepted')
+    MealInvitation.objects.create(inviter=lea, invitee=maxime, meal_plan=mp, status='accepted')
+    MealInvitation.objects.create(inviter=lea, invitee=pending_user, meal_plan=mp, status='pending')
+
+    # 1. Sur son propre carnet (Léa) : tous les invités acceptés (max 3) et guests_count exact
+    lea_resp = api.as_user(lea).get(ME)
+    entry = lea_resp.data['results'][0]
+    assert entry['guests_count'] == 4
+    assert len(entry['guests']) == 3
+    assert [g['first_name'] for g in entry['guests']] == ['Tom', 'Pauline', 'Jules']
+    assert entry['guests'][0]['avatar_url'] == 'https://cdn.test/tom.jpg'
+
+    # 2. Sur le carnet d'un autre (reader) :
+    # Reader suit Léa pour voir son carnet
+    follow(reader, lea)
+    # Reader ne suit que Tom parmi les invités
+    follow(reader, tom)
+
+    reader_resp = api.as_user(reader).get(_user_url(lea))
+    reader_entry = reader_resp.data['results'][0]
+    # guests_count reste le compte total d'invités
+    assert reader_entry['guests_count'] == 4
+    # Mais guests ne contient que les personnes visibles par le reader (Tom seul)
+    assert len(reader_entry['guests']) == 1
+    assert reader_entry['guests'][0]['first_name'] == 'Tom'
+    assert reader_entry['guests'][0]['id'] == tom.id
+
+    # 3. Si reader ne suit aucun invité : guests = [], guests_count = 4
+    stranger = make_user('stranger')
+    follow(stranger, lea)
+    stranger_resp = api.as_user(stranger).get(_user_url(lea))
+    stranger_entry = stranger_resp.data['results'][0]
+    assert stranger_entry['guests_count'] == 4
+    assert stranger_entry['guests'] == []

@@ -44,7 +44,7 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils.dateparse import parse_date, parse_datetime
 
-from recipes.models import MealPlan, MealPlanRecipeBatch, Post, PostPhoto, RecipeBatch
+from recipes.models import MealInvitation, MealPlan, MealPlanRecipeBatch, Post, PostPhoto, RecipeBatch
 from recipes.services.post_visibility import visible_posts
 
 DEFAULT_PAGE_SIZE = 20
@@ -186,6 +186,25 @@ def _photos_prefetch(attr: str = 'photos', **filters) -> Prefetch:
     return Prefetch(attr, queryset=qs)
 
 
+def _invitations_prefetch(attr: str = 'invitations') -> Prefetch:
+    qs = (
+        MealInvitation.objects.filter(status='accepted')
+        .select_related('invitee')
+        .only(
+            'id',
+            'meal_plan_id',
+            'status',
+            'created_at',
+            'invitee__id',
+            'invitee__first_name',
+            'invitee__username',
+            'invitee__avatar_url',
+        )
+        .order_by('created_at', 'id')
+    )
+    return Prefetch(attr, queryset=qs)
+
+
 def _load(kind: str, ids: list[int], *, is_self: bool) -> dict:
     if not ids:
         return {}
@@ -194,13 +213,14 @@ def _load(kind: str, ids: list[int], *, is_self: bool) -> dict:
         prefetch = [
             _photos_prefetch(),
             Prefetch('meal_plan__meal_plan_recipe_batches', queryset=_batches_prefetch().queryset),
+            _invitations_prefetch('meal_plan__invitations'),
         ]
-        if is_self:
-            prefetch.append('meal_plan__invitations')
         qs = qs.prefetch_related(*prefetch)
     elif kind == 'meal':
         qs = MealPlan.objects.filter(id__in=ids).prefetch_related(
-            _batches_prefetch(), _photos_prefetch('draft_photos', post__isnull=True), 'invitations'
+            _batches_prefetch(),
+            _photos_prefetch('draft_photos', post__isnull=True),
+            _invitations_prefetch('invitations'),
         )
     else:
         qs = (
@@ -266,7 +286,36 @@ def _first_time(post: Post) -> bool:
     return any(item.get('kind') == 'first_time' for item in snapshot.get('items') or [])
 
 
-def _post_entry(post: Post, *, is_self: bool, cache: dict) -> dict:
+def _guests_payload(
+    meal_plan: MealPlan | None,
+    *,
+    is_self: bool,
+    visible_user_ids: set[int] | None,
+) -> tuple[list[dict], int]:
+    if meal_plan is None:
+        return [], 0
+    accepted = [inv for inv in meal_plan.invitations.all() if inv.status == 'accepted']
+    total_count = len(accepted)
+    guests = []
+    for inv in accepted:
+        user = getattr(inv, 'invitee', None)
+        if not user:
+            continue
+        is_visible = is_self or (visible_user_ids is not None and user.id in visible_user_ids)
+        if is_visible:
+            guests.append(
+                {
+                    'id': user.id,
+                    'first_name': user.first_name or user.username,
+                    'avatar_url': user.avatar_url or None,
+                }
+            )
+            if len(guests) == 3:
+                break
+    return guests, total_count
+
+
+def _post_entry(post: Post, *, is_self: bool, cache: dict, visible_user_ids: set[int] | None = None) -> dict:
     from recipes.services.dish_service import post_dish
 
     meal_plan = post.meal_plan if post.meal_plan_id else None
@@ -277,6 +326,11 @@ def _post_entry(post: Post, *, is_self: bool, cache: dict) -> dict:
     recipe = batch.recipe if batch is not None and batch.recipe_id else None
     dish = post_dish(post) or {}
     photos = list(post.photos.all())
+    guests, guests_count = _guests_payload(
+        meal_plan,
+        is_self=is_self,
+        visible_user_ids=visible_user_ids,
+    )
     entry = {
         'kind': 'post',
         'title': dish.get('title') or (recipe.title if recipe else '') or '',
@@ -288,6 +342,8 @@ def _post_entry(post: Post, *, is_self: bool, cache: dict) -> dict:
         'note': (post.comment or '').strip() or None,
         'first_time': _first_time(post),
         'is_private': not post.is_published,
+        'guests': guests,
+        'guests_count': guests_count,
         **_slot(meal_plan),
     }
     if is_self:
@@ -299,7 +355,9 @@ def _post_entry(post: Post, *, is_self: bool, cache: dict) -> dict:
     return entry
 
 
-def _meal_entry(meal_plan: MealPlan, cache: dict) -> dict:
+def _meal_entry(
+    meal_plan: MealPlan, cache: dict, *, is_self: bool = True, visible_user_ids: set[int] | None = None
+) -> dict:
     from recipes.services.cooked_service import join_titles_fr
 
     mprbs = [m for m in meal_plan.meal_plan_recipe_batches.all() if m.recipe_batch]
@@ -312,6 +370,11 @@ def _meal_entry(meal_plan: MealPlan, cache: dict) -> dict:
     batch = mprb.recipe_batch if mprb is not None else None
     recipe = batch.recipe if batch is not None and batch.recipe_id else None
     photos = list(meal_plan.draft_photos.all())
+    guests, guests_count = _guests_payload(
+        meal_plan,
+        is_self=is_self,
+        visible_user_ids=visible_user_ids,
+    )
     return {
         'kind': 'meal',
         'title': join_titles_fr(titles) or (meal_plan.custom_label or '').strip(),
@@ -323,6 +386,8 @@ def _meal_entry(meal_plan: MealPlan, cache: dict) -> dict:
         'note': ((batch.notes if batch is not None else '') or '').strip() or None,
         'first_time': False,
         'is_private': True,
+        'guests': guests,
+        'guests_count': guests_count,
         **_slot(meal_plan),
         'batch_id': batch.id if batch is not None else None,
         'meal_plan_id': meal_plan.id,
@@ -344,6 +409,8 @@ def _batch_entry(batch: RecipeBatch) -> dict:
         'note': (batch.notes or '').strip() or None,
         'first_time': False,
         'is_private': True,
+        'guests': [],
+        'guests_count': 0,
         'meal_time': None,
         'meal_time_display': None,
         'batch_id': batch.id,
@@ -398,6 +465,15 @@ def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: in
         ids[_KIND_BY_RANK[row['k_rank']]].append(row['k_id'])
     loaded = {kind: _load(kind, kind_ids, is_self=is_self) for kind, kind_ids in ids.items()}
 
+    visible_user_ids: set[int] | None = None
+    if not is_self:
+        from accounts.blocks import blocked_user_ids_for
+        from accounts.models import Follow
+
+        following_ids = set(Follow.objects.filter(follower_id=viewer.id).values_list('following_id', flat=True))
+        blocked_ids = blocked_user_ids_for(viewer)
+        visible_user_ids = (following_ids | {viewer.id}) - blocked_ids
+
     cache: dict = {}
     results = []
     for row in rows:
@@ -406,9 +482,9 @@ def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: in
         if obj is None:  # supprimé entre les deux requêtes
             continue
         if kind == 'post':
-            entry = _post_entry(obj, is_self=is_self, cache=cache)
+            entry = _post_entry(obj, is_self=is_self, cache=cache, visible_user_ids=visible_user_ids)
         elif kind == 'meal':
-            entry = _meal_entry(obj, cache)
+            entry = _meal_entry(obj, cache, is_self=is_self, visible_user_ids=visible_user_ids)
         else:
             entry = _batch_entry(obj)
         day = row['k_day']
