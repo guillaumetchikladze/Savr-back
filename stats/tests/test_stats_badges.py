@@ -75,7 +75,7 @@ def test_cooked_log_returns_new_badges_then_none(api, user, make_recipe):
     assert _codes(first.data['new_badges']) == {'first_cooked', 'ingredient_aubergine'}
     badge = next(b for b in first.data['new_badges'] if b['code'] == 'ingredient_aubergine')
     legacy = {'code', 'title', 'emoji', 'description', 'category', 'earned_at', 'context'}  # app 1.0.9
-    added = {'family', 'family_label', 'phrase', 'secret', 'hint', 'celebration'}
+    added = {'family', 'family_label', 'phrase', 'secret', 'hint', 'celebration', 'mystery', 'icon'}
     added |= {'rarity_percent', 'rarity_tier', 'rarity_label', 'rarity_text'}
     assert set(badge) == legacy | added
     assert again.status_code == 201 and not _codes(again.data['new_badges'])
@@ -91,3 +91,24 @@ def test_badges_me_lists_earned_and_progress(api, user, make_recipe, make_meal_p
     assert resp.data['total_count'] == len(enabled_badges())  # météo masquée sans WEATHER_BADGES_ENABLED
     nxt = {b['code']: b['progress'] for b in resp.data['next']}
     assert nxt['cuisines_5'] == {'current': 1, 'target': 5, 'ratio': 0.2}
+
+
+def test_earned_badges_public_masks_secret_condition_for_other_users(user, make_user):
+    from stats.services.badges import earned_badges_public
+
+    other = make_user('other')
+    # user a obtenu un badge secret (ex: raclette_ete) et un badge public (first_cooked)
+    UserBadge.objects.create(user=user, code='raclette_ete', context={'achieved_on': '2026-07-14'})
+    UserBadge.objects.create(user=user, code='first_cooked', context={'achieved_on': '2026-07-14'})
+
+    # other ne possède pas raclette_ete : la condition est masquée
+    public_badges = earned_badges_public(user, viewer=other)
+    by_code = {b['code']: b for b in public_badges}
+    assert by_code['raclette_ete']['description'] == 'Demande-lui comment !'
+    assert by_code['first_cooked']['description'] != 'Demande-lui comment !'
+
+    # si other possède aussi raclette_ete, la condition redevient visible
+    UserBadge.objects.create(user=other, code='raclette_ete', context={'achieved_on': '2026-07-15'})
+    public_badges_unlocked = earned_badges_public(user, viewer=other)
+    by_code_unlocked = {b['code']: b for b in public_badges_unlocked}
+    assert by_code_unlocked['raclette_ete']['description'] != 'Demande-lui comment !'

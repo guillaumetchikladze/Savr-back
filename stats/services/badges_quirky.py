@@ -92,6 +92,16 @@ FROMAGE = _rx(
     r'valencay|sainte maure|tete de moine|appenzeller|bleu)\b'
 )
 
+COURGE = _rx(r'\b(courges?|butternut|potirons?|potimarrons?|citrouilles?)\b')
+OEUF = _rx(r'\boeufs?\b')
+PATES = _rx(
+    r'\b(pates?|spaghettis?|tagliatelles?|penne|coquillettes?|lasagnes?|linguines?|fusilli|rigatoni|macaronis?|farfalles?|gnocchis?)\b'
+)
+PATATE = _rx(r'\b(pommes? de terre|patates?|puree|frites?)\b')
+POISSON = _rx(
+    r'\b(poissons?|saumons?|cabillaud|thon|truite|sardines?|maquereaux?|crevettes?|moules?|gambas|calmars?|poulpes?)\b'
+)
+
 
 def easter(year: int) -> date:
     """Dimanche de Pâques (calendrier grégorien, algorithme anonyme de Meeus/Jones/Butcher)."""
@@ -156,6 +166,69 @@ def _repeat_days(n: int):
     return _h(fn)
 
 
+def _grand_retour(h: BadgeHistory):
+    achieved, dish = None, None
+    for dds in h.dates_by_dish.values():
+        for i in range(1, len(dds)):
+            if (dds[i].date - dds[i - 1].date).days >= 180:
+                if achieved is None or dds[i].date < achieved:
+                    achieved, dish = dds[i].date, dds[i].label
+                break
+    return once(achieved, dish=dish)
+
+
+def _rituel(h: BadgeHistory, target: int = 4):
+    best, achieved, dish = 0, None, None
+    for dds in h.dates_by_dish.values():
+        by_weekday: dict[int, list[DishDay]] = defaultdict(list)
+        for dd in dds:
+            by_weekday[dd.date.weekday()].append(dd)
+        for d_list in by_weekday.values():
+            d_list.sort(key=lambda dd: dd.date)
+            run = 1 if d_list else 0
+            best = max(best, run)
+            for i in range(1, len(d_list)):
+                run = run + 1 if (d_list[i].date - d_list[i - 1].date).days == 7 else 1
+                best = max(best, run)
+                if run >= target and (achieved is None or d_list[i].date < achieved):
+                    achieved, dish = d_list[i].date, d_list[i].label
+    return (min(best, target), achieved, {'dish': dish}) if achieved else (min(best, target), None)
+
+
+def _abonnement(h: BadgeHistory, target: int = 6):
+    best, achieved, dish = 0, None, None
+    for dds in h.dates_by_dish.values():
+        by_month: dict[tuple[int, int], DishDay] = {}
+        for dd in sorted(dds, key=lambda d: d.date):
+            by_month.setdefault((dd.date.year, dd.date.month), dd)
+        sorted_months = sorted(by_month.keys())
+        run = 1 if sorted_months else 0
+        best = max(best, run)
+        for i in range(1, len(sorted_months)):
+            y1, m1 = sorted_months[i - 1]
+            y2, m2 = sorted_months[i]
+            is_next = (y2 == y1 and m2 == m1 + 1) or (y2 == y1 + 1 and m1 == 12 and m2 == 1)
+            run = run + 1 if is_next else 1
+            best = max(best, run)
+            if run >= target and (achieved is None or by_month[sorted_months[i]].date < achieved):
+                achieved, dish = by_month[sorted_months[i]].date, by_month[sorted_months[i]].label
+    return (min(best, target), achieved, {'dish': dish}) if achieved else (min(best, target), None)
+
+
+def _menu_degustation(h: BadgeHistory, target: int = 10, days: int = 7):
+    dish_events = [(dd.date, dd.key) for dd in h.dish_days if dd.key[0] != 'm']
+    best, achieved = 0, None
+    start = 0
+    for end in range(len(dish_events)):
+        while (dish_events[end][0] - dish_events[start][0]).days >= days:
+            start += 1
+        distinct = len({k for _, k in dish_events[start : end + 1]})
+        best = max(best, distinct)
+        if achieved is None and distinct >= target:
+            achieved = dish_events[end][0]
+    return min(best, target), achieved
+
+
 def _anniversary(h: BadgeHistory):
     achieved, dish = None, None
     for dds in h.dates_by_dish.values():
@@ -206,6 +279,61 @@ def _seven_days(h: BadgeHistory):
 def _three_meals(h: BadgeHistory):
     day = next((d for d in sorted(h.slots_by_day) if {'breakfast', 'lunch', 'dinner'} <= h.slots_by_day[d]), None)
     return once(day)
+
+
+def _douze_mois(h: BadgeHistory, target: int = 12):
+    months = sorted({(d.year, d.month) for d in h.cooked_days})
+    if not months:
+        return 0, None
+    best, achieved = 1, None
+    run = 1
+    for i in range(1, len(months)):
+        y1, m1 = months[i - 1]
+        y2, m2 = months[i]
+        is_next = (y2 == y1 and m2 == m1 + 1) or (y2 == y1 + 1 and m1 == 12 and m2 == 1)
+        run = run + 1 if is_next else 1
+        best = max(best, run)
+        if run >= target and achieved is None:
+            achieved = next(d for d in sorted(h.cooked_days) if (d.year, d.month) == months[i])
+    return min(best, target), achieved
+
+
+def _tchikiversaire(h: BadgeHistory):
+    joined = getattr(h.user, 'date_joined', None)
+    if not joined:
+        return 0, None
+    achieved = None
+    for dd in h.dish_days:
+        if (dd.date.month, dd.date.day) == (joined.month, joined.day) and dd.date.year > joined.year:
+            achieved = dd.date if achieved is None else min(achieved, dd.date)
+    return once(achieved)
+
+
+def _brunch_dimanche(dd: DishDay) -> bool:
+    if dd.date.weekday() != 6:
+        return False
+    has_egg = 'oeufs' in dd.groups or dd.has_ingredient(OEUF) or dd.matches(OEUF)
+    if not has_egg:
+        return False
+    return _slot_between(dd, 10, 14)
+
+
+def _midi_pile(dd: DishDay) -> bool:
+    return dd.log_local is not None and dd.log_local.hour == 12 and dd.log_local.minute == 0
+
+
+def _oiseau_de_nuit(h: BadgeHistory, target: int = 3):
+    weeks: dict[date, list[date]] = defaultdict(list)
+    for dd in h.dish_days:
+        if dd.log_local and dd.log_local.hour >= 22:
+            weeks[week_monday(dd.date)].append(dd.date)
+    best = max((len(days) for days in weeks.values()), default=0)
+    achieved = None
+    for _mon, days in sorted(weeks.items()):
+        if len(days) >= target:
+            d = sorted(days)[target - 1]
+            achieved = d if achieved is None else min(achieved, d)
+    return min(best, target), achieved
 
 
 # ---------------------------------------------------------------------------
@@ -386,22 +514,162 @@ def _homemade(h: BadgeHistory, target: int = 5):
     return total, achieved
 
 
+def _alliteration(h: BadgeHistory, target: int = 5):
+    weeks: dict[date, dict[str, set[tuple]]] = defaultdict(lambda: defaultdict(set))
+    for dd in h.dish_days:
+        if dd.key[0] == 'm':
+            continue
+        letter = (fold(dd.label) or ' ')[0]
+        if 'a' <= letter <= 'z':
+            weeks[week_monday(dd.date)][letter].add(dd.key)
+    best, achieved = 0, None
+    for mon, by_letter in sorted(weeks.items()):
+        for _letter, dishes in by_letter.items():
+            best = max(best, len(dishes))
+            if len(dishes) >= target and achieved is None:
+                achieved = mon + timedelta(days=6)
+    return min(best, target), achieved
+
+
+def _rien_ne_se_perd(h: BadgeHistory):
+    achieved = None
+    for i in range(1, len(h.dish_days)):
+        prev_dd = h.dish_days[i - 1]
+        curr_dd = h.dish_days[i]
+        if curr_dd.date == prev_dd.date + timedelta(days=1) and curr_dd.key != prev_dd.key:
+            s1 = {iid for iid, ing in prev_dd.ingredients.items() if not ing.staple}
+            s2 = {iid for iid, ing in curr_dd.ingredients.items() if not ing.staple}
+            if len(s1 & s2) >= 4:
+                achieved = curr_dd.date if achieved is None else min(achieved, curr_dd.date)
+    return once(achieved)
+
+
+CONTINENT_MAP = {
+    'francaise': 'europe',
+    'italienne': 'europe',
+    'espagnole': 'europe',
+    'portugaise': 'europe',
+    'grecque': 'europe',
+    'britannique': 'europe',
+    'allemande': 'europe',
+    'scandinave': 'europe',
+    'marocaine': 'afrique',
+    'ethiopienne': 'afrique',
+    'africaine_ouest': 'afrique',
+    'indienne': 'asie',
+    'thai': 'asie',
+    'vietnamienne': 'asie',
+    'chinoise': 'asie',
+    'japonaise': 'asie',
+    'coreenne': 'asie',
+    'americaine': 'ameriques',
+    'mexicaine': 'ameriques',
+    'peruvienne': 'ameriques',
+    'bresilienne': 'ameriques',
+    'turque': 'moyen_orient',
+    'libanaise': 'moyen_orient',
+}
+
+
+def _cinq_continents(h: BadgeHistory):
+    continents_seen: set[str] = set()
+    achieved = None
+    for dd in h.dish_days:
+        for c in dd.cuisines:
+            cont = CONTINENT_MAP.get(c)
+            if cont:
+                continents_seen.add(cont)
+                if len(continents_seen) >= 5 and achieved is None:
+                    achieved = dd.date
+    return len(continents_seen), achieved
+
+
+def _al_dente(h: BadgeHistory, target: int = 5):
+    weeks: dict[date, list[date]] = defaultdict(list)
+    for dd in h.dish_days:
+        if dd.matches(PATES) or dd.has_ingredient(PATES):
+            weeks[week_monday(dd.date)].append(dd.date)
+    best = max((len(days) for days in weeks.values()), default=0)
+    achieved = None
+    for _mon, days in sorted(weeks.items()):
+        if len(days) >= target:
+            d = sorted(days)[target - 1]
+            achieved = d if achieved is None else min(achieved, d)
+    return min(best, target), achieved
+
+
+def _herboriste(h: BadgeHistory, target: int = 5):
+    achieved = None
+    for dd in h.dish_days:
+        herbs = [i for i in dd.ingredients.values() if i.group == 'herbes_epices' and not i.staple]
+        if len(herbs) >= target:
+            achieved = dd.date if achieved is None else min(achieved, dd.date)
+    return once(achieved)
+
+
+def _pyramide(h: BadgeHistory, target: int = 6):
+    achieved = None
+    for dd in h.dish_days:
+        if len(dd.groups) >= target:
+            achieved = dd.date if achieved is None else min(achieved, dd.date)
+    return once(achieved)
+
+
+def _carton_plein(h: BadgeHistory, target: int = 10):
+    for dd in h.dish_days:
+        meal = next((m for m in h.stats.meals if m.id == dd.meal_id), None)
+        if meal and any(p.get('miam', 0) >= target for p in meal.posts):
+            return 1, dd.date
+    return 0, None
+
+
+def _tablee_connectee(h: BadgeHistory, target: int = 3):
+    dd = next((dd for dd in h.dish_days if len(h.stats.guests_by_meal.get(dd.meal_id, ())) >= target), None)
+    return once(dd.date, dish=dd.label) if dd else (0, None)
+
+
+def _pilote_auto(h: BadgeHistory, target: int = 20):
+    total = sum(len(m) for m in h.cooking_minutes_by_batch.values())
+    return min(total, target), (h.today if total >= target else None)
+
+
 # ---------------------------------------------------------------------------
 # Registre
 # ---------------------------------------------------------------------------
-def _b(code, title, emoji, description, phrase, family, target, metric, rarity=TIER_COMMUN, hint=''):
+def _b(
+    code,
+    title,
+    emoji,
+    description,
+    phrase,
+    family,
+    target,
+    metric,
+    rarity=TIER_COMMUN,
+    hint='',
+    hints=(),
+    icon='',
+    secret=None,
+    mystery='',
+):
+    all_hints = tuple(hints) if hints else ((hint,) if hint else ())
+    first_hint = all_hints[0] if all_hints else hint
+    is_secret = bool(all_hints or hint) if secret is None else bool(secret)
     return BadgeDef(
         code=code,
         title=title,
         emoji=emoji,
+        icon=icon,
         description=description,
         category=family,
         target=target,
         metric=metric,
         family=family,
         phrase=phrase,
-        secret=bool(hint),
-        hint=hint,
+        secret=is_secret,
+        hint=first_hint,
+        hints=all_hints,
+        mystery=mystery or ('enigme' if all_hints else ''),
         rarity_guess=rarity,
     )
 
@@ -410,136 +678,1040 @@ R, TR, L = TIER_RARE, TIER_TRES_RARE, TIER_LEGENDAIRE
 
 QUIRKY_BADGES: tuple[BadgeDef, ...] = (
     # --- La même recette, encore ---
-    _b('repeat_5', 'La fétiche', '💘', 'Le même plat cuisiné 5 fois.', 'Tu sais ce que tu aimes.',
-       'meme_recette', 5, _repeat(5)),
-    _b('repeat_10', 'Obsession', '🌀', 'Le même plat cuisiné 10 fois.', 'À ce stade, c’est une relation.',
-       'meme_recette', 10, _repeat(10), R),
-    _b('repeat_25', 'Le plat signature', '✍️', 'Le même plat cuisiné 25 fois.', 'On devrait lui donner ton nom.',
-       'meme_recette', 25, _repeat(25), TR),
-    _b('repeat_3_days', 'Restes assumés', '🥡', 'Le même plat 3 jours d’affilée.',
-       'Le lendemain c’est meilleur, le surlendemain aussi.', 'meme_recette', 3, _repeat_days(3), R),
-    _b('dish_anniversary', 'Joyeux anniversaire, le plat', '🎂',
-       'Le même plat cuisiné à un an d’écart, jour pour jour (à un jour près).', 'Une tradition est née.',
-       'meme_recette', 1, _h(_anniversary), TR, hint='Certains plats méritent qu’on souffle leurs bougies.'),
-    _b('perfectionist', 'Le perfectionniste', '📐', 'Le même plat 4 fois en un mois, avec une photo à chaque fois.',
-       'Celle-ci, c’est la bonne. Ou la suivante.', 'meme_recette', 1, _h(_perfectionist), TR,
-       hint='Refaire, photographier, recommencer.'),
+    _b(
+        'repeat_5',
+        'La fétiche',
+        '💘',
+        'Le même plat cuisiné 5 fois.',
+        'Tu sais ce que tu aimes.',
+        'meme_recette',
+        5,
+        _repeat(5),
+        icon='heart-arrow',
+    ),
+    _b(
+        'repeat_10',
+        'Obsession',
+        '🌀',
+        'Le même plat cuisiné 10 fois.',
+        'À ce stade, c’est une relation.',
+        'meme_recette',
+        10,
+        _repeat(10),
+        R,
+        icon='cyclone',
+    ),
+    _b(
+        'repeat_25',
+        'Le plat signature',
+        '✍️',
+        'Le même plat cuisiné 25 fois.',
+        'On devrait lui donner ton nom.',
+        'meme_recette',
+        25,
+        _repeat(25),
+        TR,
+        icon='writing-hand',
+    ),
+    _b(
+        'repeat_3_days',
+        'Restes assumés',
+        '🥡',
+        'Le même plat 3 jours d’affilée.',
+        'Le lendemain c’est meilleur, le surlendemain aussi.',
+        'meme_recette',
+        3,
+        _repeat_days(3),
+        R,
+        icon='takeout-box',
+    ),
+    _b(
+        'dish_anniversary',
+        'Joyeux anniversaire, le plat',
+        '🎂',
+        'Le même plat cuisiné à un an d’écart, jour pour jour (à un jour près).',
+        'Une tradition est née.',
+        'meme_recette',
+        1,
+        _h(_anniversary),
+        TR,
+        icon='birthday-cake',
+        hints=(
+            'Certains plats méritent qu’on souffle leurs bougies.',
+            'Regarde ce que tu cuisinais l’an passé à pareille date.',
+            'Le même plat cuisiné à un an d’écart, jour pour jour.',
+        ),
+    ),
+    _b(
+        'perfectionist',
+        'Le perfectionniste',
+        '📐',
+        'Le même plat 4 fois en un mois, avec une photo à chaque fois.',
+        'Celle-ci, c’est la bonne. Ou la suivante.',
+        'meme_recette',
+        1,
+        _h(_perfectionist),
+        TR,
+        icon='triangular-ruler',
+        hints=(
+            'Refaire, photographier, recommencer.',
+            'Quatre fois la même recette dans le même mois avec photo.',
+            'Le même plat 4 fois en un mois, chaque fois pris en photo.',
+        ),
+    ),
+    _b(
+        'grand_retour',
+        'Le grand retour',
+        '🪃',
+        'Un plat recuisiné après 180 jours ou plus sans l’avoir fait.',
+        'Un retour très attendu.',
+        'meme_recette',
+        1,
+        _h(_grand_retour),
+        R,
+        icon='boomerang',
+    ),
+    _b(
+        'rituel',
+        'Le rituel',
+        '🕯️',
+        'Le même plat, le même jour de la semaine, 4 semaines de suite.',
+        'Lundi, c’est sacré.',
+        'meme_recette',
+        4,
+        _h(_rituel),
+        TR,
+        icon='candle',
+        hints=(
+            'Certains jours ont leur plat.',
+            'Toujours le même jour, encore et encore.',
+            'Même plat, même jour de la semaine, 4 semaines d’affilée.',
+        ),
+    ),
+    _b(
+        'abonnement',
+        'L’abonnement',
+        '📆',
+        'Le même plat au moins une fois par mois, 6 mois de suite.',
+        'Résiliation impossible.',
+        'meme_recette',
+        6,
+        _h(_abonnement),
+        TR,
+        icon='calendar',
+    ),
+    _b(
+        'menu_degustation',
+        'Menu dégustation',
+        '🍱',
+        '10 plats différents en 7 jours.',
+        'Dix plats, dix histoires, une seule semaine.',
+        'meme_recette',
+        10,
+        _h(_menu_degustation),
+        R,
+        icon='bento-box',
+    ),
     # --- Le calendrier ---
-    _b('chandeleur', 'Chandeleur réglementaire', '🥞', 'Des crêpes le 2 février.',
-       'La pièce dans une main, la poêle dans l’autre.', 'calendrier', 1,
-       _first(lambda dd: (dd.date.month, dd.date.day) == (2, 2) and dd.matches(CREPES)), R),
-    _b('galette', 'Roi ou reine', '👑', 'Une galette des rois cuisinée en janvier.',
-       'La fève, c’était toi. Évidemment.', 'calendrier', 1,
-       _first(lambda dd: dd.date.month == 1 and dd.matches(GALETTE_ROIS))),
-    _b('mardi_gras', 'Mardi gras', '🎭', 'Des beignets ou des crêpes le jour de mardi gras.',
-       'Le déguisement est facultatif, la friture non.', 'calendrier', 1,
-       _first(lambda dd: dd.date == easter(dd.date.year) - timedelta(days=47) and dd.matches(BEIGNETS)), R),
-    _b('paques', 'Chasseur d’œufs', '🐣', 'Du chocolat le week-end de Pâques.',
-       'Les cloches sont passées par ta cuisine.', 'calendrier', 1,
-       _first(lambda dd: abs((dd.date - easter(dd.date.year)).days) <= 1
-              and (dd.matches(CHOCOLAT) or dd.has_ingredient(CHOCOLAT))), R),
-    _b('reveillon', 'Réveillonneur', '🎄', 'Cuisiné le 24 ou le 31 décembre pour 4 personnes ou plus.',
-       'Le vrai cadeau, c’était le repas.', 'calendrier', 1,
-       _first(lambda dd: (dd.date.month, dd.date.day) in ((12, 24), (12, 31)) and dd.people >= 4), R),
-    _b('jour_de_l_an', 'Courageux du 1er janvier', '🥂', 'Cuisiné le 1er janvier.', 'Respect.', 'calendrier', 1,
-       _first(lambda dd: (dd.date.month, dd.date.day) == (1, 1)), R, hint='Un jour où presque tout le monde dort.'),
-    _b('vendredi_13', 'Superstitieux ? Non.', '🐈‍⬛', 'Cuisiné un vendredi 13.', 'Le chat noir a eu sa part.',
-       'calendrier', 1, _first(lambda dd: dd.date.day == 13 and dd.date.weekday() == 4), R,
-       hint='Certains jours portent malheur. Pas à table.'),
-    _b('raclette_ete', 'Raclette en juillet', '🫕', 'Raclette, fondue ou tartiflette entre juin et août.',
-       'Les règles sont faites pour être fondues.', 'calendrier', 1,
-       _first(lambda dd: dd.date.month in (6, 7, 8) and dd.matches(RACLETTE)), TR,
-       hint='Le fromage fondu n’a pas de saison.'),
-    _b('soupe_aout', 'Soupe en août', '🥵', 'Une soupe chaude en juillet ou en août.',
-       'Le thermomètre dit non, ta cuillère dit oui.', 'calendrier', 1,
-       _first(lambda dd: dd.date.month in (7, 8) and dd.matches(SOUPE) and not dd.matches(SOUPE_FROIDE)), R,
-       hint='Un plat d’hiver en plein été.'),
-    _b('bbq_hiver', 'Barbecue de décembre', '🧣', 'Barbecue ou plancha entre décembre et février.',
-       'Gants de cuisine ou gants de ski ?', 'calendrier', 1,
-       _first(lambda dd: dd.date.month in (12, 1, 2) and (dd.matches(BBQ) or 'barbecue_plancha' in dd.equipment)),
-       TR, hint='Les braises ne connaissent pas l’hiver.'),
-    _b('buche_hors_saison', 'Bûche de Pâques', '🪵', 'Une bûche cuisinée en dehors des fêtes de fin d’année.',
-       'Noël, c’est quand tu veux.', 'calendrier', 1,
-       _first(lambda dd: dd.date.month != 12 and not (dd.date.month == 1 and dd.date.day <= 6)
-              and dd.matches(BUCHE)), TR, hint='Un dessert qui se trompe de saison.'),
+    _b(
+        'chandeleur',
+        'Chandeleur réglementaire',
+        '🥞',
+        'Des crêpes le 2 février.',
+        'La pièce dans une main, la poêle dans l’autre.',
+        'calendrier',
+        1,
+        _first(lambda dd: (dd.date.month, dd.date.day) == (2, 2) and dd.matches(CREPES)),
+        R,
+        icon='pancakes',
+    ),
+    _b(
+        'galette',
+        'Roi ou reine',
+        '👑',
+        'Une galette des rois cuisinée en janvier.',
+        'La fève, c’était toi. Évidemment.',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date.month == 1 and dd.matches(GALETTE_ROIS)),
+        icon='crown',
+    ),
+    _b(
+        'mardi_gras',
+        'Mardi gras',
+        '🎭',
+        'Des beignets ou des crêpes le jour de mardi gras.',
+        'Le déguisement est facultatif, la friture non.',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date == easter(dd.date.year) - timedelta(days=47) and dd.matches(BEIGNETS)),
+        R,
+        icon='performing-arts',
+    ),
+    _b(
+        'paques',
+        'Chasseur d’œufs',
+        '🐣',
+        'Du chocolat le week-end de Pâques.',
+        'Les cloches sont passées par ta cuisine.',
+        'calendrier',
+        1,
+        _first(
+            lambda dd: (
+                abs((dd.date - easter(dd.date.year)).days) <= 1
+                and (dd.matches(CHOCOLAT) or dd.has_ingredient(CHOCOLAT))
+            )
+        ),
+        R,
+        icon='hatching-chick',
+    ),
+    _b(
+        'reveillon',
+        'Réveillonneur',
+        '🎄',
+        'Cuisiné le 24 ou le 31 décembre pour 4 personnes ou plus.',
+        'Le vrai cadeau, c’était le repas.',
+        'calendrier',
+        1,
+        _first(lambda dd: (dd.date.month, dd.date.day) in ((12, 24), (12, 31)) and dd.people >= 4),
+        R,
+        icon='christmas-tree',
+    ),
+    _b(
+        'jour_de_l_an',
+        'Courageux du 1er janvier',
+        '🥂',
+        'Cuisiné le 1er janvier.',
+        'Respect.',
+        'calendrier',
+        1,
+        _first(lambda dd: (dd.date.month, dd.date.day) == (1, 1)),
+        R,
+        icon='clinking-glasses',
+        hints=(
+            'Un jour où presque tout le monde dort.',
+            'Le premier midi de l’année aux fourneaux.',
+            'Cuisiner un plat le 1er janvier.',
+        ),
+    ),
+    _b(
+        'vendredi_13',
+        'Superstitieux ? Non.',
+        '🐈‍⬛',
+        'Cuisiné un vendredi 13.',
+        'Le chat noir a eu sa part.',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date.day == 13 and dd.date.weekday() == 4),
+        R,
+        icon='black-cat',
+        hints=(
+            'Certains jours portent malheur. Pas à table.',
+            'Un vendredi pas comme les autres.',
+            'Cuisiner un vendredi 13.',
+        ),
+    ),
+    _b(
+        'raclette_ete',
+        'Raclette en juillet',
+        '🫕',
+        'Raclette, fondue ou tartiflette entre juin et août.',
+        'Les règles sont faites pour être fondues.',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date.month in (6, 7, 8) and dd.matches(RACLETTE)),
+        TR,
+        icon='fondue',
+        hints=(
+            'Le fromage fondu n’a pas de saison.',
+            'Un plat d’hiver sous le soleil de l’été.',
+            'Raclette, fondue ou tartiflette entre juin et août.',
+        ),
+    ),
+    _b(
+        'soupe_aout',
+        'Soupe en août',
+        '🥵',
+        'Une soupe chaude en juillet ou en août.',
+        'Le thermomètre dit non, ta cuillère dit oui.',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date.month in (7, 8) and dd.matches(SOUPE) and not dd.matches(SOUPE_FROIDE)),
+        R,
+        icon='hot-face',
+        hints=(
+            'Un plat d’hiver en plein été.',
+            'Quand la cuillère est chaude et le soleil aussi.',
+            'Une soupe chaude en juillet ou en août.',
+        ),
+    ),
+    _b(
+        'bbq_hiver',
+        'Barbecue de décembre',
+        '🧣',
+        'Barbecue ou plancha entre décembre et février.',
+        'Gants de cuisine ou gants de ski ?',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date.month in (12, 1, 2) and (dd.matches(BBQ) or 'barbecue_plancha' in dd.equipment)),
+        TR,
+        icon='scarf',
+        hints=(
+            'Les braises ne connaissent pas l’hiver.',
+            'Faire des grillades en doudoune.',
+            'Barbecue ou plancha entre décembre et février.',
+        ),
+    ),
+    _b(
+        'buche_hors_saison',
+        'Bûche de Pâques',
+        '🪵',
+        'Une bûche cuisinée en dehors des fêtes de fin d’année.',
+        'Noël, c’est quand tu veux.',
+        'calendrier',
+        1,
+        _first(lambda dd: dd.date.month != 12 and not (dd.date.month == 1 and dd.date.day <= 6) and dd.matches(BUCHE)),
+        TR,
+        icon='wood',
+        hints=(
+            'Un dessert qui se trompe de saison.',
+            'Noël au printemps ou en plein été.',
+            'Une bûche en dehors des fêtes de fin d’année.',
+        ),
+    ),
+    _b(
+        'poisson_avril',
+        'Poisson d’avril',
+        '🐟',
+        'Poisson ou fruits de mer le 1er avril.',
+        'Ce n’est pas une blague, c’est un dîner.',
+        'calendrier',
+        1,
+        _first(
+            lambda dd: (
+                (dd.date.month, dd.date.day) == (4, 1)
+                and ('poissons_fruits_de_mer' in dd.groups or dd.has_ingredient(POISSON) or dd.matches(POISSON))
+            )
+        ),
+        R,
+        icon='fish',
+        hints=(
+            'Un jour où les blagues nagent.',
+            'Le premier jour du quatrième mois.',
+            'Poisson ou fruits de mer le 1er avril.',
+        ),
+    ),
+    _b(
+        'bissextile',
+        'Le 29 février',
+        '🐸',
+        'Cuisiné un 29 février.',
+        'Ça n’arrive que tous les quatre ans. Toi aussi.',
+        'calendrier',
+        1,
+        _first(lambda dd: (dd.date.month, dd.date.day) == (2, 29)),
+        L,
+        icon='frog',
+        hints=(
+            'Un jour qui n’arrive que tous les quatre ans.',
+            'La fin d’un mois de février exceptionnel.',
+            'Cuisiné un 29 février.',
+        ),
+    ),
+    _b(
+        'tchikiversaire',
+        'Joyeux Tchikiversaire',
+        '🎉',
+        'Cuisiné le jour anniversaire de ton inscription.',
+        'Un an de cuisine ensemble. On s’embrasse ?',
+        'calendrier',
+        1,
+        _h(_tchikiversaire),
+        R,
+        icon='party-popper',
+        hints=(
+            'Une date anniversaire très spéciale.',
+            'Le jour où ton aventure en cuisine a commencé ici.',
+            'Cuisiné le jour anniversaire de ton inscription.',
+        ),
+    ),
+    _b(
+        'nuit_citrouilles',
+        'La nuit des citrouilles',
+        '🎃',
+        'Courge, potiron ou citrouille le 31 octobre.',
+        'Même les fantômes ont faim.',
+        'calendrier',
+        1,
+        _first(
+            lambda dd: (dd.date.month, dd.date.day) == (10, 31) and (dd.matches(COURGE) or dd.has_ingredient(COURGE))
+        ),
+        R,
+        icon='jack-o-lantern',
+        hints=(
+            'Une nuit où les légumes font peur.',
+            'Fin octobre, quelque chose d’orange.',
+            'Une courge le 31 octobre.',
+        ),
+    ),
+    _b(
+        'douze_mois',
+        'Douze mois sur douze',
+        '🗓️',
+        'Au moins un plat chaque mois, 12 mois d’affilée.',
+        'Même en août. Surtout en août.',
+        'calendrier',
+        12,
+        _h(_douze_mois),
+        R,
+        icon='spiral-calendar',
+    ),
+    _b(
+        'feu_artifice',
+        'Feu d’artifice',
+        '🎆',
+        'Cuisiné le 14 juillet pour 4 personnes ou plus.',
+        'Le bouquet final, c’était le dessert.',
+        'calendrier',
+        1,
+        _first(lambda dd: (dd.date.month, dd.date.day) == (7, 14) and dd.people >= 4),
+        R,
+        icon='fireworks',
+    ),
     # --- Les heures ---
-    _b('minuit', 'Fringale de minuit', '🌙', 'Un plat noté cuisiné entre 23 h et 3 h.',
-       'Les meilleures idées arrivent tard.', 'heures', 1,
-       _first(lambda dd: _local_hour_on(dd, 23, 24, next_day=False) or _local_hour_on(dd, 0, 3, next_day=True)),
-       R, hint='Certains plats se cuisinent à la lumière du frigo.'),
-    _b('leve_tot', 'Lève-tôt', '🌅', 'Un petit-déj cuisiné avant 7 h.', 'Le soleil n’était même pas prêt.',
-       'heures', 1, _first(lambda dd: dd.meal_time == 'breakfast' and _slot_between(dd, 4, 7)), R),
-    _b('gouter_dimanche', 'Goûter du dimanche', '🍰', 'Un gâteau ou un dessert un dimanche entre 15 h et 18 h.',
-       'L’heure sacrée.', 'heures', 1,
-       _first(lambda dd: dd.date.weekday() == 6 and dd.matches(DESSERT) and _slot_between(dd, 15, 18))),
-    _b('sept_jours_sept', '7 jours sur 7', '📅', 'Au moins un plat cuisiné chaque jour d’une même semaine.',
-       'Ta cuisine ne prend pas de jour off.', 'heures', 7, _h(_seven_days), R),
-    _b('trois_repas', 'Grand chef d’un jour', '🧑‍🍳', 'Petit-déj, déjeuner et dîner cuisinés le même jour.',
-       'Trois services, zéro réservation.', 'heures', 1, _h(_three_meals), R),
+    _b(
+        'minuit',
+        'Fringale de minuit',
+        '🌙',
+        'Un plat noté cuisiné entre 23 h et 3 h.',
+        'Les meilleures idées arrivent tard.',
+        'heures',
+        1,
+        _first(lambda dd: _local_hour_on(dd, 23, 24, next_day=False) or _local_hour_on(dd, 0, 3, next_day=True)),
+        R,
+        icon='crescent-moon',
+        hints=(
+            'Certains plats se cuisinent à la lumière du frigo.',
+            'Quand la nuit est bien avancée.',
+            'Un plat noté cuisiné entre 23 h et 3 h.',
+        ),
+    ),
+    _b(
+        'leve_tot',
+        'Lève-tôt',
+        '🌅',
+        'Un petit-déj cuisiné avant 7 h.',
+        'Le soleil n’était même pas prêt.',
+        'heures',
+        1,
+        _first(lambda dd: dd.meal_time == 'breakfast' and _slot_between(dd, 4, 7)),
+        R,
+        icon='sunrise',
+    ),
+    _b(
+        'gouter_dimanche',
+        'Goûter du dimanche',
+        '🍰',
+        'Un gâteau ou un dessert un dimanche entre 15 h et 18 h.',
+        'L’heure sacrée.',
+        'heures',
+        1,
+        _first(lambda dd: dd.date.weekday() == 6 and dd.matches(DESSERT) and _slot_between(dd, 15, 18)),
+        icon='shortcake',
+    ),
+    _b(
+        'sept_jours_sept',
+        '7 jours sur 7',
+        '📅',
+        'Au moins un plat cuisiné chaque jour d’une même semaine.',
+        'Ta cuisine ne prend pas de jour off.',
+        'heures',
+        7,
+        _h(_seven_days),
+        R,
+        icon='calendar',
+    ),
+    _b(
+        'trois_repas',
+        'Grand chef d’un jour',
+        '🧑‍🍳',
+        'Petit-déj, déjeuner et dîner cuisinés le même jour.',
+        'Trois services, zéro réservation.',
+        'heures',
+        1,
+        _h(_three_meals),
+        R,
+        icon='cook',
+    ),
+    _b(
+        'brunch_dimanche',
+        'Brunch du dimanche',
+        '🥯',
+        'Un dimanche, un plat avec des œufs, entre 10 h et 14 h.',
+        'Ni petit-déj, ni déjeuner. Parfait.',
+        'heures',
+        1,
+        _first(_brunch_dimanche),
+        icon='bagel',
+    ),
+    _b(
+        'midi_pile',
+        'Midi pile',
+        '🕛',
+        'Plat noté cuisiné à 12 h 00 pile.',
+        'Le clocher et toi, même combat.',
+        'heures',
+        1,
+        _first(_midi_pile),
+        TR,
+        icon='twelve-o-clock',
+        hints=(
+            'Une histoire de grande aiguille et de petite aiguille.',
+            'Le clocher sonne douze coups précis.',
+            'Plat noté cuisiné à 12 h 00 pile.',
+        ),
+    ),
+    _b(
+        'oiseau_de_nuit',
+        'Oiseau de nuit',
+        '🦉',
+        '3 plats saisis après 22 h dans la même semaine.',
+        'La cuisine ferme quand tu le décides.',
+        'heures',
+        3,
+        _h(_oiseau_de_nuit),
+        R,
+        icon='owl',
+    ),
     # --- Les défis absurdes ---
-    _b('arc_en_ciel', 'Arc-en-ciel', '🌈', 'Des végétaux rouges, orange, jaunes, verts et violets la même semaine.',
-       'Ton assiette a plus de couleurs que ta garde-robe.', 'defis', 5, _h(_rainbow), R),
-    _b('alphabet_10', 'Abécédaire', '🔤', 'Des plats qui commencent par 10 lettres différentes.',
-       'A comme appétit, B comme bravo.', 'defis', 10, _alphabet(10)),
-    _b('alphabet_26', 'De A à Z', '🔠', 'Des plats qui commencent par chacune des 26 lettres.',
-       'Même le W. Surtout le W.', 'defis', 26, _alphabet(26), L, hint='Une histoire de lettres.'),
-    _b('minimaliste', 'Le minimaliste', '🥄', 'Une recette de 3 ingrédients ou moins.',
-       'Moins, c’est plus. Surtout moins de vaisselle.', 'defis', 1,
-       _first(lambda dd: any(2 <= n <= 3 for n in dd.recipe_sizes))),
-    _b('marathon', 'Le marathon', '🏃', 'Une recette de 20 ingrédients ou plus.',
-       'Ton plan de travail s’en souvient encore.', 'defis', 1,
-       _first(lambda dd: any(n >= 20 for n in dd.recipe_sizes)), R, hint='Une liste de courses qui n’en finit pas.'),
-    _b('patience', 'Patience d’ange', '⏳', 'Une cuisson mesurée de 4 h ou plus en mode cuisine.',
-       'Les bonnes choses prennent du temps. Beaucoup.', 'defis', 1,
-       _measured(lambda m: 240 <= m <= 720), R, hint='Il faut savoir attendre.'),  # > 12 h : minuteur oublié
-    _b('express', 'Éclair', '⚡', 'Un plat cuisiné en 15 minutes ou moins en mode cuisine.',
-       'Plus rapide qu’une livraison.', 'defis', 1, _measured(lambda m: 1 <= m <= 15)),
-    _b('tour_monde_semaine', 'Tour du monde en 7 jours', '🧭', '5 cuisines du monde différentes en 7 jours.',
-       'Phileas Fogg est jaloux.', 'defis', 5, _cuisines_in_days(5, 7), TR),
-    _b('vampire', 'Anti-vampire', '🧄', 'De l’ail dans 20 plats.',
-       'Aucun vampire ne t’approchera. Tes amis, on verra.', 'defis', 20, _count(lambda dd: dd.has_ingredient(AIL), 20)),
-    _b('breton', 'Breton de cœur', '🧈', 'Du beurre dans 30 plats.',
-       'Le beurre n’est pas un ingrédient, c’est un mode de vie.', 'defis', 30,
-       _count(lambda dd: dd.has_ingredient(BEURRE), 30)),
-    _b('trois_fromages', 'Trois fromages, sinon rien', '🧀', '3 fromages différents dans un même plat.',
-       'Pourquoi choisir ?', 'defis', 1, _first(lambda dd: _cheeses(dd) >= 3), R),
-    _b('tout_orange', 'Monochrome orange', '🟠', 'Un plat dont tous les végétaux sont orange.',
-       'Très cohérent. Très orange.', 'defis', 1, _first(_all_orange), TR, hint='Une seule couleur dans l’assiette.'),
-    _b('trente_vegetaux', 'Le potager', '🥕', '30 végétaux différents dans le même mois.',
-       'Ton frigo ressemble à un marché.', 'defis', 30, _distinct_plants_per(lambda d: (d.year, d.month), 30), R),
-    _b('cent_vegetaux', 'La forêt', '🌳', '100 végétaux différents dans la même année.',
-       'Tu cuisines ou tu fais de la botanique ?', 'defis', 100, _distinct_plants_per(lambda d: d.year, 100), L),
-    _b('piment', 'Langue de feu', '🌶️', 'Du piment dans 10 plats.', 'Toi, tu appelles ça « relevé ».',
-       'defis', 10, _count(lambda dd: dd.has_ingredient(PIMENT), 10)),
-    _b('sans_viande_mois', 'Le mois vert', '🥦', '30 jours sans viande ni poisson, avec au moins 8 plats notés.',
-       'Un mois entier côté potager.', 'defis', 1, _h(_veggie_month), R),
+    _b(
+        'arc_en_ciel',
+        'Arc-en-ciel',
+        '🌈',
+        'Des végétaux rouges, orange, jaunes, verts et violets la même semaine.',
+        'Ton assiette a plus de couleurs que ta garde-robe.',
+        'defis',
+        5,
+        _h(_rainbow),
+        R,
+        icon='rainbow',
+    ),
+    _b(
+        'alphabet_10',
+        'Abécédaire',
+        '🔤',
+        'Des plats qui commencent par 10 lettres différentes.',
+        'A comme appétit, B comme bravo.',
+        'defis',
+        10,
+        _alphabet(10),
+        icon='input-latin-letters',
+    ),
+    _b(
+        'alphabet_26',
+        'De A à Z',
+        '🔠',
+        'Des plats qui commencent par chacune des 26 lettres.',
+        'Même le W. Surtout le W.',
+        'defis',
+        26,
+        _alphabet(26),
+        L,
+        icon='input-latin-uppercase',
+        hints=(
+            'Une histoire de lettres.',
+            '26 plats, 26 initiales de l’alphabet.',
+            'Cuisiner un plat pour chaque lettre de A à Z.',
+        ),
+    ),
+    _b(
+        'minimaliste',
+        'Le minimaliste',
+        '🥄',
+        'Une recette de 3 ingrédients ou moins.',
+        'Moins, c’est plus. Surtout moins de vaisselle.',
+        'defis',
+        1,
+        _first(lambda dd: any(2 <= n <= 3 for n in dd.recipe_sizes)),
+        icon='spoon',
+    ),
+    _b(
+        'marathon',
+        'Le marathon',
+        '🏃',
+        'Une recette de 20 ingrédients ou plus.',
+        'Ton plan de travail s’en souvient encore.',
+        'defis',
+        1,
+        _first(lambda dd: any(n >= 20 for n in dd.recipe_sizes)),
+        R,
+        icon='running-person',
+        hints=(
+            'Une liste de courses qui n’en finit pas.',
+            'Beaucoup d’ingrédients sur le plan de travail.',
+            'Une recette comptant au moins 20 ingrédients.',
+        ),
+    ),
+    _b(
+        'patience',
+        'Patience d’ange',
+        '⏳',
+        'Une cuisson mesurée de 4 h ou plus en mode cuisine.',
+        'Les bonnes choses prennent du temps. Beaucoup.',
+        'defis',
+        1,
+        _measured(lambda m: 240 <= m <= 720),
+        R,
+        icon='hourglass',
+        hints=(
+            'Il faut savoir attendre.',
+            'Plusieurs heures au four ou sur le feu.',
+            'Une cuisson de 4 h ou plus en mode cuisine.',
+        ),
+    ),
+    _b(
+        'express',
+        'Éclair',
+        '⚡',
+        'Un plat cuisiné en 15 minutes ou moins en mode cuisine.',
+        'Plus rapide qu’une livraison.',
+        'defis',
+        1,
+        _measured(lambda m: 1 <= m <= 15),
+        icon='high-voltage',
+    ),
+    _b(
+        'tour_monde_semaine',
+        'Tour du monde en 7 jours',
+        '🧭',
+        '5 cuisines du monde différentes en 7 jours.',
+        'Phileas Fogg est jaloux.',
+        'defis',
+        5,
+        _cuisines_in_days(5, 7),
+        TR,
+        icon='compass',
+    ),
+    _b(
+        'vampire',
+        'Anti-vampire',
+        '🧄',
+        'De l’ail dans 20 plats.',
+        'Aucun vampire ne t’approchera. Tes amis, on verra.',
+        'defis',
+        20,
+        _count(lambda dd: dd.has_ingredient(AIL), 20),
+        icon='garlic',
+    ),
+    _b(
+        'breton',
+        'Breton de cœur',
+        '🧈',
+        'Du beurre dans 30 plats.',
+        'Le beurre n’est pas un ingrédient, c’est un mode de vie.',
+        'defis',
+        30,
+        _count(lambda dd: dd.has_ingredient(BEURRE), 30),
+        icon='butter',
+    ),
+    _b(
+        'trois_fromages',
+        'Trois fromages, sinon rien',
+        '🧀',
+        '3 fromages différents dans un même plat.',
+        'Pourquoi choisir ?',
+        'defis',
+        1,
+        _first(lambda dd: _cheeses(dd) >= 3),
+        R,
+        icon='cheese',
+    ),
+    _b(
+        'tout_orange',
+        'Monochrome orange',
+        '🟠',
+        'Un plat dont tous les végétaux sont orange.',
+        'Très cohérent. Très orange.',
+        'defis',
+        1,
+        _first(_all_orange),
+        TR,
+        icon='orange-circle',
+        hints=(
+            'Une seule couleur dans l’assiette.',
+            'Carotte, potiron, patate douce...',
+            'Un plat dont tous les végétaux sont orange.',
+        ),
+    ),
+    _b(
+        'trente_vegetaux',
+        'Le potager',
+        '🥕',
+        '30 végétaux différents dans le même mois.',
+        'Ton frigo ressemble à un marché.',
+        'defis',
+        30,
+        _distinct_plants_per(lambda d: (d.year, d.month), 30),
+        R,
+        icon='carrot',
+    ),
+    _b(
+        'cent_vegetaux',
+        'La forêt',
+        '🌳',
+        '100 végétaux différents dans la même année.',
+        'Tu cuisines ou tu fais de la botanique ?',
+        'defis',
+        100,
+        _distinct_plants_per(lambda d: d.year, 100),
+        L,
+        icon='deciduous-tree',
+    ),
+    _b(
+        'piment',
+        'Langue de feu',
+        '🌶️',
+        'Du piment dans 10 plats.',
+        'Toi, tu appelles ça « relevé ».',
+        'defis',
+        10,
+        _count(lambda dd: dd.has_ingredient(PIMENT), 10),
+        icon='hot-pepper',
+    ),
+    _b(
+        'sans_viande_mois',
+        'Le mois vert',
+        '🥦',
+        '30 jours sans viande ni poisson, avec au moins 8 plats notés.',
+        'Un mois entier côté potager.',
+        'defis',
+        1,
+        _h(_veggie_month),
+        R,
+        icon='broccoli',
+    ),
+    _b(
+        'alliteration',
+        'Allitération',
+        '🅿️',
+        '5 plats différents qui commencent par la même lettre, dans la même semaine.',
+        'Pâtes, pizza, poulet, purée, paella.',
+        'defis',
+        5,
+        _h(_alliteration),
+        R,
+        icon='letter-p',
+        hints=(
+            'Une semaine qui bégaie.',
+            'Regarde la première lettre de tes plats.',
+            '5 plats, même initiale, même semaine.',
+        ),
+    ),
+    _b(
+        'rien_ne_se_perd',
+        'Rien ne se perd',
+        '♻️',
+        '2 jours de suite, 2 plats différents qui partagent au moins 4 ingrédients.',
+        'Les restes d’hier, l’inspiration d’aujourd’hui.',
+        'defis',
+        1,
+        _h(_rien_ne_se_perd),
+        R,
+        icon='recycling',
+        hints=(
+            'Hier n’a pas dit son dernier mot.',
+            'Ce qui reste d’un jour sert le lendemain.',
+            '2 jours de suite, 2 plats, 4 ingrédients en commun.',
+        ),
+    ),
+    _b(
+        'poupees_russes',
+        'Poupées russes',
+        '🪆',
+        '3 sous-recettes faites maison dans un même plat.',
+        'Une recette dans une recette dans une recette.',
+        'defis',
+        1,
+        _first(lambda dd: dd.made_sub_recipes >= 3),
+        TR,
+        icon='nesting-dolls',
+        hints=(
+            'Une recette peut en cacher une autre.',
+            'Et celle-là, une autre encore.',
+            '3 préparations maison dans un même plat.',
+        ),
+    ),
+    _b(
+        'herboriste',
+        'L’herboriste',
+        '🌿',
+        '5 herbes ou épices différentes dans un même plat.',
+        'Ça sent bon jusque dans l’escalier.',
+        'defis',
+        1,
+        _h(_herboriste),
+        R,
+        icon='herb',
+    ),
+    _b(
+        'pyramide',
+        'La pyramide',
+        '🔺',
+        '6 groupes d’aliments différents dans un même plat.',
+        'Les nutritionnistes applaudissent.',
+        'defis',
+        1,
+        _h(_pyramide),
+        R,
+        icon='pyramid',
+    ),
+    _b(
+        'cinq_continents',
+        'Cinq continents',
+        '🗺️',
+        'Au moins une cuisine d’Europe, d’Afrique, d’Asie, des Amériques et du Moyen-Orient.',
+        'Ta cuisine n’a pas de frontières.',
+        'defis',
+        5,
+        _h(_cinq_continents),
+        R,
+        icon='world-map',
+    ),
+    _b(
+        'team_patate',
+        'Team patate',
+        '🥔',
+        'Pomme de terre dans 20 plats.',
+        'Frite, purée, gratin : tu les aimes toutes.',
+        'defis',
+        20,
+        _count(lambda dd: dd.has_ingredient(PATATE) or dd.matches(PATATE), 20),
+        icon='potato',
+    ),
+    _b(
+        'al_dente',
+        'Al dente',
+        '🍝',
+        'Des pâtes dans 5 plats la même semaine.',
+        'Quelque part en Italie, une nonna est fière.',
+        'defis',
+        5,
+        _h(_al_dente),
+        R,
+        icon='spaghetti',
+    ),
     # --- À plusieurs ---
-    _b('cantine', 'La cantine', '🏫', 'Un repas pour 12 personnes ou plus (ton foyer non compris).',
-       'Il ne reste plus qu’à sortir les plateaux.', 'a_plusieurs', 1, _first(lambda dd: dd.people >= 12), TR),
-    _b('hote_dimanche', 'L’hôte du dimanche', '🍗', '4 dimanches avec des invités.',
-       'Le dimanche, c’est chez toi.', 'a_plusieurs', 4, _h(_sundays_with_guests), R),
-    _b('influenceur', 'Influenceur', '📣', 'Tes plats refaits 5 fois par d’autres grâce à « À mon tour ».',
-       'Tu lances des tendances.', 'a_plusieurs', 5, _h(lambda h: reached(h.inspired_others_dates, 5)), TR),
-    _b('copieur', 'Le bon élève', '📝', '5 plats d’amis refaits avec « À mon tour ».',
-       'Copier, c’est aussi cuisiner.', 'a_plusieurs', 5, _h(_friends_dishes_redone)),
-    _b('miams_100', '100 miams', '😋', '100 miams reçus sur tes plats.',
-       'Ça fait beaucoup de bouches qui salivent.', 'a_plusieurs', 100, _miams, R),
-    _b('tablee_complete', 'Tablée complète', '🪑', 'Tout le monde a cuisiné dans ta tablée la même semaine.',
-       'Tout le monde aux fourneaux.', 'a_plusieurs', 1, _h(_table_complete), R),
-    _b('ouvre_bal', 'Ouvre le bal', '💃', 'Premier ou première à cuisiner de ta tablée 4 semaines de suite.',
-       'Il faut bien que quelqu’un commence.', 'a_plusieurs', 4, _h(_opens_ball), TR),
-    _b('inviteur', 'Le rabatteur', '📨', '3 amis inscrits grâce à ton lien.',
-       'Plus on est de fous, plus on mange.', 'a_plusieurs', 3, _h(lambda h: reached(h.invite_join_dates, 3)), R),
+    _b(
+        'cantine',
+        'La cantine',
+        '🏫',
+        'Un repas pour 12 personnes ou plus (ton foyer non compris).',
+        'Il ne reste plus qu’à sortir les plateaux.',
+        'a_plusieurs',
+        1,
+        _first(lambda dd: dd.people >= 12),
+        TR,
+        icon='school',
+    ),
+    _b(
+        'hote_dimanche',
+        'L’hôte du dimanche',
+        '🍗',
+        '4 dimanches avec des invités.',
+        'Le dimanche, c’est chez toi.',
+        'a_plusieurs',
+        4,
+        _h(_sundays_with_guests),
+        R,
+        icon='poultry-leg',
+    ),
+    _b(
+        'influenceur',
+        'Influenceur',
+        '📣',
+        'Tes plats refaits 5 fois par d’autres grâce à « À mon tour ».',
+        'Tu lances des tendances.',
+        'a_plusieurs',
+        5,
+        _h(lambda h: reached(h.inspired_others_dates, 5)),
+        TR,
+        icon='megaphone',
+    ),
+    _b(
+        'copieur',
+        'Le bon élève',
+        '📝',
+        '5 plats d’amis refaits avec « À mon tour ».',
+        'Copier, c’est aussi cuisiner.',
+        'a_plusieurs',
+        5,
+        _h(_friends_dishes_redone),
+        icon='memo',
+    ),
+    _b(
+        'miams_100',
+        '100 miams',
+        '😋',
+        '100 miams reçus sur tes plats.',
+        'Ça fait beaucoup de bouches qui salivent.',
+        'a_plusieurs',
+        100,
+        _miams,
+        R,
+        icon='face-savoring-food',
+    ),
+    _b(
+        'tablee_complete',
+        'Tablée complète',
+        '🪑',
+        'Tout le monde a cuisiné dans ta tablée la même semaine.',
+        'Tout le monde aux fourneaux.',
+        'a_plusieurs',
+        1,
+        _h(_table_complete),
+        R,
+        icon='chair',
+    ),
+    _b(
+        'ouvre_bal',
+        'Ouvre le bal',
+        '💃',
+        'Premier ou première à cuisiner de ta tablée 4 semaines de suite.',
+        'Il faut bien que quelqu’un commence.',
+        'a_plusieurs',
+        4,
+        _h(_opens_ball),
+        TR,
+        icon='woman-dancing',
+    ),
+    _b(
+        'inviteur',
+        'Le rabatteur',
+        '📨',
+        '3 amis inscrits grâce à ton lien.',
+        'Plus on est de fous, plus on mange.',
+        'a_plusieurs',
+        3,
+        _h(lambda h: reached(h.invite_join_dates, 3)),
+        R,
+        icon='incoming-envelope',
+    ),
+    _b(
+        'carton_plein',
+        'Carton plein',
+        '💯',
+        '10 miams sur un même plat.',
+        'Ton assiette a son fan-club.',
+        'a_plusieurs',
+        1,
+        _h(_carton_plein),
+        R,
+        icon='hundred-points',
+    ),
+    _b(
+        'tablee_connectee',
+        'La tablée connectée',
+        '📲',
+        'Un repas avec 3 invités qui ont un compte (hors foyer).',
+        'Tout le monde à table, tout le monde sur Tchikook.',
+        'a_plusieurs',
+        1,
+        _h(_tablee_connectee),
+        R,
+        icon='mobile-phone',
+    ),
     # --- Le matériel ---
-    _b('one_pot', 'Une seule casserole', '🍲', '10 plats « one pot ».', 'La vaisselle te dit merci.',
-       'materiel', 10, _count(lambda dd: dd.matches(ONE_POT), 10), R),
-    _b('airfryer', 'Air fryer power', '🍟', '10 plats à l’airfryer.', 'Le croustillant sans la friteuse.',
-       'materiel', 10, _count(lambda dd: 'airfryer' in dd.equipment or dd.matches(AIRFRYER), 10)),
-    _b('sans_four', 'Sans four, sans problème', '🔥', '20 plats sans four, dans une cuisine sans four.',
-       'Qui a besoin d’un four, franchement ?', 'materiel', 20, _h(_without_oven), R),
-    _b('robot', 'Le robot fait tout', '🤖', '10 plats au robot cuiseur.',
-       'Toi, tu as surtout appuyé sur le bouton. Bravo.', 'materiel', 10,
-       _count(lambda dd: 'robot_cuiseur' in dd.equipment or dd.matches(ROBOT), 10)),
-    _b('fait_maison', 'Fait maison', '🫙', '5 sous-recettes faites maison (pâte, sauce…).',
-       'Acheter la pâte ? Jamais entendu parler.', 'materiel', 5, _h(_homemade), R),
-)  # fmt: skip
+    _b(
+        'one_pot',
+        'Une seule casserole',
+        '🍲',
+        '10 plats « one pot ».',
+        'La vaisselle te dit merci.',
+        'materiel',
+        10,
+        _count(lambda dd: dd.matches(ONE_POT), 10),
+        R,
+        icon='pot-of-food',
+    ),
+    _b(
+        'airfryer',
+        'Air fryer power',
+        '🍟',
+        '10 plats à l’airfryer.',
+        'Le croustillant sans la friteuse.',
+        'materiel',
+        10,
+        _count(lambda dd: 'airfryer' in dd.equipment or dd.matches(AIRFRYER), 10),
+        icon='french-fries',
+    ),
+    _b(
+        'sans_four',
+        'Sans four, sans problème',
+        '🔥',
+        '20 plats sans four, dans une cuisine sans four.',
+        'Qui a besoin d’un four, franchement ?',
+        'materiel',
+        20,
+        _h(_without_oven),
+        R,
+        icon='fire',
+    ),
+    _b(
+        'robot',
+        'Le robot fait tout',
+        '🤖',
+        '10 plats au robot cuiseur.',
+        'Toi, tu as surtout appuyé sur le bouton. Bravo.',
+        'materiel',
+        10,
+        _count(lambda dd: 'robot_cuiseur' in dd.equipment or dd.matches(ROBOT), 10),
+        icon='robot',
+    ),
+    _b(
+        'fait_maison',
+        'Fait maison',
+        '🫙',
+        '5 sous-recettes faites maison (pâte, sauce…).',
+        'Acheter la pâte ? Jamais entendu parler.',
+        'materiel',
+        5,
+        _h(_homemade),
+        R,
+        icon='jar',
+    ),
+    _b(
+        'pilote_auto',
+        'Pilote automatique',
+        '🛫',
+        '20 recettes suivies jusqu’au bout en mode cuisine.',
+        'Étape par étape, comme un pro.',
+        'materiel',
+        20,
+        _h(_pilote_auto),
+        R,
+        icon='airplane',
+    ),
+    # --- Le carnet ---
+    _b(
+        'paparazzi',
+        'Paparazzi des assiettes',
+        '🤳',
+        '30 plats en photo.',
+        'Ton téléphone mange avant toi.',
+        'carnet',
+        30,
+        _count(lambda dd: dd.photo, 30),
+        icon='camera-flash',
+    ),
+    _b(
+        'chasseur_recettes',
+        'Le chasseur de recettes',
+        '🧲',
+        '10 recettes importées cuisinées.',
+        'Internet est ton livre de cuisine.',
+        'carnet',
+        10,
+        _count(lambda dd: dd.is_imported, 10),
+        icon='magnet',
+    ),
+)

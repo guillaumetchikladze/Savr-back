@@ -57,7 +57,9 @@ def stats_user_view(request, user_id: int):
     is_self = target.id == request.user.id
     data = get_stats_payload(target, period, public=not is_self)
     if not is_self:
-        data['badges'] = earned_badges_public(target)  # {code, label, title, emoji, category, earned_at}
+        data['badges'] = earned_badges_public(
+            target, viewer=request.user
+        )  # {code, label, title, emoji, category, earned_at}
         data['badges_count'] = len(data['badges'])
     return Response({'user_id': target.id, 'username': target.username, **data})
 

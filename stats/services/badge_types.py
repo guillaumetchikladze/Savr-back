@@ -24,6 +24,7 @@ FAMILIES: dict[str, str] = {
     'defis': 'Les défis absurdes',
     'a_plusieurs': 'À plusieurs',
     'materiel': 'Le matériel',
+    'carnet': 'Le carnet',
     'meteo': 'La météo',
 }
 
@@ -54,6 +55,9 @@ class BadgeDef:
     phrase: str = ''  # phrase drôle (carte à partager, célébration)
     secret: bool = False
     hint: str = ''  # indice vague d'un badge secret (« ??? »)
+    hints: tuple[str, ...] = ()  # 3 indices progressifs pour les énigmes
+    icon: str = ''  # nom de l'icône Microsoft Fluent Flat
+    mystery: str = ''  # 'enigme' | ''
     rarity_guess: str = TIER_COMMUN  # palier tant que la rareté calculée n'existe pas
     feature_flag: str = ''  # réglage Django qui doit valoir True pour évaluer / afficher ce badge
     async_only: bool = False  # évalué seulement en tâche Celery (météo : données réseau), jamais dans la requête
@@ -67,12 +71,14 @@ class BadgeDef:
             'code': self.code,
             'title': self.title,
             'emoji': self.emoji,
+            'icon': self.icon,
             'description': self.description,
             'category': self.category,
             'family': self.family_code,
             'family_label': FAMILIES.get(self.family_code, ''),
             'phrase': self.phrase,
             'secret': self.secret,
+            'mystery': self.mystery or ('enigme' if self.secret else ''),
             'hint': self.hint if self.secret else '',
         }
 

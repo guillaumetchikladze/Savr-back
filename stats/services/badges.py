@@ -106,51 +106,51 @@ _INGREDIENT_BADGES = (
 BADGES: tuple[BadgeDef, ...] = (
     BadgeDef(
         'first_cooked', 'Premier plat', '👩‍🍳', 'Ton premier « J’ai cuisiné ».', 'premiere_fois', 1,
-        _first('first_cooked_on'),
+        _first('first_cooked_on'), icon='chef',
     ),
     BadgeDef(
         'first_photo', 'Première photo', '📸', 'Ton premier plat partagé en photo.', 'premiere_fois', 1,
-        _first('first_photo_on'),
+        _first('first_photo_on'), icon='camera',
     ),
     *(
         BadgeDef(
             f'ingredient_{code}', title, emoji, f'Premier plat cuisiné avec : {title.lower()}.',
-            'ingredient', 1, _ingredient(pattern),
+            'ingredient', 1, _ingredient(pattern), icon=code,
         )
         for code, title, emoji, pattern in _INGREDIENT_BADGES
     ),
     *(
         BadgeDef(
             f'cuisines_{n}', f'{n} cuisines du monde', '🌍', f'{n} cuisines différentes explorées.', 'collection', n,
-            _threshold('cuisine_dates', n),
+            _threshold('cuisine_dates', n), icon='earth',
         )
         for n in (5, 10, 20)
     ),
     *(
         BadgeDef(
             f'ingredients_{n}', f'{n} ingrédients', '🧺', f'{n} ingrédients différents cuisinés (hors sel, huile…).',
-            'collection', n, _threshold('distinct_ingredient_dates', n),
+            'collection', n, _threshold('distinct_ingredient_dates', n), icon='basket',
         )
         for n in (25, 50, 100)
     ),
     *(
         BadgeDef(
             f'plants_{n}', f'{n} végétaux', '🌱', f'{n} végétaux différents cuisinés.', 'collection', n,
-            _threshold('plant_dates', n),
+            _threshold('plant_dates', n), icon='sprout',
         )
         for n in (10, 25)
     ),
     *(
         BadgeDef(
             f'streak_{n}', f'{n} semaines d’affilée', '🔥', f'Au moins un plat cuisiné chaque semaine, {n} semaines de suite.',
-            'serie', n, _streak(n),
+            'serie', n, _streak(n), icon='fire',
         )
         for n in (4, 12, 26)
     ),
     *(
         BadgeDef(
             f'host_{n}', f'{n} personnes régalées', '🍽️', f'Tu as cuisiné pour {n} personnes.', 'hote', n,
-            _people_fed(n),
+            _people_fed(n), icon='plate',
         )
         for n in (5, 20, 50)
     ),
@@ -283,32 +283,64 @@ def _schedule_notification(user_id: int, codes: list[str], *, push: bool) -> Non
         logger.warning('[badges] notification non planifiée pour user=%s', user_id, exc_info=True)
 
 
-def earned_badges_public(user) -> list[dict]:
+def earned_badges_public(user, viewer=None) -> list[dict]:
     """Badges obtenus par `user`, pour son profil vu par un autre (sans réévaluation ni contexte)."""
     rows = UserBadge.objects.filter(user=user).order_by('-earned_at', 'code').values('code', 'earned_at')
     rmap = rarity_map()
-    return [
-        {**badge_public(BADGES_BY_CODE[row['code']], rmap), 'label': BADGES_BY_CODE[row['code']].title,
-         'earned_at': row['earned_at'].isoformat()}
-        for row in rows
-        if row['code'] in BADGES_BY_CODE
-    ]  # fmt: skip
+    viewer_owned = (
+        set(UserBadge.objects.filter(user=viewer).values_list('code', flat=True))
+        if viewer and getattr(viewer, 'is_authenticated', False)
+        else set()
+    )
+    result = []
+    for row in rows:
+        code = row['code']
+        if code not in BADGES_BY_CODE:
+            continue
+        badge = BADGES_BY_CODE[code]
+        payload = {
+            **badge_public(badge, rmap),
+            'label': badge.title,
+            'earned_at': row['earned_at'].isoformat(),
+        }
+        if badge.secret and code not in viewer_owned:
+            payload['description'] = 'Demande-lui comment !'
+        result.append(payload)
+    return result
 
 
-def secret_placeholder(badge: BadgeDef, rmap: dict | None = None) -> dict:
+def secret_placeholder(badge: BadgeDef, rmap: dict | None = None, *, cooked_dishes: int = 0) -> dict:
     """Badge secret pas encore obtenu : « ??? » + indice (rien qui révèle la condition, code opaque)."""
     opaque = 'secret_' + hashlib.sha1(badge.code.encode()).hexdigest()[:10]
+    hints = badge.hints or ((badge.hint,) if badge.hint else ('???',))
+    if cooked_dishes >= 25 and len(hints) >= 3:
+        hint_text = hints[2]
+        hint_stage = 3
+        next_hint_in = None
+    elif cooked_dishes >= 10 and len(hints) >= 2:
+        hint_text = hints[1]
+        hint_stage = 2
+        next_hint_in = max(0, 25 - cooked_dishes)
+    else:
+        hint_text = hints[0]
+        hint_stage = 1
+        next_hint_in = max(0, 10 - cooked_dishes) if len(hints) >= 2 else None
+
     return {
         'code': opaque,
         'title': '???',
         'emoji': '❓',
-        'description': badge.hint,
+        'icon': badge.icon,
+        'description': hint_text,
         'category': badge.category,
         'family': badge.family_code,
         'family_label': FAMILIES.get(badge.family_code, ''),
         'phrase': '',
         'secret': True,
-        'hint': badge.hint,
+        'mystery': 'enigme',
+        'hint': hint_text,
+        'hint_stage': hint_stage,
+        'next_hint_in': next_hint_in,
         **{k: v for k, v in rarity_fields(badge, rmap).items() if k != 'celebration'},
         'celebration': 'secret',
         'progress': {'current': 0, 'target': 1, 'ratio': 0.0},
@@ -325,13 +357,14 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
     earned = [_badge_payload(b, owned[b.code], rmap) for b in badges if b.code in owned]
     earned.sort(key=lambda b: ((b['context'] or {}).get('achieved_on') or '', -_ORDER[b['code']]), reverse=True)
     upcoming, secrets = [], []
+    cooked_dishes = len(stats.dish_days)
     for badge in badges:
         if badge.code in owned:
             continue
         if badge.secret:
             # Jamais dans les « prochains » (aperçu) ; « ??? » + indice dans la liste complète.
             if next_limit is None:
-                secrets.append(secret_placeholder(badge, rmap))
+                secrets.append(secret_placeholder(badge, rmap, cooked_dishes=cooked_dishes))
             continue
         current = 0 if badge.async_only else min(_measure(badge, stats)[0], badge.target)  # météo : tâche seule
         upcoming.append(

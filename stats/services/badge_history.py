@@ -75,6 +75,13 @@ class DishDay:
     def has_recipe(self) -> bool:
         return bool(self.recipes)
 
+    @property
+    def is_imported(self) -> bool:
+        return any(
+            bool(r.get('import_source_url')) or r.get('source_type') in ('url', 'photo', 'text', 'import')
+            for r in self.recipes
+        )
+
     def matches(self, pattern: re.Pattern) -> bool:
         return bool(pattern.search(self.text))
 

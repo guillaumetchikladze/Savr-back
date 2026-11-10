@@ -311,3 +311,49 @@ def test_evaluation_query_count_is_constant(make_user, make_recipe, make_meal_pl
 
     assert counts[0] == counts[1], counts
     assert counts[1] <= 25, counts
+
+
+def test_v3_progressive_hints_stages(user):
+    from stats.services.badges import BADGES_BY_CODE, secret_placeholder
+
+    badge = BADGES_BY_CODE['rituel']
+    assert len(badge.hints) == 3
+
+    # Stade 1 (0 à 9 plats)
+    s1 = secret_placeholder(badge, cooked_dishes=3)
+    assert s1['hint_stage'] == 1
+    assert s1['hint'] == badge.hints[0]
+    assert s1['next_hint_in'] == 7
+
+    # Stade 2 (10 à 24 plats)
+    s2 = secret_placeholder(badge, cooked_dishes=15)
+    assert s2['hint_stage'] == 2
+    assert s2['hint'] == badge.hints[1]
+    assert s2['next_hint_in'] == 10
+
+    # Stade 3 (25 plats ou plus)
+    s3 = secret_placeholder(badge, cooked_dishes=28)
+    assert s3['hint_stage'] == 3
+    assert s3['hint'] == badge.hints[2]
+    assert s3['next_hint_in'] is None
+
+
+def test_v3_new_badges_evaluation(user, cook, make_recipe):
+    # 1. Grand retour (écart >= 180 j sur la même recette)
+    cook(date(2025, 1, 1), 'Tarte aux pommes', ['pomme'])
+    cook(date(2025, 7, 10), 'Tarte aux pommes', ['pomme'])
+
+    # 2. Team patate (patates)
+    cook(date(2025, 7, 11), 'Frites maison', ['pomme de terre'])
+
+    # 3. Herboriste (5 herbes fraîches hors ingrédients de base)
+    cook(date(2025, 7, 12), 'Tajine parfumé', ['basilic', 'persil', 'coriandre', 'menthe', 'ciboulette'])
+
+    # 4. Pyramide (6 groupes différents)
+    # viandes, legumes, fruits, herbes_epices, cereales_feculents, laitiers
+    cook(date(2025, 7, 13), 'Grand bol équilibré', ['poulet', 'carotte', 'pomme', 'curry', 'riz', 'parmesan'])
+
+    new = {b['code']: b for b in evaluate_badges(user, notify=False)}
+    assert 'grand_retour' in new
+    assert 'herboriste' in new
+    assert 'pyramide' in new

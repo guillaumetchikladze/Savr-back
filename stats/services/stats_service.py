@@ -222,6 +222,8 @@ def _load_meals(user, start, end) -> list[Meal]:
             'recipe_batch__recipe__cuisine',
             'recipe_batch__recipe__image_path',
             'recipe_batch__recipe__required_equipment',
+            'recipe_batch__recipe__source_type',
+            'recipe_batch__recipe__import_source_url',
             'recipe_batch__sub_recipe_modes',
         )
     ):
@@ -238,6 +240,8 @@ def _load_meals(user, start, end) -> list[Meal]:
                     'image_path': row['recipe_batch__recipe__image_path'],
                     'batch_id': row['recipe_batch_id'],
                     'required_equipment': row['recipe_batch__recipe__required_equipment'] or [],
+                    'source_type': row['recipe_batch__recipe__source_type'],
+                    'import_source_url': row['recipe_batch__recipe__import_source_url'],
                     'sub_recipe_modes': row['recipe_batch__sub_recipe_modes'] or {},
                 }
             )
