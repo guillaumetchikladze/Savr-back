@@ -414,7 +414,17 @@ Contrat : `.claude-work/specs/deep-links.md` §1. Le site (`tchikook-landing`, f
 
 - `GET /api/public/recipes/<id>/`, `GET /api/public/posts/<id>/`, `GET /api/public/users/<username>/` : sans
   authentification (un jeton est ignoré, lecteur toujours anonyme), débit limité par IP (`PREVIEW_LIMIT_PER_IP`
-  = 60/h, les trois confondus ; même compteur en cache que les invitations, IP = 1re de `X-Forwarded-For`).
+  = 60/h, les trois confondus ; même cache que les invitations).
+- IP client (`core/client_ip.get_client_ip`, toutes les limites par IP) : entrée de `X-Forwarded-For` ajoutée par
+  le proxy de confiance = N-ième en partant de la **droite** (`TRUSTED_PROXY_COUNT`, défaut 1 = Caddy ; 0 =
+  `REMOTE_ADDR`), jamais la plus à gauche (falsifiable). Ne jamais publier le port 8000 de Django.
+- Accès serveur du site (`core/client_ip.public_rate_limited`, aperçus publics + `GET /api/invites/<code>/`) :
+  vues de l'API, toutes les pages rendues par Vercel viennent de quelques IP. Le site envoie
+  `X-Tchikook-Preview-Key` (= `PUBLIC_PREVIEW_SERVER_KEY`, comparaison à temps constant ; vide = désactivé) et
+  `X-Tchikook-Visitor-IP` (IP du visiteur) → limite **par visiteur** (mêmes plafonds, compteur `<bucket>:visitor`
+  séparé) sous un plafond global de la clé `PUBLIC_PREVIEW_SERVER_LIMIT_PER_HOUR` (5000/h). Clé absente ou
+  fausse → limite par IP habituelle. Côté site : `TCHIKOOK_PREVIEW_KEY` (même valeur), runbook
+  `Savr/docs/runbooks/deep-links.md`.
 - Recette : `is_public` + auteur actif, sinon 404 ; au plus 5 ingrédients (noms), pas d'étapes. Post : publié +
   auteur actif, sinon 404 ; `is_public` → aperçu (titre, extrait, 1re photo, auteur, recette liée si publique),
   sinon teaser `{id, url, app_url, teaser: true, message}` sans contenu ni auteur. Profil : actif et validé, sinon

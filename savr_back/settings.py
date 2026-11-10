@@ -521,6 +521,15 @@ INVITE_BASE_URL = config('INVITE_BASE_URL', default='https://tchikook.fr').strip
 PUBLIC_WEB_BASE_URL = (
     config('PUBLIC_WEB_BASE_URL', default='').strip().rstrip('/') or INVITE_BASE_URL or 'https://tchikook.fr'
 )
+# Proxys de confiance devant Django (Caddy en prod : 1). L'IP client des limites de débit = entrée de
+# X-Forwarded-For ajoutée par le dernier de ces proxys (N-ième en partant de la droite) ; 0 = REMOTE_ADDR.
+# Ne jamais publier le port 8000 de Django : sans proxy, X-Forwarded-For serait falsifiable.
+TRUSTED_PROXY_COUNT = config('TRUSTED_PROXY_COUNT', default=1, cast=int)
+# Clé partagée du site (fonctions Vercel) pour les aperçus publics et l'aperçu d'invitation : en-tête
+# X-Tchikook-Preview-Key (comparaison à temps constant) → limite par visiteur relayé (X-Tchikook-Visitor-IP)
+# sous un plafond global par heure, au lieu de la limite par IP. Vide = désactivé.
+PUBLIC_PREVIEW_SERVER_KEY = config('PUBLIC_PREVIEW_SERVER_KEY', default='').strip()
+PUBLIC_PREVIEW_SERVER_LIMIT_PER_HOUR = config('PUBLIC_PREVIEW_SERVER_LIMIT_PER_HOUR', default=5000, cast=int)
 # Un invité (code valide à l'inscription ou plus tard) saute la liste d'attente (et son email est
 # ajouté aux emails autorisés). False : l'amitié est créée mais la validation admin reste requise.
 INVITE_BYPASSES_WAITLIST = config('INVITE_BYPASSES_WAITLIST', default=True, cast=bool)

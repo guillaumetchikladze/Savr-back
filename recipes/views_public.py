@@ -3,7 +3,8 @@ Aperçus publics pour les liens qui ouvrent l'app (`/api/public/`, .claude-work/
 
 Lus sans compte par le site (pages `tchikook.fr/r/<id>`, `/p/<id>`, `/u/<username>` et leurs balises
 Open Graph). Lecture seule, sans authentification (un jeton éventuel est ignoré : le lecteur est
-toujours anonyme), débit limité par IP comme l'aperçu d'invitation `GET /api/invites/<code>/`.
+toujours anonyme), débit limité par IP comme l'aperçu d'invitation `GET /api/invites/<code>/` ; le site
+relaie l'IP du visiteur avec sa clé `X-Tchikook-Preview-Key` (`core/client_ip.public_rate_limited`).
 
 Visibilité (lecteur anonyme, cf. `recipes/services/post_visibility.py`) :
 - recette : seulement `is_public` d'un auteur actif, sinon 404 ; au plus 5 ingrédients, pas d'étapes ;
@@ -23,8 +24,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from accounts.serializers import UserSerializer
-from accounts.services.invite_service import rate_limited
-from accounts.views import _get_client_ip
+from core.client_ip import public_rate_limited
 from core.public_links import (
     app_url,
     post_share_url,
@@ -53,7 +53,7 @@ def _too_many():
 
 
 def _limited(request) -> bool:
-    return rate_limited('public:ip', _get_client_ip(request), limit=PREVIEW_LIMIT_PER_IP, window_seconds=HOUR)
+    return public_rate_limited(request, 'public', limit_per_ip=PREVIEW_LIMIT_PER_IP, window_seconds=HOUR)
 
 
 def _excerpt(text, limit: int = EXCERPT_MAX) -> str:

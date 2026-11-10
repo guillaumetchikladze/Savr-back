@@ -16,6 +16,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from core.client_ip import public_rate_limited
 from core.public_links import public_display_name
 
 from .permissions import IsValidated
@@ -29,7 +30,6 @@ from .services.invite_service import (
     resolve_code,
     rotate_code,
 )
-from .views import _get_client_ip
 
 HOUR = 3600
 DAY = 86400
@@ -90,7 +90,7 @@ def redeem_invite_view(request):
 @permission_classes([AllowAny])
 def invite_preview_view(request, code):
     """Aperçu public d'un lien (écran d'inscription) : prénom / avatar du parrain, rien d'autre."""
-    if rate_limited('lookup:ip', _get_client_ip(request), limit=LOOKUP_LIMIT_PER_IP, window_seconds=HOUR):
+    if public_rate_limited(request, 'lookup', limit_per_ip=LOOKUP_LIMIT_PER_IP, window_seconds=HOUR):
         return _too_many()
     invite = resolve_code(code)
     if invite is None:

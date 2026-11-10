@@ -71,3 +71,10 @@ AWS_USE_PATH_STYLE_ENDPOINT=true
 # `share_url` des serializers ; vide = INVITE_BASE_URL (défaut https://tchikook.fr).
 # Aperçus publics lus par le site : GET /api/public/recipes/<id>/, posts/<id>/, users/<username>/
 # PUBLIC_WEB_BASE_URL=https://tchikook.fr
+# Clé partagée avec le site (Vercel : TCHIKOOK_PREVIEW_KEY, même valeur) : `openssl rand -hex 32`.
+# Le site l'envoie dans X-Tchikook-Preview-Key + l'IP du visiteur dans X-Tchikook-Visitor-IP → limite par
+# visiteur (60/h aperçus, 30/h invitations) sous un plafond global de la clé. Vide = désactivé (limite par IP).
+# PUBLIC_PREVIEW_SERVER_KEY=
+# PUBLIC_PREVIEW_SERVER_LIMIT_PER_HOUR=5000
+# Proxys de confiance devant Django (Caddy : 1) ; IP client = entrée de X-Forwarded-For ajoutée par ce proxy.
+# TRUSTED_PROXY_COUNT=1

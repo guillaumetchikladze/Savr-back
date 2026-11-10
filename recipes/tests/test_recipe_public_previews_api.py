@@ -183,9 +183,108 @@ def test_public_previews_are_rate_limited_per_ip(make_user, make_recipe):
     # Les trois aperçus partagent le compteur.
     assert client.get('/api/public/users/lea/').status_code == 429
     assert client.get(f'/api/public/posts/{recipe.id}/').data['code'] == 'rate_limited'
-    # Une autre IP (ex. visiteur relayé par le site via X-Forwarded-For) n'est pas touchée.
+    # Un autre client derrière le proxy (entrée ajoutée par Caddy à droite de X-Forwarded-For) n'est pas touché.
     relayed = APIClient(REMOTE_ADDR='198.51.100.1', HTTP_X_FORWARDED_FOR='192.0.2.55')
     assert relayed.get(f'/api/public/recipes/{recipe.id}/').status_code == 200
+
+
+def test_client_ip_ignores_spoofed_leftmost_forwarded_for(make_user, make_recipe, settings):
+    """Un client ne contourne pas la limite en préfixant X-Forwarded-For : seule l'entrée du proxy compte."""
+    from core.client_ip import get_client_ip
+    from recipes.views_public import PREVIEW_LIMIT_PER_IP
+
+    settings.TRUSTED_PROXY_COUNT = 1
+    recipe = make_recipe(make_user('lea'))
+    url = f'/api/public/recipes/{recipe.id}/'
+    statuses = [
+        APIClient(REMOTE_ADDR='10.0.0.2', HTTP_X_FORWARDED_FOR=f'192.0.2.{n}, 203.0.113.9').get(url).status_code
+        for n in range(PREVIEW_LIMIT_PER_IP + 1)
+    ]
+    assert statuses[-1] == 429
+    assert set(statuses[:-1]) == {200}
+
+    class _Req:
+        def __init__(self, **meta):
+            self.META = meta
+
+    assert get_client_ip(_Req(REMOTE_ADDR='10.0.0.2', HTTP_X_FORWARDED_FOR='1.1.1.1, 203.0.113.9')) == '203.0.113.9'
+    assert get_client_ip(_Req(REMOTE_ADDR='10.0.0.2', HTTP_X_FORWARDED_FOR='not-an-ip')) == '10.0.0.2'
+    assert get_client_ip(_Req(REMOTE_ADDR='10.0.0.2')) == '10.0.0.2'
+    settings.TRUSTED_PROXY_COUNT = 2
+    assert get_client_ip(_Req(REMOTE_ADDR='10.0.0.2', HTTP_X_FORWARDED_FOR='1.1.1.1, 198.51.100.4, 10.0.0.9')) == (
+        '198.51.100.4'
+    )
+    assert get_client_ip(_Req(REMOTE_ADDR='10.0.0.2', HTTP_X_FORWARDED_FOR='198.51.100.4')) == '10.0.0.2'
+    settings.TRUSTED_PROXY_COUNT = 0
+    assert get_client_ip(_Req(REMOTE_ADDR='10.0.0.2', HTTP_X_FORWARDED_FOR='198.51.100.4')) == '10.0.0.2'
+
+
+def _site(key, visitor=None, ip='76.76.21.21'):
+    """Requête de la fonction Vercel (toujours la même IP) relayant un visiteur."""
+    headers = {'REMOTE_ADDR': ip, 'HTTP_X_TCHIKOOK_PREVIEW_KEY': key}
+    if visitor:
+        headers['HTTP_X_TCHIKOOK_VISITOR_IP'] = visitor
+    return APIClient(**headers)
+
+
+def test_site_preview_key_limits_per_visitor_not_per_vercel_ip(make_user, make_recipe, settings):
+    from recipes.views_public import PREVIEW_LIMIT_PER_IP
+
+    settings.PUBLIC_PREVIEW_SERVER_KEY = 'k' * 64
+    recipe = make_recipe(make_user('lea'))
+    url = f'/api/public/recipes/{recipe.id}/'
+
+    # Beaucoup de visiteurs différents, une seule IP Vercel : aucune 429.
+    statuses = {_site('k' * 64, f'192.0.2.{n}').get(url).status_code for n in range(PREVIEW_LIMIT_PER_IP + 10)}
+    assert statuses == {200}
+    # Un même visiteur relayé reste limité (compteur séparé de la limite par IP).
+    visitor = _site('k' * 64, '198.51.100.77')
+    assert {visitor.get(url).status_code for _ in range(PREVIEW_LIMIT_PER_IP)} == {200}
+    assert visitor.get(url).status_code == 429
+    # Clé fausse ou absente → limite par IP (l'IP Vercel a déjà servi plus de 60 fois sur un autre compteur).
+    assert {
+        _site('wrong', '192.0.2.1', ip='76.76.21.22').get(url).status_code for _ in range(PREVIEW_LIMIT_PER_IP)
+    } == {200}
+    assert _site('wrong', '192.0.2.1', ip='76.76.21.22').get(url).status_code == 429
+    assert _site('', '192.0.2.2', ip='76.76.21.22').get(url).status_code == 429
+
+
+def test_site_preview_key_global_cap_and_disabled_when_empty(make_user, make_recipe, settings):
+    settings.PUBLIC_PREVIEW_SERVER_KEY = 'secret-key'
+    settings.PUBLIC_PREVIEW_SERVER_LIMIT_PER_HOUR = 5
+    recipe = make_recipe(make_user('lea'))
+    url = f'/api/public/recipes/{recipe.id}/'
+    assert {_site('secret-key', f'192.0.2.{n}').get(url).status_code for n in range(5)} == {200}
+    assert _site('secret-key', '192.0.2.200').get(url).status_code == 429
+    # Aperçu d'invitation : même plafond global de la clé.
+    assert _site('secret-key', '192.0.2.201').get('/api/invites/ABCDEFGHJK/').status_code == 429
+
+    # Clé vide côté serveur = désactivé : un en-tête vide ou quelconque ne donne aucun passe-droit.
+    cache.clear()
+    settings.PUBLIC_PREVIEW_SERVER_KEY = ''
+    settings.PUBLIC_PREVIEW_SERVER_LIMIT_PER_HOUR = 5000
+    from recipes.views_public import PREVIEW_LIMIT_PER_IP
+
+    client = _site('', '192.0.2.9')
+    assert {client.get(url).status_code for _ in range(PREVIEW_LIMIT_PER_IP)} == {200}
+    assert client.get(url).status_code == 429
+
+
+def test_invite_preview_uses_site_key_per_visitor(make_user, settings):
+    from accounts.services.invite_service import get_or_create_active_code
+    from accounts.views_invites import LOOKUP_LIMIT_PER_IP
+
+    settings.PUBLIC_PREVIEW_SERVER_KEY = 'site-key'
+    code = get_or_create_active_code(make_user('lea')).code
+    url = f'/api/invites/{code}/'
+    assert {_site('site-key', f'192.0.2.{n}').get(url).status_code for n in range(LOOKUP_LIMIT_PER_IP + 5)} == {200}
+    visitor = _site('site-key', '198.51.100.8')
+    assert {visitor.get(url).status_code for _ in range(LOOKUP_LIMIT_PER_IP)} == {200}
+    assert visitor.get(url).status_code == 429
+    # Sans clé, la même IP Vercel est limitée par IP.
+    plain = APIClient(REMOTE_ADDR='76.76.21.30')
+    assert {plain.get(url).status_code for _ in range(LOOKUP_LIMIT_PER_IP)} == {200}
+    assert plain.get(url).status_code == 429
 
 
 # ---------------------------------------------------------------------------

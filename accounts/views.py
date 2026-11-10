@@ -18,6 +18,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from core.client_ip import get_client_ip
 from recipes.models import Recipe, ShoppingListLoyaltyCard, ShoppingListMember
 from recipes.serializers import RecipeSerializer
 from savr_back.settings import build_s3_client, build_s3_url
@@ -49,10 +50,8 @@ User = get_user_model()
 
 
 def _get_client_ip(request) -> str:
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
-    return (request.META.get('REMOTE_ADDR') or '').strip() or 'unknown'
+    # Entrée de X-Forwarded-For ajoutée par le proxy de confiance (jamais la plus à gauche, falsifiable).
+    return get_client_ip(request)
 
 
 def _rate_limit_key(prefix: str, value: str) -> str:
