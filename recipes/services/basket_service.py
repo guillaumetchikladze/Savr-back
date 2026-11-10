@@ -211,7 +211,10 @@ def add_item(
     recipe = None
     rid = _parse_int(recipe_id, 'recipe_id')
     if rid is not None:
-        recipe = Recipe.objects.filter(id=rid).first()
+        from .recipe_access import usable_recipe
+
+        # Jamais la recette privée d'un autre (titre, ingrédients, étapes ressortiraient via panier / plan).
+        recipe = usable_recipe(user, rid)
         if not recipe:
             raise BasketError(f'Recipe {rid} not found', 404, 'recipe_not_found')
     if not recipe and not label:

@@ -34,7 +34,6 @@ from recipes.models import (
     MealPlan,
     MealPlanRecipeBatch,
     Post,
-    Recipe,
     RecipeBatch,
     RecipeIngredient,
 )
@@ -423,7 +422,9 @@ def preview_cooked(user, data) -> dict:
     recipe = None
     rid = _parse_int(data.get('recipe_id'), 'recipe_id')
     if rid is not None:
-        recipe = Recipe.objects.filter(id=rid).only('id', 'title', 'cuisine').first()
+        from recipes.services.recipe_access import usable_recipe
+
+        recipe = usable_recipe(user, rid, only=('id', 'title', 'cuisine'))
         if not recipe:
             raise CookedError(f'Recipe {rid} not found', 404, 'recipe_not_found')
     meal_plan = None

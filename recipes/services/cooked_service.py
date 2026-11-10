@@ -369,7 +369,9 @@ def log_cooked(
     recipe = None
     rid = _parse_int(recipe_id, 'recipe_id')
     if rid is not None:
-        recipe = Recipe.objects.filter(id=rid).first()
+        from .recipe_access import usable_recipe
+
+        recipe = usable_recipe(user, rid)  # jamais la recette privée d'un autre
         if not recipe:
             raise CookedError(f'Recipe {rid} not found', 404, 'recipe_not_found')
 
