@@ -79,7 +79,7 @@ from .services.meal_plan_service import (
     relink_composer_photos_to_meal_plan,
     update_composer_slot,
 )
-from .services.photo_dimensions import dimensions_from_file, schedule_photo_dimensions
+from .services.photo_dimensions import client_photo_size, dimensions_from_file, schedule_photo_dimensions
 from .services.post_visibility import (
     FRIENDS,
     can_see_post,
@@ -5078,7 +5078,8 @@ class PostViewSet(viewsets.ModelViewSet):
         Ajouter des photos à un de ses posts (après un « J'ai cuisiné » sans photo).
 
         Body : photo_ids (PostPhoto déjà confirmées via confirm_photo_upload) et/ou image_paths
-        (clés S3 uploadées via get_upload_presigned_url avec meal_plan_id du post), photo_type?.
+        (clés S3 uploadées via get_upload_presigned_url avec meal_plan_id du post), image_sizes?
+        ([{width, height} | null] aligné sur image_paths), photo_type?.
         Réponse : post au format feed.
         """
         post = get_object_or_404(Post.objects.select_related('meal_plan'), pk=pk, user=request.user)
@@ -5090,6 +5091,14 @@ class PostViewSet(viewsets.ModelViewSet):
         if not isinstance(image_paths, list) or not all(isinstance(p, str) and p.strip() for p in image_paths):
             return Response({'error': 'image_paths must be a list of strings'}, status=status.HTTP_400_BAD_REQUEST)
         image_paths = [p.strip().lstrip('/') for p in image_paths]
+        # Optionnel, aligné sur image_paths : [{width, height} | null] (taille finale connue de l'app).
+        image_sizes = request.data.get('image_sizes')
+        image_sizes = image_sizes if isinstance(image_sizes, list) else []
+        sizes = [
+            client_photo_size(s.get('width'), s.get('height')) if isinstance(s, dict) else None
+            for s in image_sizes[: len(image_paths)]
+        ]
+        sizes += [None] * (len(image_paths) - len(sizes))
 
         try:
             extra = Q(meal_plan_id=post.meal_plan_id) if post.meal_plan_id else None
@@ -5123,8 +5132,10 @@ class PostViewSet(viewsets.ModelViewSet):
                     image_path=path,
                     is_draft=False,
                     uploaded_by=request.user,
+                    width=size[0] if size else None,
+                    height=size[1] if size else None,
                 )
-                for path in image_paths
+                for path, size in zip(image_paths, sizes)
             ]
             attach_photos(post, photos + new_photos)
             post.save(update_fields=['updated_at'])
@@ -5351,6 +5362,9 @@ class PostViewSet(viewsets.ModelViewSet):
         photo_type = request.data.get('photo_type', 'spontaneous')
         step_id = request.data.get('step_id', None)
         draft_id = request.data.get('draft_id', None)  # ID du draft à finaliser
+        # Taille finale connue de l'app (photo redimensionnée avant l'envoi) : cadre juste tout de suite.
+        client_size = client_photo_size(request.data.get('width'), request.data.get('height'))
+        width, height = client_size or (None, None)
 
         if (not recipe_batch_id and not meal_plan_id) or not image_path:
             return Response(
@@ -5390,7 +5404,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 draft = PostPhoto.objects.get(id=draft_id, recipe_batch=recipe_batch, is_draft=True)
                 draft.image_path = image_path
                 draft.is_draft = False
-                draft.width = draft.height = None
+                draft.width, draft.height = width, height
                 if not draft.uploaded_by_id:
                     draft.uploaded_by = request.user
                 draft.save(update_fields=['image_path', 'is_draft', 'uploaded_by', 'width', 'height'])
@@ -5417,6 +5431,8 @@ class PostViewSet(viewsets.ModelViewSet):
                 'image_path': image_path,
                 'is_draft': False,
                 'uploaded_by': request.user,
+                'width': width,
+                'height': height,
             }
             if step_id:
                 try:

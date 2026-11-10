@@ -6,7 +6,9 @@ forcé ; elle a besoin des dimensions **dans le payload** (aucun appel réseau p
 
 - Upload multipart (`request.FILES`) : lecture directe du fichier (`dimensions_from_file`).
 - Upload direct S3 (URL présignée puis `confirm_photo_upload`, `/posts/{id}/photos/`, retouche) : le back
-  ne voit pas l'image → tâche Celery après commit (`schedule_photo_dimensions`) qui lit seulement l'en-tête.
+  ne voit pas l'image → l'app envoie la taille finale (`width` / `height`, `image_sizes`) quand elle la
+  connaît (`client_photo_size`) ; sinon tâche Celery après commit (`schedule_photo_dimensions`) qui lit
+  seulement l'en-tête.
 - Photos existantes : `python manage.py backfill_post_photo_dimensions`.
 
 Dimensions **d'affichage** : une orientation EXIF 5-8 (photo tournée de 90°) inverse largeur et hauteur.
@@ -133,6 +135,33 @@ def fill_photo_dimensions(photo, *, force: bool = False) -> bool:
     photo.width, photo.height = size
     type(photo).objects.filter(pk=photo.pk).update(width=photo.width, height=photo.height)
     return True
+
+
+MAX_CLIENT_SIDE = 20000
+
+
+def client_photo_size(width, height) -> tuple[int, int] | None:
+    """
+    Taille d'affichage envoyée par l'app avec la confirmation d'un upload direct S3 (elle redimensionne la
+    photo avant l'envoi et connaît donc sa taille finale) : le cadre du post est juste dès la réponse, sans
+    attendre la tâche. Valeur absente ou invalide → None (la tâche lira l'en-tête comme avant).
+    """
+    w, h = _positive_int(width), _positive_int(height)
+    if w is None or h is None or w > MAX_CLIENT_SIDE or h > MAX_CLIENT_SIDE:
+        return None
+    return w, h
+
+
+def _positive_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        value = round(value) if value.is_integer() else None
+    elif isinstance(value, str):
+        value = int(value.strip()) if value.strip().isdigit() else None
+    if not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def schedule_photo_dimensions(photos) -> None:
