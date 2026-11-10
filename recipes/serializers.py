@@ -2669,7 +2669,23 @@ class DishFieldMixin(serializers.Serializer):
         return post_dish(obj)
 
 
+class CaptionLinksFieldMixin(serializers.Serializer):
+    """
+    Mots de l'auteur → recettes (hl1) : `caption_links` = [{start, end, recipe_id}] (positions UTF-16 sur `comment`,
+    triées, sans chevauchement) des passages qui nomment une recette du post. Calcul déterministe à la lecture
+    sur les préchargements du feed (`services.caption_links`) : 0 requête.
+    """
+
+    caption_links = serializers.SerializerMethodField()
+
+    def get_caption_links(self, obj):
+        from .services.caption_links import post_caption_links
+
+        return post_caption_links(obj)
+
+
 class PostSerializer(
+    CaptionLinksFieldMixin,
     PostEquipmentFieldsMixin,
     DishFieldMixin,
     MyTurnFieldsMixin,
@@ -2709,6 +2725,7 @@ class PostSerializer(
             'cuisine',
             'highlights',
             'comment',
+            'caption_links',
             'cooking_time_minutes',
             'is_published',
             'is_public',
@@ -2947,6 +2964,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
 
 
 class PostListSerializer(
+    CaptionLinksFieldMixin,
     PostEquipmentFieldsMixin,
     DishFieldMixin,
     MyTurnFieldsMixin,
@@ -2983,6 +3001,7 @@ class PostListSerializer(
             'cuisine',
             'highlights',
             'comment',
+            'caption_links',
             'cooking_time_minutes',
             'is_published',
             'is_public',

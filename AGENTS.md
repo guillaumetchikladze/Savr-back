@@ -226,6 +226,22 @@ Page d'un plat (historique, versions, amis) et rangée « Classiques » d'Accuei
   compare avec `get_dish` neutralisé). `top_dishes` de `/api/stats/me/` porte `dish_key` (cache stats `v3`).
 - Tests : `recipes/tests/test_posts_dish_api.py`.
 
+## Mots de l'auteur → recettes (`recipes/services/caption_links.py`)
+
+`caption_links` = `[{start, end, recipe_id}]` sur `PostSerializer` / `PostListSerializer` (feed, détail, réponses de
+`POST /posts/cooked/` et `update-content`) : passages de `comment` qui nomment une recette du post (couverture + repas,
++ photos si préchargées). Positions en **unités UTF-16** sur `comment` tel qu'enregistré (indices JS ; un emoji = 2).
+
+- Déterministe, sans LLM : `fold` (minuscules, sans accents), apostrophes / tirets séparateurs, -s/-x final (> 3 lettres),
+  mots vides ignorés ; suite de mots significatifs **consécutifs dans la légende** (ponctuation forte = coupure) retrouvés
+  **dans l'ordre du titre** (le titre peut sauter des mots) ; égalité exacte des mots (« sel » ≠ « salé »).
+- Ancrage : ≥ 1 mot de ≥ 4 lettres hors `GENERIC_WORDS` (« recette », « maison »…) ; un mot seul doit être le 1er mot
+  du titre et pas une catégorie (`DISH_CATEGORIES` : « salade », « tarte », « cake »…).
+- Plus de mots > titre mieux couvert > plus tôt ; un passage par recette, sans chevauchement ; ex aequo entre deux
+  recettes → rien.
+- Calcul à la lecture (légende et recettes du repas modifiables, pas de migration ni backfill), 0 requête par post
+  (préchargements du feed), `lru_cache` par (légende, titres). Tests : `recipes/tests/test_posts_caption_links.py`.
+
 ## Carnet d'un profil (`recipes/services/carnet_service.py`)
 
 `GET /api/carnet/me/` et `GET /api/carnet/users/<id>/` (`?cursor=` renvoyé par `next_cursor`, `?page_size=` ≤ 50, défaut 20) :
