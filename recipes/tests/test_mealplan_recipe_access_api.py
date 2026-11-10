@@ -52,3 +52,19 @@ def test_recipes_reached_legitimately_stay_usable(api, user, make_user, make_rec
     assert client.post(f'/api/posts/{post.id}/my-turn/', format='json').status_code == 201
     assert client.post('/api/basket/', {'recipe_id': secret.id}, format='json').status_code == 201
     assert client.post('/api/posts/cooked/', {'recipe_id': secret.id}, format='json').status_code == 201
+
+
+def test_older_endpoints_refuse_private_recipe_ids_too(api, user, secret):
+    from recipes.models import Collection
+
+    client = api.as_user(user)
+    resp = client.post(
+        '/api/meal-plans/create-batch-and-associate/',
+        {'recipe_id': secret.id, 'dates': [{'date': '2026-11-12', 'meal_time': 'dinner'}]},
+        format='json',
+    )
+    assert resp.status_code == 404 and not MealPlan.objects.filter(user=user).exists()
+
+    collection = Collection.objects.create(name='Mes favoris', owner=user)
+    resp = client.post(f'/api/collections/{collection.id}/add_recipe/', {'recipe_id': secret.id}, format='json')
+    assert resp.status_code == 404 and not collection.collection_recipes.exists()

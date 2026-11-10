@@ -3870,9 +3870,13 @@ class MealPlanViewSet(viewsets.ModelViewSet):
         if not dates or not isinstance(dates, list):
             return Response({'error': 'dates must be a non-empty list'}, status=status.HTTP_400_BAD_REQUEST)
 
+        from .services.recipe_access import usable_recipe
+
         try:
-            recipe = Recipe.objects.get(id=recipe_id)
-        except Recipe.DoesNotExist:
+            recipe = usable_recipe(request.user, int(recipe_id))  # jamais la recette privée d'un autre
+        except (TypeError, ValueError):
+            recipe = None
+        if recipe is None:
             return Response({'error': 'Recipe not found'}, status=status.HTTP_404_NOT_FOUND)
 
         portions = request.data.get('portions')
@@ -7530,9 +7534,13 @@ class CollectionViewSet(viewsets.ModelViewSet):
         if not recipe_id:
             return Response({'error': 'recipe_id est requis'}, status=status.HTTP_400_BAD_REQUEST)
 
+        from .services.recipe_access import usable_recipe
+
         try:
-            recipe = Recipe.objects.get(id=recipe_id)
-        except Recipe.DoesNotExist:
+            recipe = usable_recipe(user, int(recipe_id))  # jamais la recette privée d'un autre
+        except (TypeError, ValueError):
+            recipe = None
+        if recipe is None:
             return Response({'error': 'Recette non trouvée'}, status=status.HTTP_404_NOT_FOUND)
 
         # Vérifier si la recette est déjà dans la collection
