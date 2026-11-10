@@ -77,6 +77,8 @@ def city_payload(user) -> dict:
 def set_city(user, city: str | None) -> dict:
     """Enregistre (ou efface) la ville ; le géocodage part en tâche au commit. Les badges obtenus restent."""
     city = ' '.join((city or '').split())[:CITY_MAX_LENGTH]
+    if city and city == user.city and user_location(user):
+        return city_payload(user)  # même ville, déjà géocodée : rien à refaire
     user.city = city
     user.city_label = ''
     user.city_latitude = user.city_longitude = user.city_geocoded_at = None

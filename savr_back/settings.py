@@ -130,6 +130,8 @@ BADGE_RARITY_MIN_ACTIVE_USERS = config('BADGE_RARITY_MIN_ACTIVE_USERS', default=
 BADGE_NOTIFY_MAX_AGE_DAYS = config('BADGE_NOTIFY_MAX_AGE_DAYS', default=7, cast=int)
 # Badges météo (phase 2, ville opt-in, Open-Meteo) : évalués en tâche Celery, jamais dans la requête.
 WEATHER_BADGES_ENABLED = config('WEATHER_BADGES_ENABLED', default=False, cast=bool)
+# PUT /api/weather/city/ par utilisateur et par jour (chaque changement enfile un géocodage Open-Meteo).
+WEATHER_CITY_UPDATES_PER_USER_DAY = config('WEATHER_CITY_UPDATES_PER_USER_DAY', default=10, cast=int)
 # « Classiques de tes amis » (recipes/services/dish_service.py) : plat cuisiné par ≥ N amis distincts
 # (posts visibles) sur une fenêtre glissante ; au plus MAX plats ; cache par utilisateur (secondes).
 DISH_CLASSICS_WINDOW_DAYS = config('DISH_CLASSICS_WINDOW_DAYS', default=30, cast=int)

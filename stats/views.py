@@ -12,6 +12,7 @@ GET /api/recap/{year}/status/ (disponibilité seule, sans construire le Récap)
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -90,6 +91,15 @@ def weather_city_view(request):
     if not isinstance(city, str) or not (2 <= len(city.strip()) <= CITY_MAX_LENGTH):
         return Response(
             {'error': 'Indique le nom de ta ville.', 'code': 'invalid_city'}, status=status.HTTP_400_BAD_REQUEST
+        )
+    # Chaque changement enfile un géocodage (file Celery, quota Open-Meteo) : plafond quotidien par utilisateur.
+    from accounts.services.invite_service import rate_limited
+
+    limit = int(getattr(settings, 'WEATHER_CITY_UPDATES_PER_USER_DAY', 10))
+    if rate_limited('weather_city', request.user.id, limit=limit, window_seconds=86400):
+        return Response(
+            {'error': 'Trop de changements de ville aujourd’hui, réessaie demain.', 'code': 'rate_limited'},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
     return Response(set_city(request.user, city))
 

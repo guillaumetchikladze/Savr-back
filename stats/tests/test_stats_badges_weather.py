@@ -97,3 +97,34 @@ def test_open_meteo_down_never_breaks_badges(user, make_meal_plan, weather_on):
     make_meal_plan(user, day=HOT_DAY, confirmed=True)
     with mock.patch.object(weather, '_get_json', side_effect=weather.WeatherError('timeout')):
         assert geocode_user_city_task.run(user.id) >= 1  # first_cooked quand même
+
+
+def test_city_updates_are_rate_limited_per_user_and_same_city_is_a_noop(
+    api, user, make_user, weather_on, settings, celery_delay, django_capture_on_commit_callbacks
+):
+    """PUT /weather/city/ ne peut pas spammer le géocodage : plafond quotidien, et même ville géocodée = rien."""
+    settings.WEATHER_CITY_UPDATES_PER_USER_DAY = 3
+    client = api.as_user(user)
+    with django_capture_on_commit_callbacks(execute=True):
+        statuses = [
+            client.put('/api/weather/city/', {'city': name}, format='json').status_code
+            for name in ('Lyon', 'Paris', 'Nantes', 'Lille')
+        ]
+    assert statuses == [200, 200, 200, 429]
+    assert len(celery_delay.calls) == 3
+    user.refresh_from_db()
+    assert user.city == 'Nantes'
+    # Les autres utilisateurs ne sont pas touchés ; DELETE (aucun appel externe) n'est pas limité.
+    assert api.as_user(make_user('autre')).put('/api/weather/city/', {'city': 'Lyon'}, format='json').status_code == 200
+    assert api.as_user(user).delete('/api/weather/city/').status_code == 200
+
+    # Même ville déjà géocodée : coordonnées gardées, aucune tâche enfilée.
+    settings.WEATHER_CITY_UPDATES_PER_USER_DAY = 100
+    geo = make_user('geo', city='Lyon', city_label='Lyon, France', city_latitude=45.76, city_longitude=4.83)
+    celery_delay.calls.clear()
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = api.as_user(geo).put('/api/weather/city/', {'city': ' Lyon '}, format='json')
+    assert resp.status_code == 200 and resp.data['geocoded'] is True
+    assert celery_delay.calls == []
+    geo.refresh_from_db()
+    assert geo.city_latitude == 45.76

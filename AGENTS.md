@@ -148,7 +148,8 @@ matériel) + 5 météo (phase 2), en plus des 28 historiques. Contrat front : fi
   (`User.city` + coordonnées, migration accounts 0029, jamais de GPS) ; géocodage et météo Open-Meteo
   (`stats/services/weather.py`, archive > 5 jours sinon prévision) **uniquement en tâche** (`geocode_user_city_task`,
   `evaluate_user_badges`) ; cache `WeatherDay` par (lieu arrondi 0,01°, date). Badges `async_only` : jamais évalués
-  dans une requête.
+  dans une requête. `PUT` limité à `WEATHER_CITY_UPDATES_PER_USER_DAY` (10) par jour → 429 `rate_limited` ; même ville
+  déjà géocodée = aucune tâche.
 - Non faits : « Passeport tamponné » (doublon de `cuisines_20`) ; « Ton badge le plus rare » du Récap.
 - Tests : `stats/tests/test_stats_badges_quirky.py`, `test_stats_badges_weather.py` (réseau mocké :
   `stats.services.weather._get_json`).
