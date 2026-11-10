@@ -105,3 +105,38 @@ def test_invalid_own_exhausted_rotated_and_rate_limited_codes(api, user, make_us
     with mock.patch('accounts.views_invites.LOOKUP_LIMIT_PER_IP', 2):
         statuses = [APIClient().get(f'/api/invites/{rotated.data["code"]}/').status_code for _ in range(3)]
     assert statuses[-1] == 429
+
+
+def test_redeem_locks_the_code_row_before_counting_uses(user, make_user, settings):
+    """Course sur `max_uses` : le code est verrouillé (SELECT … FOR UPDATE) avant le comptage des utilisations."""
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    from accounts.models import InviteCode
+    from accounts.services.invite_service import InviteError, get_or_create_active_code, redeem, resolve_code
+
+    settings.INVITE_CODE_MAX_USES = 2
+    code = get_or_create_active_code(user).code
+    with CaptureQueriesContext(connection) as ctx:
+        assert redeem(make_user('a'), code).created
+    sql = [q['sql'] for q in ctx.captured_queries]
+    lock = next(i for i, q in enumerate(sql) if 'FOR UPDATE' in q and 'accounts_invitecode' in q)
+    count = next(i for i, q in enumerate(sql) if 'COUNT(' in q and 'accounts_inviteredemption' in q)
+    assert lock < count
+
+    assert redeem(make_user('b'), code).created
+    with pytest.raises(InviteError) as exc:
+        redeem(make_user('c'), code)
+    assert exc.value.code == 'exhausted'
+
+    # Code régénéré entre la résolution et le verrou : refusé, rien n'est créé.
+    stale = resolve_code(code)
+    InviteCode.objects.filter(pk=stale.pk).update(is_active=False)
+    late = make_user('late', validated=False)
+    settings.INVITE_CODE_MAX_USES = 0
+    with mock.patch('accounts.services.invite_service.resolve_code', return_value=stale):
+        with pytest.raises(InviteError) as exc:
+            redeem(late, code)
+    assert exc.value.code == 'invalid_code'
+    late.refresh_from_db()
+    assert late.validated_at is None and not late.invites_received.exists()

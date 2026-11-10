@@ -159,11 +159,15 @@ def redeem(invitee, raw_code, *, at_signup: bool = False) -> RedeemResult:
         return RedeemResult(existing, False)
 
     limit = max_uses()
-    if limit and invite.redemptions.count() >= limit:
-        raise InviteError('exhausted', 'Ce lien a déjà beaucoup servi. Demande un nouveau lien.', 410)
-
     now = timezone.now()
     with transaction.atomic():
+        # Verrou sur la ligne du code jusqu'à la fin de la transaction : deux utilisations simultanées ne
+        # peuvent pas lire le même compteur et dépasser `max_uses` (la 2e attend la 1re puis recompte).
+        locked = InviteCode.objects.select_for_update().filter(pk=invite.pk, is_active=True).first()
+        if locked is None:  # régénéré entre-temps
+            raise InviteError('invalid_code', 'Ce lien d’invitation n’est plus valable.', 404)
+        if limit and locked.redemptions.count() >= limit:
+            raise InviteError('exhausted', 'Ce lien a déjà beaucoup servi. Demande un nouveau lien.', 410)
         new_member = _is_new_member(invitee, now)
         bypassed = False
         if invitee.validated_at is None and getattr(settings, 'INVITE_BYPASSES_WAITLIST', True):
@@ -176,7 +180,7 @@ def redeem(invitee, raw_code, *, at_signup: bool = False) -> RedeemResult:
         try:
             with transaction.atomic():
                 redemption = InviteRedemption.objects.create(
-                    code=invite,
+                    code=locked,
                     inviter=inviter,
                     invitee=invitee,
                     at_signup=at_signup,
