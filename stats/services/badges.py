@@ -30,7 +30,7 @@ from core.celery_dispatch import publish
 
 from ..models import UserBadge
 from .badge_rarity import rarity_fields, rarity_map
-from .badge_types import FAMILIES, TIER_RARE, TIER_TRES_RARE, BadgeDef, Metric
+from .badge_types import FAMILIES, HINT_STEPS, TIER_RARE, TIER_TRES_RARE, BadgeDef, Metric
 from .stats_service import StatsResult, compute_stats, resolve_period
 
 logger = logging.getLogger(__name__)
@@ -290,6 +290,24 @@ def _schedule_notification(user_id: int, codes: list[str], *, push: bool) -> Non
         logger.warning('[badges] notification non planifiée pour user=%s', user_id, exc_info=True)
 
 
+_ABOUT_SOMEONE = (
+    (re.compile(r'\bTu as\b'), 'A'),
+    (re.compile(r'\bTon\b'), 'Son'),
+    (re.compile(r'\bton\b'), 'son'),
+    (re.compile(r'\bTes\b'), 'Ses'),
+    (re.compile(r'\btes\b'), 'ses'),
+    (re.compile(r'\bTa\b'), 'Sa'),
+    (re.compile(r'\bta\b'), 'sa'),
+)
+
+
+def about_someone(description: str) -> str:
+    """Condition vue sur le profil d'un autre : « dans ta tablée » → « dans sa tablée », « Tu as » → « A »."""
+    for pattern, repl in _ABOUT_SOMEONE:
+        description = pattern.sub(repl, description)
+    return description
+
+
 def earned_badges_public(user, viewer=None) -> list[dict]:
     """Badges obtenus par `user`, pour son profil vu par un autre (sans réévaluation ni contexte)."""
     rows = UserBadge.objects.filter(user=user).order_by('-earned_at', 'code').values('code', 'earned_at')
@@ -312,32 +330,49 @@ def earned_badges_public(user, viewer=None) -> list[dict]:
         }
         if badge.secret and code not in viewer_owned:
             payload['description'] = 'Demande-lui comment !'
+        elif not viewer or getattr(viewer, 'id', None) != getattr(user, 'id', None):
+            payload['description'] = about_someone(badge.description)
         result.append(payload)
     return result
 
 
+MYSTERY_ICON = 'mystery'  # icône générique d'une énigme non résolue (l'app dessine une silhouette floutée)
+
+
+def dishes_since(stats: StatsResult, since: date) -> int:
+    """Plats-jours cuisinés depuis `since` (inclus) : fait avancer les indices d'une énigme."""
+    return sum(1 for m in stats.dish_days if m.date >= since)
+
+
+def hint_stage_of(n_hints: int, cooked_dishes: int) -> tuple[int, int | None]:
+    """
+    (étape d'indice 1..n, plats restants avant le prochain indice ou None s'il n'y en a plus).
+    Étape k+1 dès `HINT_STEPS[k]` plats cuisinés depuis l'arrivée du badge ; `next_hint_in` n'est jamais 0.
+    """
+    stage = 1
+    for threshold in HINT_STEPS[: max(n_hints - 1, 0)]:
+        if cooked_dishes >= threshold:
+            stage += 1
+    if stage < n_hints and stage - 1 < len(HINT_STEPS):
+        return stage, max(1, HINT_STEPS[stage - 1] - cooked_dishes)
+    return stage, None
+
+
 def secret_placeholder(badge: BadgeDef, rmap: dict | None = None, *, cooked_dishes: int = 0) -> dict:
-    """Badge secret pas encore obtenu : « ??? » + indice (rien qui révèle la condition, code opaque)."""
+    """
+    Énigme pas encore résolue : « ??? » + indice (rien qui révèle la condition : code opaque, icône générique).
+    `cooked_dishes` = plats cuisinés depuis l'arrivée du badge (`dishes_since(stats, badge.hints_since)`).
+    """
     opaque = 'secret_' + hashlib.sha1(badge.code.encode()).hexdigest()[:10]
     hints = badge.hints or ((badge.hint,) if badge.hint else ('???',))
-    if cooked_dishes >= 25 and len(hints) >= 3:
-        hint_text = hints[2]
-        hint_stage = 3
-        next_hint_in = None
-    elif cooked_dishes >= 10 and len(hints) >= 2:
-        hint_text = hints[1]
-        hint_stage = 2
-        next_hint_in = max(0, 25 - cooked_dishes)
-    else:
-        hint_text = hints[0]
-        hint_stage = 1
-        next_hint_in = max(0, 10 - cooked_dishes) if len(hints) >= 2 else None
+    hint_stage, next_hint_in = hint_stage_of(len(hints), cooked_dishes)
+    hint_text = hints[hint_stage - 1]
 
     return {
         'code': opaque,
         'title': '???',
         'emoji': '❓',
-        'icon': badge.icon,
+        'icon': MYSTERY_ICON,
         'description': hint_text,
         'category': badge.category,
         'family': badge.family_code,
@@ -364,7 +399,7 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
     earned = [_badge_payload(b, owned[b.code], rmap) for b in badges if b.code in owned]
     earned.sort(key=lambda b: ((b['context'] or {}).get('achieved_on') or '', -_ORDER[b['code']]), reverse=True)
     upcoming, secrets = [], []
-    cooked_dishes = len(stats.dish_days)
+    since_counts: dict[date, int] = {}
     for badge in badges:
         if badge.code in owned:
             continue
@@ -374,7 +409,10 @@ def badges_overview(user, *, next_limit: int | None = 5) -> dict:
         if badge.secret:
             # Jamais dans les « prochains » (aperçu) ; « ??? » + indice dans la liste complète.
             if next_limit is None:
-                secrets.append(secret_placeholder(badge, rmap, cooked_dishes=cooked_dishes))
+                since = badge.hints_since
+                if since not in since_counts:
+                    since_counts[since] = dishes_since(stats, since)
+                secrets.append(secret_placeholder(badge, rmap, cooked_dishes=since_counts[since]))
             continue
         current = 0 if badge.async_only else min(_measure(badge, stats)[0], badge.target)  # météo : tâche seule
         upcoming.append(
@@ -431,8 +469,12 @@ def badge_share_payload(user, code: str) -> dict | None:
     invite = get_or_create_active_code(user)
     url = invite_url(invite.code)
     context = ub.context or {}
+    public = badge_public(badge, rarity_map())
+    if badge.secret:
+        # Énigme / introuvable : la carte part chez d'autres, elle montre la phrase, jamais la condition.
+        public['description'] = ''
     return {
-        'badge': badge_public(badge, rarity_map()),
+        'badge': public,
         'earned_at': ub.earned_at.isoformat(),
         'achieved_on': context.get('achieved_on'),
         'context': context,

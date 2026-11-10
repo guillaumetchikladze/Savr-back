@@ -514,34 +514,52 @@ def _homemade(h: BadgeHistory, target: int = 5):
     return total, achieved
 
 
+# Articles en tête de libellé, ignorés pour l'initiale (« La paella » → p). Texte plié : « L'omelette » → « l omelette ».
+LEADING_ARTICLE = _rx(r'^(?:(?:le|la|les|l|un|une|des|du|de la|d)\s+)')
+
+
+def initial_of(label: str) -> str:
+    """Initiale d'un plat, articles ignorés ('' si ce n'est pas une lettre)."""
+    folded = LEADING_ARTICLE.sub('', fold(label))
+    letter = folded[:1]
+    return letter if 'a' <= letter <= 'z' else ''
+
+
 def _alliteration(h: BadgeHistory, target: int = 5):
-    weeks: dict[date, dict[str, set[tuple]]] = defaultdict(lambda: defaultdict(set))
+    # semaine → initiale → plat → premier jour de la semaine où il a été cuisiné
+    weeks: dict[date, dict[str, dict[tuple, date]]] = defaultdict(lambda: defaultdict(dict))
     for dd in h.dish_days:
         if dd.key[0] == 'm':
             continue
-        letter = (fold(dd.label) or ' ')[0]
-        if 'a' <= letter <= 'z':
-            weeks[week_monday(dd.date)][letter].add(dd.key)
+        letter = initial_of(dd.label)
+        if letter:
+            weeks[week_monday(dd.date)][letter].setdefault(dd.key, dd.date)
     best, achieved = 0, None
-    for mon, by_letter in sorted(weeks.items()):
+    for _mon, by_letter in sorted(weeks.items()):
         for _letter, dishes in by_letter.items():
             best = max(best, len(dishes))
-            if len(dishes) >= target and achieved is None:
-                achieved = mon + timedelta(days=6)
+            if len(dishes) >= target:
+                # Daté le jour du `target`-ième plat (jamais la fin de semaine, qui peut être dans le futur).
+                day = sorted(dishes.values())[target - 1]
+                achieved = day if achieved is None else min(achieved, day)
     return min(best, target), achieved
 
 
-def _rien_ne_se_perd(h: BadgeHistory):
-    achieved = None
-    for i in range(1, len(h.dish_days)):
-        prev_dd = h.dish_days[i - 1]
-        curr_dd = h.dish_days[i]
-        if curr_dd.date == prev_dd.date + timedelta(days=1) and curr_dd.key != prev_dd.key:
-            s1 = {iid for iid, ing in prev_dd.ingredients.items() if not ing.staple}
-            s2 = {iid for iid, ing in curr_dd.ingredients.items() if not ing.staple}
-            if len(s1 & s2) >= 4:
-                achieved = curr_dd.date if achieved is None else min(achieved, curr_dd.date)
-    return once(achieved)
+def _rien_ne_se_perd(h: BadgeHistory, shared: int = 4):
+    """Deux jours de suite, deux plats différents (n'importe lesquels de chaque jour) avec `shared` ingrédients communs."""
+    by_day: dict[date, list[tuple[tuple, set[int]]]] = defaultdict(list)
+    for dd in h.dish_days:
+        by_day[dd.date].append((dd.key, {iid for iid, ing in dd.ingredients.items() if not ing.staple}))
+    for day in sorted(by_day):
+        before = by_day.get(day - timedelta(days=1))
+        if not before:
+            continue
+        for key, ings in by_day[day]:
+            if len(ings) < shared:
+                continue
+            if any(k != key and len(ings & prev) >= shared for k, prev in before):
+                return once(day)
+    return 0, None
 
 
 CONTINENT_MAP = {
@@ -616,8 +634,9 @@ def _pyramide(h: BadgeHistory, target: int = 6):
 
 
 def _carton_plein(h: BadgeHistory, target: int = 10):
+    meals = {m.id: m for m in h.stats.meals}
     for dd in h.dish_days:
-        meal = next((m for m in h.stats.meals if m.id == dd.meal_id), None)
+        meal = meals.get(dd.meal_id)
         if meal and any(p.get('miam', 0) >= target for p in meal.posts):
             return 1, dd.date
     return 0, None
@@ -629,8 +648,9 @@ def _tablee_connectee(h: BadgeHistory, target: int = 3):
 
 
 def _pilote_auto(h: BadgeHistory, target: int = 20):
-    total = sum(len(m) for m in h.cooking_minutes_by_batch.values())
-    return min(total, target), (h.today if total >= target else None)
+    """20 recettes suivies jusqu'au bout en mode cuisine, daté de la 20e (jamais « aujourd'hui » : rattrapage silencieux)."""
+    total, achieved = reached([day for _batch, _minutes, day in h.cooking_completions], target)
+    return min(total, target), achieved
 
 
 # ---------------------------------------------------------------------------
@@ -1446,7 +1466,7 @@ QUIRKY_BADGES: tuple[BadgeDef, ...] = (
         'La pyramide',
         '🔺',
         '6 groupes d’aliments différents dans un même plat.',
-        'Les nutritionnistes applaudissent.',
+        'Tout le marché dans une seule assiette.',
         'defis',
         1,
         _h(_pyramide),

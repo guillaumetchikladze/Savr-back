@@ -45,7 +45,9 @@ def cook(user, make_recipe, make_meal_plan):
 # ---------------------------------------------------------------------------
 # Registre et copie
 # ---------------------------------------------------------------------------
-BANNED = re.compile(r'\bbande\b|strava|!|\bvous\b|perdre|longtemps|manqu|oublié', re.IGNORECASE)
+BANNED = re.compile(
+    r'\bbande\b|strava|!|\bvous\b|perdre|longtemps|manqu|oublié|nutrition|calorie|santé|healthy', re.IGNORECASE
+)
 
 
 def test_registry_is_big_unique_and_well_written():
@@ -379,9 +381,9 @@ def test_v3_lot2_badges_and_introuvables_mechanics(user, make_user, cook, make_r
     # 2. Débat culinaire (10 commentaires)
     post_meal = cook(date(2025, 9, 1), 'Chili con carne', ['haricots rouges'])
     post = Post.objects.create(user=user, meal_plan=post_meal, label='Mon super chili')
-    commenter = make_user('commenter')
+    commenters = [make_user(f'commenter{i}') for i in range(3)]  # un débat : au moins 3 personnes
     for i in range(10):
-        PostComment.objects.create(post=post, user=commenter, text=f'Super {i}')
+        PostComment.objects.create(post=post, user=commenters[i % 3], text=f'Super {i}')
 
     # 3. Making-of (photo pendant la cuisine + au repas)
     PostPhoto.objects.create(post=post, photo_type='during_cooking')
@@ -431,3 +433,152 @@ def test_v3_lot2_badges_and_introuvables_mechanics(user, make_user, cook, make_r
     # Aucun introuvable dans next avant déblocage (0 mention)
     for code in ('telepathie', 'bouche_a_oreille', 'poisson_avril', 'bissextile', 'tchikiversaire', 'midi_pile'):
         assert code not in next_codes
+
+
+# ---------------------------------------------------------------------------
+# fx02 : règles corrigées (relecture du 2026-11-10)
+# ---------------------------------------------------------------------------
+def _value(user, code):
+    from stats.services.badges import _measure, lifetime_stats
+
+    return _measure(BADGES_BY_CODE[code], lifetime_stats(user))[:2]
+
+
+def test_pique_assiette_counts_past_cooked_meals_outside_the_household(user, make_user, make_meal_plan):
+    today = date.today()
+    host, partner = make_user('host'), make_user('partner')
+    HouseholdMember.objects.create(owner=user, user=partner, status=HouseholdMember.STATUS_ACCEPTED)
+
+    def invite(owner, day, confirmed=True):
+        meal = make_meal_plan(owner, day=day, confirmed=confirmed)
+        MealInvitation.objects.create(inviter=owner, invitee=user, meal_plan=meal, status='accepted')
+
+    for i in range(3):
+        invite(host, today - timedelta(days=10 + i))
+    invite(host, today + timedelta(days=3))  # repas à venir
+    invite(host, today - timedelta(days=2), confirmed=False)  # jamais cuisiné
+    invite(partner, today - timedelta(days=4))  # le foyer n'invite pas
+    invite(partner, today - timedelta(days=5))
+
+    assert _value(user, 'pique_assiette') == (3, None)
+
+    invite(host, today - timedelta(days=1))
+    invite(host, today)
+    assert _value(user, 'pique_assiette') == (5, today)
+
+
+def test_chasseur_de_recettes_counts_imported_recipes(user, cook):
+    from recipes.models import Recipe
+
+    for i in range(10):
+        meal = cook(date(2026, 2, 1) + timedelta(days=i), f'Import {i}', [f'ingrédient {i}'])
+        recipe = meal.meal_plan_recipe_batches.first().recipe_batch.recipe
+        if i < 8:
+            Recipe.objects.filter(id=recipe.id).update(source_type='imported')
+        elif i == 8:
+            Recipe.objects.filter(id=recipe.id).update(import_source_url='https://example.com/r')
+    assert _value(user, 'chasseur_recettes') == (9, None)  # la 10e est créée à la main
+
+    meal = cook(date(2026, 2, 20), 'Import 10', ['ingrédient 10'])
+    Recipe.objects.filter(id=meal.meal_plan_recipe_batches.first().recipe_batch.recipe_id).update(
+        source_type='imported'
+    )
+    assert _value(user, 'chasseur_recettes') == (10, date(2026, 2, 20))
+
+
+def test_pilote_auto_is_dated_on_the_20th_completed_recipe(user, make_recipe, make_meal_plan):
+    from recipes.models import CookingProgress
+
+    meal = make_meal_plan(user, day=date(2025, 3, 1), recipes=[make_recipe(user, 'Soupe')], confirmed=True)
+    batch = meal.meal_plan_recipe_batches.first().recipe_batch
+    start = datetime(2025, 3, 1, 12, tzinfo=UTC)
+    for i in range(20):
+        CookingProgress.objects.create(
+            user=user,
+            recipe_batch=batch,
+            status='completed',
+            completed_at=start + timedelta(days=i),
+            total_time_minutes=None if i % 2 else 30,  # mesurée ou pas : suivie jusqu'au bout quand même
+        )
+    CookingProgress.objects.create(user=user, recipe_batch=batch, status='abandoned')
+
+    new = {b['code']: b for b in evaluate_badges(user, notify=False)}
+    # Daté de la 20e (pas d'aujourd'hui) : rattrapage silencieux, aucune célébration de masse au déploiement.
+    assert new['pilote_auto']['context']['achieved_on'] == '2025-03-20'
+    assert 'pilote_auto' not in _codes(award_badges_safely(user))
+
+
+def test_alliteration_ignores_articles_and_is_never_in_the_future(user, cook):
+    monday = date(2026, 3, 2)
+    for i, title in enumerate(['La paella', 'Le poulet rôti', 'Pâtes au pesto', 'Une pizza', 'Purée maison']):
+        cook(monday + timedelta(days=i // 2), title, [f'ingrédient {i}'], meal_time=('lunch', 'dinner')[i % 2])
+
+    new = {b['code']: b for b in evaluate_badges(user, notify=False)}
+    assert new['alliteration']['context']['achieved_on'] == '2026-03-04'  # jour du 5e plat, pas le dimanche
+
+
+def test_rien_ne_se_perd_compares_every_dish_of_the_day_before(user, cook):
+    leftovers = ['carotte', 'poireau', 'navet', 'céleri']
+    cook(date(2026, 4, 1), 'Pot-au-feu', [*leftovers, 'boeuf'])
+    cook(date(2026, 4, 1), 'Tarte au citron', ['citron', 'farine', 'oeuf'], meal_time='dinner')
+    assert 'rien_ne_se_perd' not in _codes(evaluate_badges(user, notify=False))
+
+    cook(date(2026, 4, 2), 'Velouté de légumes', [*leftovers, 'crème'])
+    new = {b['code']: b for b in evaluate_badges(user, notify=False)}
+    assert new['rien_ne_se_perd']['context']['achieved_on'] == '2026-04-02'
+
+
+def test_debat_culinaire_needs_several_people(user, make_user, cook):
+    from recipes.models import PostComment
+
+    post = Post.objects.create(user=user, meal_plan=cook(date(2026, 5, 1)), label='Chili', is_published=True)
+    chatty, other = make_user('chatty'), make_user('other')
+    for i in range(12):
+        PostComment.objects.create(post=post, user=chatty, text=f'Miam {i}')
+    PostComment.objects.create(post=post, user=other, text='Oh')
+    PostComment.objects.create(post=post, user=user, text='Merci')  # ses propres mots ne comptent pas
+    assert 'debat_culinaire' not in _codes(evaluate_badges(user, notify=False))  # 2 personnes
+
+    PostComment.objects.create(post=post, user=make_user('third'), text='Recette ?')
+    assert 'debat_culinaire' in _codes(evaluate_badges(user, notify=False))
+
+
+def test_enigma_hints_count_dishes_since_the_badge_arrived(user, cook, monkeypatch):
+    from stats.services import badge_types
+    from stats.services.badges import badges_overview, hint_stage_of
+
+    since = date(2026, 6, 1)
+    monkeypatch.setattr(badge_types, 'ENIGMES_V3_SINCE', since)
+    for i in range(30):  # gros historique AVANT l'arrivée des énigmes
+        cook(since - timedelta(days=40 - i), f'Plat {i}', [f'ingrédient {i}'])
+    for i in range(4):
+        cook(since + timedelta(days=i), f'Nouveau {i}', [f'nouvel ingrédient {i}'])
+
+    secrets = [b for b in badges_overview(user, next_limit=None)['next'] if b['secret']]
+    rituel_hint = BADGES_BY_CODE['rituel'].hints[0]
+    rituel = next(b for b in secrets if b['hint'] == rituel_hint)
+    assert (rituel['hint_stage'], rituel['next_hint_in']) == (1, 6)
+    assert all(b['icon'] == 'mystery' for b in secrets)  # jamais l'icône réelle d'une énigme
+    assert BADGES_BY_CODE['rituel'].icon not in str(secrets)
+    assert BADGES_BY_CODE['rituel'].hints[2] not in str(secrets)  # aucun indice futur dans le payload
+
+    assert hint_stage_of(3, 10) == (2, 15) and hint_stage_of(3, 24) == (2, 1) and hint_stage_of(3, 25) == (3, None)
+    assert hint_stage_of(2, 30) == (2, None)  # plus d'indice : jamais « dans 0 plat »
+    assert hint_stage_of(1, 0) == (1, None)
+
+
+def test_friend_profile_wording_and_share_card_of_a_mystery(api, user, make_user):
+    from stats.services.badges import badge_share_payload, earned_badges_public
+
+    friend = make_user('friend')
+    for code in ('tablee_complete', 'host_5', 'telepathie'):
+        UserBadge.objects.create(user=user, code=code, context={'achieved_on': '2026-10-01'})
+
+    seen = {b['code']: b['description'] for b in earned_badges_public(user, viewer=friend)}
+    assert seen['tablee_complete'] == 'Tout le monde a cuisiné dans sa tablée la même semaine.'
+    assert seen['host_5'] == 'A cuisiné pour 5 personnes.'
+    assert seen['telepathie'] == 'Demande-lui comment !'
+
+    share = badge_share_payload(user, 'telepathie')
+    assert share['badge']['description'] == '' and share['badge']['phrase']
+    assert 'tablée' not in share['share_text']

@@ -10,7 +10,9 @@ quelques lectures paresseuses, chacune en une requête et au plus une fois :
 - « À mon tour » : posts d'autres cuisiniers inspirés par les siens ;
 - invitations : amis inscrits grâce à son lien (`InviteRedemption.is_acquisition`) ;
 - tablées : membres acceptés + dates « cuisiné » des autres membres (2 requêtes) ;
-- cuisine « Ta cuisine » (0 ou 1 requête).
+- cuisine « Ta cuisine » (0 ou 1 requête) ;
+- badges v3 : invitations acceptées (repas passés et confirmés, hors foyer), commentaires groupés par post,
+  photos « en cuisine », plats des membres de la tablée (ses recettes, ses jours), minuteurs qui se chevauchent.
 
 Nombre de requêtes constant, quel que soit l'historique : tout le reste est de l'agrégation Python.
 Règles douces : un même plat compte une fois par jour (plats-jours de `compute_stats`).
@@ -33,6 +35,10 @@ from ..text import fold
 from .stats_service import MAX_ANON_GUESTS_PER_MEAL, StatsResult
 
 MEAT_GROUPS = frozenset({'viandes', 'poissons_fruits_de_mer'})
+
+# « Débat culinaire » : 10 commentaires d'autres personnes, par au moins 3 personnes différentes.
+DEBATE_MIN_COMMENTS = 10
+DEBATE_MIN_COMMENTERS = 3
 
 
 @dataclass
@@ -77,10 +83,7 @@ class DishDay:
 
     @property
     def is_imported(self) -> bool:
-        return any(
-            bool(r.get('import_source_url')) or r.get('source_type') in ('url', 'photo', 'text', 'import')
-            for r in self.recipes
-        )
+        return any(r.get('source_type') == 'imported' or bool(r.get('import_source_url')) for r in self.recipes)
 
     def matches(self, pattern: re.Pattern) -> bool:
         return bool(pattern.search(self.text))
@@ -118,14 +121,26 @@ class BadgeHistory:
         return user_zone(self.user_id)
 
     @cached_property
-    def cooking_minutes_by_batch(self) -> dict[int, list[int]]:
+    def cooking_completions(self) -> list[tuple[int, int | None, date]]:
+        """Recettes suivies jusqu'au bout en mode cuisine : (batch, minutes mesurées, date locale de fin), triées."""
         from recipes.models import CookingProgress
 
+        rows = (
+            CookingProgress.objects.filter(user_id=self.user_id, status='completed')
+            .order_by('completed_at', 'started_at', 'id')
+            .values_list('recipe_batch_id', 'total_time_minutes', 'completed_at', 'started_at')
+        )
+        return [
+            (batch_id, minutes, (done or started).astimezone(self.zone).date())
+            for batch_id, minutes, done, started in rows
+        ]
+
+    @cached_property
+    def cooking_minutes_by_batch(self) -> dict[int, list[int]]:
         out: dict[int, list[int]] = defaultdict(list)
-        for batch_id, minutes in CookingProgress.objects.filter(
-            user_id=self.user_id, status='completed', total_time_minutes__gt=0
-        ).values_list('recipe_batch_id', 'total_time_minutes'):
-            out[batch_id].append(minutes)
+        for batch_id, minutes, _day in self.cooking_completions:
+            if minutes and minutes > 0:
+                out[batch_id].append(minutes)
         return out
 
     @cached_property
@@ -191,16 +206,30 @@ class BadgeHistory:
 
     @cached_property
     def accepted_invitations_dates(self) -> list[date]:
+        """
+        Repas partagés chez les autres : invitations acceptées à un repas **cuisiné** (confirmé) et passé.
+        Le foyer n'est jamais un hôte « invitant » (il n'est jamais convive, AGENTS.md).
+        """
         from recipes.models import MealInvitation
 
         return list(
-            MealInvitation.objects.filter(invitee_id=self.user_id, status='accepted')
+            MealInvitation.objects.filter(
+                invitee_id=self.user_id,
+                status='accepted',
+                meal_plan__confirmed=True,
+                meal_plan__date__lte=self.today,
+            )
+            .exclude(meal_plan__user_id__in={self.user_id, *self.stats.household_ids})
             .order_by('meal_plan__date')
             .values_list('meal_plan__date', flat=True)
         )
 
     @cached_property
     def debated_post_date(self) -> date | None:
+        """
+        Premier de ses posts avec au moins `DEBATE_MIN_COMMENTS` commentaires d'autres personnes, écrits par au
+        moins `DEBATE_MIN_COMMENTERS` personnes différentes (un seul ami bavard ne fait pas un débat).
+        """
         from django.db.models import Count
 
         from recipes.models import PostComment
@@ -208,9 +237,10 @@ class BadgeHistory:
         row = (
             PostComment.objects.filter(post__user_id=self.user_id)
             .exclude(user_id=self.user_id)
-            .values('post__meal_plan__date', 'post__created_at')
-            .annotate(cnt=Count('id'))
-            .filter(cnt__gte=10)
+            .values('post_id')
+            .annotate(cnt=Count('id'), people=Count('user_id', distinct=True))
+            .filter(cnt__gte=DEBATE_MIN_COMMENTS, people__gte=DEBATE_MIN_COMMENTERS)
+            .values('post_id', 'post__meal_plan__date', 'post__created_at')
             .order_by('post__created_at')
             .first()
         )
@@ -226,8 +256,12 @@ class BadgeHistory:
     def making_of_date(self) -> date | None:
         from recipes.models import PostPhoto
 
+        # Seuls les posts qui ont une photo « en cuisine » (sous-requête) : pas toutes ses photos.
+        candidates = PostPhoto.objects.filter(post__user_id=self.user_id, photo_type='during_cooking').values('post_id')
         post_photos = (
-            PostPhoto.objects.filter(post__user_id=self.user_id, post__isnull=False)
+            PostPhoto.objects.filter(
+                post_id__in=candidates, photo_type__in=('during_cooking', 'at_meal_time', 'after_cooking')
+            )
             .order_by('post__created_at')
             .values('post_id', 'photo_type', 'post__meal_plan__date', 'post__created_at')
         )
@@ -264,11 +298,19 @@ class BadgeHistory:
                     my_recipes_by_date[dd.date].add(r['id'])
         if not my_recipes_by_date:
             return None
-        min_date = min(my_recipes_by_date.keys())
-        max_date = max(my_recipes_by_date.keys())
-        other_plans = cooked_meal_plans_of_users(member_ids, start=min_date, end=max_date).values_list('id', flat=True)
-        other_cooked_batches = MealPlanRecipeBatch.objects.filter(meal_plan_id__in=other_plans).values(
-            'meal_plan__date', 'recipe_batch__recipe_id'
+        my_recipe_ids = {rid for ids in my_recipes_by_date.values() for rid in ids}
+        other_plans = cooked_meal_plans_of_users(
+            member_ids, start=min(my_recipes_by_date), end=max(my_recipes_by_date)
+        ).values_list('id', flat=True)
+        # Seulement ses recettes, aux jours où il ou elle les a cuisinées (pas tout l'historique de la tablée).
+        other_cooked_batches = (
+            MealPlanRecipeBatch.objects.filter(
+                meal_plan_id__in=other_plans,
+                meal_plan__date__in=list(my_recipes_by_date),
+                recipe_batch__recipe_id__in=my_recipe_ids,
+            )
+            .order_by('meal_plan__date')
+            .values('meal_plan__date', 'recipe_batch__recipe_id')
         )
         for row in other_cooked_batches:
             d = row['meal_plan__date']
@@ -295,10 +337,27 @@ class BadgeHistory:
 
     @cached_property
     def concurrent_timers_date(self) -> date | None:
+        from django.db.models import Count, F, OuterRef, Subquery
+
         from recipes.models import Timer
 
+        # Seuls les minuteurs qui en chevauchent au moins 2 autres (condition nécessaire) : le balayage
+        # Python ne porte que sur eux, pas sur tout l'historique.
+        overlapping = (
+            Timer.objects.filter(
+                user_id=self.user_id, started_at__lt=OuterRef('expires_at'), expires_at__gt=OuterRef('started_at')
+            )
+            .order_by()
+            .values('user_id')
+            .annotate(n=Count('id'))
+            .values('n')
+        )
         timers = list(
-            Timer.objects.filter(user_id=self.user_id).order_by('started_at').values('started_at', 'expires_at')
+            Timer.objects.filter(user_id=self.user_id, expires_at__gt=F('started_at'))
+            .annotate(overlaps=Subquery(overlapping))
+            .filter(overlaps__gte=3)
+            .order_by('started_at')
+            .values('started_at', 'expires_at')
         )
         if len(timers) < 3:
             return None
@@ -309,7 +368,7 @@ class BadgeHistory:
             if s and e and e > s:
                 events.append((s, 1))
                 events.append((e, -1))
-        events.sort(key=lambda ev: (ev[0], -ev[1]))
+        events.sort(key=lambda ev: (ev[0], ev[1]))  # à égalité, une fin avant un début (pas de chevauchement)
         active = 0
         for ts, delta in events:
             active += delta

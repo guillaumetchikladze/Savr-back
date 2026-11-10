@@ -150,6 +150,12 @@ matériel) + 5 météo (phase 2), en plus des 28 historiques. Contrat front : fi
   `evaluate_user_badges`) ; cache `WeatherDay` par (lieu arrondi 0,01°, date). Badges `async_only` : jamais évalués
   dans une requête. `PUT` limité à `WEATHER_CITY_UPDATES_PER_USER_DAY` (10) par jour → 429 `rate_limited` ; même ville
   déjà géocodée = aucune tâche.
+- Mystère (bdg3) : énigmes (`mystery='enigme'`, 3 indices) et introuvables (aucune mention avant déblocage, ni case
+  ni compteur). Indice 2 / 3 après 10 / 25 plats cuisinés **depuis l'arrivée du badge** (`BadgeDef.since`, défaut
+  `badge_types.ENIGMES_V3_SINCE`), `next_hint_in` jamais 0 ; une énigme non résolue part avec `icon: 'mystery'`.
+  Carte à partager d'un secret : `description` vide. Profil d'un autre : condition à la 3e personne (« sa tablée »).
+- Dates d'obtention jamais « aujourd'hui » par défaut (Pilote automatique = 20e `CookingProgress` terminé) :
+  `backfill_badges` reste silencieux. Débat culinaire = 10 commentaires d'au moins 3 autres personnes.
 - Non faits : « Passeport tamponné » (doublon de `cuisines_20`) ; « Ton badge le plus rare » du Récap.
 - Tests : `stats/tests/test_stats_badges_quirky.py`, `test_stats_badges_weather.py` (réseau mocké :
   `stats.services.weather._get_json`).

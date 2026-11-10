@@ -41,6 +41,13 @@ TIERS: dict[str, str] = {
 }
 RARE_TIERS = frozenset({TIER_RARE, TIER_TRES_RARE, TIER_LEGENDAIRE})
 
+# Énigmes : les indices 2 et 3 se débloquent après N plats cuisinés **depuis l'arrivée du badge** (`since`),
+# pas sur tout l'historique (sinon un cuisinier actif lit la condition dès le premier jour).
+HINT_STEPS = (10, 25)
+# Date d'arrivée des énigmes v3 (bdg3, 13 secrets convertis + 6 nouvelles). Une énigme ajoutée plus tard
+# renseigne son propre `BadgeDef.since` (date de mise en prod).
+ENIGMES_V3_SINCE = date(2026, 11, 10)
+
 
 @dataclass(frozen=True)
 class BadgeDef:
@@ -57,10 +64,15 @@ class BadgeDef:
     hint: str = ''  # indice vague d'un badge secret (« ??? »)
     hints: tuple[str, ...] = ()  # 3 indices progressifs pour les énigmes
     icon: str = ''  # nom de l'icône Microsoft Fluent Flat
-    mystery: str = ''  # 'enigme' | ''
+    mystery: str = ''  # 'enigme' | 'introuvable' | ''
+    since: date | None = None  # arrivée de l'énigme (indices progressifs) ; None = ENIGMES_V3_SINCE
     rarity_guess: str = TIER_COMMUN  # palier tant que la rareté calculée n'existe pas
     feature_flag: str = ''  # réglage Django qui doit valoir True pour évaluer / afficher ce badge
     async_only: bool = False  # évalué seulement en tâche Celery (météo : données réseau), jamais dans la requête
+
+    @property
+    def hints_since(self) -> date:
+        return self.since or ENIGMES_V3_SINCE
 
     @property
     def family_code(self) -> str:

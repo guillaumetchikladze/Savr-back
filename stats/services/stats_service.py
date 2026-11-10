@@ -164,6 +164,7 @@ class StatsResult:
     ingredients_by_recipe: dict[int, list[dict]] = field(default_factory=dict)
     ing_info: dict[int, dict] = field(default_factory=dict)
     guests_by_meal: dict[int, set[int]] = field(default_factory=dict)
+    household_ids: set[int] = field(default_factory=set)  # foyer (jamais convive ni hôte « invitant »)
     today: date | None = None
     user: object = None
     history: object = None  # cache paresseux de `badge_history.history_of`
@@ -584,6 +585,7 @@ def compute_stats(user, period: Period, *, today: date | None = None, with_recap
         ingredients_by_recipe=ingredients_by_recipe,
         ing_info=ing_info,
         guests_by_meal=guests_by_meal,
+        household_ids=excluded_guests - {user.id},
         today=today,
         user=user,
     )
