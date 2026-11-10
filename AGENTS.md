@@ -400,6 +400,8 @@ Onboarding « Ta cuisine », badge « Il te manque : un four », « Adapter pour
   privée liée (`adapted_from`, `adapted_for_equipment`), ingrédients copiés, étapes / temps réécrits, index de recherche repris
   de l'original ; idempotente par (recette, user, empreinte des équipements) = contrainte unique
   `recipe_unique_equipment_adaptation`. Réponse invalide / erreur / délai → 502 `adaptation_failed`, rien de créé.
+  Appels LLM limités par utilisateur (`EQUIPMENT_ADAPTATIONS_PER_USER_HOUR`, défaut 10) → 429 `rate_limited` ;
+  une adaptation existante est renvoyée sans LLM ni limite.
   `EQUIPMENT_ADAPT_ENABLED` (défaut True). Agent v2 : contexte « Cuisine… / Tu n'as pas : un four », règle du prompt, tool
   `adapt_recipe_equipment` (carte `recipe_adaptation`).
 - Tests : `recipes/tests/test_recipe_equipment_api.py` (mock LLM : `equipment_adaptation._call_llm`),

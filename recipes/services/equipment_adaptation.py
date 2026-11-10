@@ -258,6 +258,14 @@ def existing_adaptation(recipe_id: int, user, kitchen: catalog.Kitchen | None) -
     ).first()
 
 
+def generation_rate_limited(user) -> bool:
+    """Appels LLM (synchrones, payants) par utilisateur et par heure : changer de cuisine ne doit pas les multiplier."""
+    from accounts.services.invite_service import rate_limited
+
+    limit = int(getattr(settings, 'EQUIPMENT_ADAPTATIONS_PER_USER_HOUR', 10))
+    return rate_limited('equipment_adapt:gen', user.id, limit=limit, window_seconds=3600)
+
+
 def adapt_recipe_for_user(user, recipe_id) -> tuple[Recipe, bool, list[dict]]:
     """(copie adaptée, créée maintenant ?, ce qui manquait). Lève `AdaptationError`."""
     from recipes.services.battle_plan_service import visible_recipes
@@ -282,6 +290,8 @@ def adapt_recipe_for_user(user, recipe_id) -> tuple[Recipe, bool, list[dict]]:
         return existing, False, missing
     if not missing:
         raise AdaptationError('Rien à adapter : tu as déjà tout ce qu’il faut.', 400, 'nothing_to_adapt')
+    if generation_rate_limited(user):
+        raise AdaptationError('Trop d’adaptations demandées, réessaie un peu plus tard.', 429, 'rate_limited')
 
     try:
         adapted = parse_response(_call_llm(SYSTEM_PROMPT, _prompt(recipe, kitchen, missing)), recipe)

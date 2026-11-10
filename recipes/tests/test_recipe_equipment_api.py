@@ -254,6 +254,20 @@ def test_adapt_endpoint_is_idempotent_linked_private_and_handles_llm_failure(api
     assert client.post(f'/api/recipes/{copy.id}/adapt-equipment/').data['code'] == 'nothing_to_adapt'
 
 
+def test_adapt_llm_calls_are_rate_limited_per_user(api, user, make_user, recipe_with_steps, settings):
+    """Changer de cuisine (nouvelle signature) ne doit pas permettre des appels LLM illimités."""
+    settings.EQUIPMENT_ADAPTATIONS_PER_USER_HOUR = 2
+    chef = make_user('chef')
+    cakes = [recipe_with_steps(chef, f'Gâteau {n}', CAKE) for n in range(3)]
+    _set_kitchen(user, keys=['plaques', 'airfryer'])
+    client = api.as_user(user)
+    with mock.patch('recipes.services.equipment_adaptation._call_llm', return_value=_llm_answer()) as llm:
+        codes = [client.post(f'/api/recipes/{c.id}/adapt-equipment/').status_code for c in cakes]
+        again = client.post(f'/api/recipes/{cakes[0].id}/adapt-equipment/')  # existante : sans LLM, pas limitée
+    assert codes == [201, 201, 429] and llm.call_count == 2
+    assert again.status_code == 200
+
+
 def test_ai_pipeline_hints_are_merged_with_inference(user):
     from recipes.services.formalization_pipeline import create_recipe_from_formalized
     from recipes.services.pydantic_models import RecipeFormalized
