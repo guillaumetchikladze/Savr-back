@@ -22,7 +22,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+# Sûr par défaut : DEBUG=False. En local, mettre DEBUG=True dans `.env` (cf. ENV_EXAMPLE.txt / setup.sh) ;
+# DEBUG=True active aussi CORS_ALLOW_ALL_ORIGINS.
+DEBUG = config('DEBUG', default=False, cast=bool)
 
 # Tracing OpenAI Agents SDK (export vers OpenAI) : désactivé sauf opt-in explicite (données utilisateur).
 AGENT_TRACING_ENABLED = config('AGENT_TRACING_ENABLED', default=False, cast=bool)

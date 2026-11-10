@@ -43,6 +43,7 @@ DB_PASSWORD=your_secure_password
 
 # Django - IMPORTANT pour la production
 SECRET_KEY=changez-moi-par-une-cle-secrete-tres-longue-et-aleatoire
+# Défaut du code = False ; True uniquement en dev local (active aussi CORS_ALLOW_ALL_ORIGINS)
 DEBUG=False
 
 # Stockage S3/MinIO

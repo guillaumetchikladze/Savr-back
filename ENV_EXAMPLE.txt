@@ -1,5 +1,6 @@
 # Django Configuration
 SECRET_KEY=django-insecure-change-me-in-production-please-use-strong-key
+# Dev local uniquement (défaut = False). Ne jamais mettre True en production.
 DEBUG=True
 
 # Database Configuration (PostgreSQL)

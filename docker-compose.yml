@@ -139,7 +139,7 @@ services:
       - AWS_ENDPOINT=http://minio:9000
       - AWS_USE_PATH_STYLE_ENDPOINT=true
       - SECRET_KEY=${SECRET_KEY:-django-insecure-change-me}
-      - DEBUG=${DEBUG:-True}
+      - DEBUG=${DEBUG:-False}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
