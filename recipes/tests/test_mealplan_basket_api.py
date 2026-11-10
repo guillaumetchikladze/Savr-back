@@ -190,3 +190,73 @@ def test_past_weeks_stay_as_history_and_carry_over_on_demand(api, user, make_rec
     assert _statuses(client) == {'Gratin': 'todo', 'Tarte': 'todo'}
     assert BasketItem.objects.filter(user=user).count() == 5  # rien n'est supprimé
     assert c['id'] in BasketItem.objects.filter(carried_over_to__isnull=False).values_list('id', flat=True)
+
+
+def test_basket_create_idempotent_with_client_request_id(api, user, make_recipe):
+    client = api.as_user(user)
+    risotto = make_recipe(user, 'Risotto')
+    week = current_week_start(user)
+    tuesday = week + timedelta(days=1)
+
+    # 1. 1er appel avec client_request_id : 201 créé
+    payload = {
+        'recipe_id': risotto.id,
+        'date': tuesday.isoformat(),
+        'meal_time': 'dinner',
+        'client_request_id': 'req-week-proposal-1',
+    }
+    resp1 = client.post(BASKET_URL, payload, format='json')
+    assert resp1.status_code == 201, resp1.data
+    item_id = resp1.data['id']
+    assert BasketItem.objects.filter(user=user).count() == 1
+
+    # 2. Rejeu immédiat avec le même client_request_id : 200 renvoyé, aucun doublon
+    resp2 = client.post(BASKET_URL, payload, format='json')
+    assert resp2.status_code == 200, resp2.data
+    assert resp2.data['id'] == item_id
+    assert resp2.headers.get('Idempotent-Replayed') == 'true'
+    assert BasketItem.objects.filter(user=user).count() == 1
+
+    # 3. Clé trop longue (> 64) : 400
+    long_payload = {**payload, 'client_request_id': 'x' * 65}
+    resp_long = client.post(BASKET_URL, long_payload, format='json')
+    assert resp_long.status_code == 400
+    assert resp_long.data['code'] == 'invalid_client_request_id'
+
+
+def test_basket_create_deduplicates_uncooked_slot(api, user, make_recipe):
+    client = api.as_user(user)
+    tarte = make_recipe(user, 'Tarte aux poireaux')
+    week = current_week_start(user)
+    thursday = week + timedelta(days=3)
+
+    # 1. Ajout daté sans client_request_id
+    data = {
+        'recipe_id': tarte.id,
+        'date': thursday.isoformat(),
+        'meal_time': 'dinner',
+    }
+    resp1 = client.post(BASKET_URL, data, format='json')
+    assert resp1.status_code == 201
+    item_id = resp1.data['id']
+
+    # 2. Retap avec même recette, même date et même créneau : renvoie l'existant en 200
+    resp2 = client.post(BASKET_URL, data, format='json')
+    assert resp2.status_code == 200
+    assert resp2.data['id'] == item_id
+    assert BasketItem.objects.filter(user=user).count() == 1
+
+    # 3. Plat libre dédoublonné également
+    free_dish = {
+        'label': 'Soupe maison',
+        'date': thursday.isoformat(),
+        'meal_time': 'lunch',
+    }
+    resp_free1 = client.post(BASKET_URL, free_dish, format='json')
+    assert resp_free1.status_code == 201
+    free_id = resp_free1.data['id']
+
+    resp_free2 = client.post(BASKET_URL, free_dish, format='json')
+    assert resp_free2.status_code == 200
+    assert resp_free2.data['id'] == free_id
+    assert BasketItem.objects.filter(user=user).count() == 2

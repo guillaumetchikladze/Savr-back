@@ -23,12 +23,16 @@ from __future__ import annotations
 from datetime import timedelta
 from functools import wraps
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from accounts.permissions import IsValidated
+from core.idempotency import idempotent, request_fingerprint
+from core.models import IdempotencyRecord
 
 from .models import BasketItem
 from .serializers import ShoppingListSerializer, UserLightSerializer
@@ -121,6 +125,26 @@ def _items_payload(items, request, week_now, context: dict | None = None) -> lis
     ]
 
 
+def _save_basket_idempotency_record(user, client_request_id: str, payload: dict, request):
+    record_key = f'basket:{client_request_id}'
+    try:
+        with transaction.atomic():
+            IdempotencyRecord.objects.update_or_create(
+                user=user,
+                key=record_key,
+                defaults={
+                    'method': 'POST',
+                    'path': request.path[:512],
+                    'request_hash': request_fingerprint(request),
+                    'status_code': status.HTTP_200_OK,
+                    'response_body': payload,
+                    'created_at': timezone.now(),
+                },
+            )
+    except IntegrityError:
+        pass
+
+
 class BasketViewSet(viewsets.ViewSet):
     """Panier « Cette semaine » : envies sans date, datables, cuisinables, reportables."""
 
@@ -170,14 +194,83 @@ class BasketViewSet(viewsets.ViewSet):
         return Response(self._week_payload(request, week))
 
     @_basket_errors
+    @idempotent
     def create(self, request):
         data = request.data
+        client_request_id = (data.get('client_request_id') or '').strip()
+        if client_request_id and len(client_request_id) > 64:
+            raise BasketError('client_request_id doit faire au plus 64 caractères.', 400, 'invalid_client_request_id')
+
+        cutoff = timezone.now() - timedelta(hours=24)
+        if client_request_id:
+            record_key = f'basket:{client_request_id}'
+            record = IdempotencyRecord.objects.filter(user=request.user, key=record_key, created_at__gte=cutoff).first()
+            if record and record.response_body:
+                item_id = record.response_body.get('id')
+                if item_id:
+                    existing = BasketItem.objects.filter(user=request.user, id=item_id).first()
+                    if existing:
+                        return Response(
+                            basket_item_payload(existing, request),
+                            status=status.HTTP_200_OK,
+                            headers={'Idempotent-Replayed': 'true'},
+                        )
+                return Response(
+                    record.response_body,
+                    status=status.HTTP_200_OK,
+                    headers={'Idempotent-Replayed': 'true'},
+                )
+
         # `date` (+ `meal_time`, défaut dîner) : ajout + datation en une fois (cartes « Complète ma semaine »).
         day = data.get('date')
+        recipe_id = data.get('recipe_id')
+        parsed_recipe_id = basket._parse_int(recipe_id, 'recipe_id') if recipe_id is not None else None
+
+        # Dédoublonnage sur (utilisateur, recette, date, meal_time) pour une envie non cuisinée
+        if day:
+            target_date = basket._parse_date(day, 'date')
+            raw_meal_time = (str(data.get('meal_time') or 'dinner')).strip().lower()
+            meal_time = raw_meal_time if raw_meal_time in basket._MEAL_TIMES else 'dinner'
+
+            existing = None
+            if parsed_recipe_id is not None:
+                existing = (
+                    BasketItem.objects.filter(
+                        user=request.user,
+                        recipe_id=parsed_recipe_id,
+                        meal_plan__date=target_date,
+                        meal_plan__confirmed=False,
+                    )
+                    .filter(Q(meal_plan__meal_time=meal_time) | Q(meal_plan__slot_key=meal_time))
+                    .select_related('recipe', 'meal_plan', 'recipe_batch', 'inspired_by_post')
+                    .first()
+                )
+            elif data.get('label'):
+                label = (data.get('label') or '').strip()
+                if label:
+                    existing = (
+                        BasketItem.objects.filter(
+                            user=request.user,
+                            recipe_id__isnull=True,
+                            label=label,
+                            meal_plan__date=target_date,
+                            meal_plan__confirmed=False,
+                        )
+                        .filter(Q(meal_plan__meal_time=meal_time) | Q(meal_plan__slot_key=meal_time))
+                        .select_related('recipe', 'meal_plan', 'recipe_batch', 'inspired_by_post')
+                        .first()
+                    )
+
+            if existing:
+                payload = basket_item_payload(existing, request)
+                if client_request_id:
+                    _save_basket_idempotency_record(request.user, client_request_id, payload, request)
+                return Response(payload, status=status.HTTP_200_OK)
+
         with transaction.atomic():
             item = basket.add_item(
                 request.user,
-                recipe_id=data.get('recipe_id'),
+                recipe_id=parsed_recipe_id,
                 label=data.get('label'),
                 servings=data.get('servings'),
                 week=day or data.get('week'),
@@ -187,7 +280,10 @@ class BasketViewSet(viewsets.ViewSet):
             if day:
                 basket.schedule_item(request.user, item, date=day, meal_time=data.get('meal_time'))
         item = basket.get_item(request.user, item.id)
-        return Response(basket_item_payload(item, request), status=status.HTTP_201_CREATED)
+        payload = basket_item_payload(item, request)
+        if client_request_id:
+            _save_basket_idempotency_record(request.user, client_request_id, payload, request)
+        return Response(payload, status=status.HTTP_201_CREATED)
 
     @_basket_errors
     def retrieve(self, request, pk=None):
