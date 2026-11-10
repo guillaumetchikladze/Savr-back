@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import timedelta
 from functools import wraps
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -31,8 +31,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from accounts.permissions import IsValidated
-from core.idempotency import idempotent, request_fingerprint
-from core.models import IdempotencyRecord
+from core.idempotency import REPLAY_HEADER, _claim, _json_body, idempotent, request_fingerprint
 
 from .models import BasketItem
 from .serializers import ShoppingListSerializer, UserLightSerializer
@@ -125,24 +124,19 @@ def _items_payload(items, request, week_now, context: dict | None = None) -> lis
     ]
 
 
-def _save_basket_idempotency_record(user, client_request_id: str, payload: dict, request):
-    record_key = f'basket:{client_request_id}'
-    try:
-        with transaction.atomic():
-            IdempotencyRecord.objects.update_or_create(
-                user=user,
-                key=record_key,
-                defaults={
-                    'method': 'POST',
-                    'path': request.path[:512],
-                    'request_hash': request_fingerprint(request),
-                    'status_code': status.HTTP_200_OK,
-                    'response_body': payload,
-                    'created_at': timezone.now(),
-                },
-            )
-    except IntegrityError:
-        pass
+CLIENT_REQUEST_ID_MAX_LENGTH = 64
+
+
+def _client_request_key(client_request_id: str) -> str:
+    """Clé `IdempotencyRecord` d'un `client_request_id` (espace distinct des en-têtes, par utilisateur)."""
+    return f'basket:{client_request_id}'
+
+
+def _conflict_response():
+    return Response(
+        {'error': 'idempotency_key_reused', 'detail': 'Cette clé a déjà servi pour une autre requête.'},
+        status=status.HTTP_409_CONFLICT,
+    )
 
 
 class BasketViewSet(viewsets.ViewSet):
@@ -196,76 +190,68 @@ class BasketViewSet(viewsets.ViewSet):
     @_basket_errors
     @idempotent
     def create(self, request):
+        """Ajout d'une envie (datée si `date`).
+
+        `client_request_id` (optionnel, ≤ 64 car.) : même mécanisme que `X-Idempotency-Key`
+        (`core.idempotency._claim`, clé `basket:<id>` par utilisateur, réservée AVANT la création dans
+        la même transaction → deux requêtes concurrentes ne créent qu'une envie). Rejeu, même corps :
+        200 + l'envie à jour (`Idempotent-Replayed: true`) ; même id, autre corps : 409
+        `idempotency_key_reused` ; envie rejouée supprimée entre-temps : la réservation est reprise et
+        l'envie recréée (201). Une erreur annule la réservation.
+        """
+        client_request_id = (request.data.get('client_request_id') or '').strip()
+        if not client_request_id:
+            return self._create(request)
+        if len(client_request_id) > CLIENT_REQUEST_ID_MAX_LENGTH:
+            raise BasketError(
+                f'client_request_id doit faire au plus {CLIENT_REQUEST_ID_MAX_LENGTH} caractères.',
+                400,
+                'invalid_client_request_id',
+            )
+
+        user = request.user
+        method, path = 'POST', request.path[:512]
+        fingerprint = request_fingerprint(request)
+        with transaction.atomic():
+            record, fresh = _claim(user, _client_request_key(client_request_id), method, path, fingerprint)
+            if not fresh:
+                if (record.method, record.path, record.request_hash) != (method, path, fingerprint):
+                    return _conflict_response()
+                item_id = (record.response_body or {}).get('id') if isinstance(record.response_body, dict) else None
+                existing = BasketItem.objects.filter(user=user, id=item_id).first() if item_id else None
+                if existing is not None:
+                    return Response(
+                        basket_item_payload(basket.get_item(user, existing.id), request),
+                        status=status.HTTP_200_OK,
+                        headers={REPLAY_HEADER: 'true'},
+                    )
+                # L'envie rejouée a été supprimée (Caler → Annuler → Caler) : on reprend la réservation.
+                record.status_code = None
+                record.response_body = None
+                record.created_at = timezone.now()
+                record.save(update_fields=['status_code', 'response_body', 'created_at'])
+
+            # Une BasketError ici annule aussi la réservation (transaction).
+            response = self._create(request)
+            record.status_code = response.status_code
+            record.response_body = _json_body(response)
+            record.save(update_fields=['status_code', 'response_body'])
+            return response
+
+    def _create(self, request):
         data = request.data
-        client_request_id = (data.get('client_request_id') or '').strip()
-        if client_request_id and len(client_request_id) > 64:
-            raise BasketError('client_request_id doit faire au plus 64 caractères.', 400, 'invalid_client_request_id')
-
-        cutoff = timezone.now() - timedelta(hours=24)
-        if client_request_id:
-            record_key = f'basket:{client_request_id}'
-            record = IdempotencyRecord.objects.filter(user=request.user, key=record_key, created_at__gte=cutoff).first()
-            if record and record.response_body:
-                item_id = record.response_body.get('id')
-                if item_id:
-                    existing = BasketItem.objects.filter(user=request.user, id=item_id).first()
-                    if existing:
-                        return Response(
-                            basket_item_payload(existing, request),
-                            status=status.HTTP_200_OK,
-                            headers={'Idempotent-Replayed': 'true'},
-                        )
-                return Response(
-                    record.response_body,
-                    status=status.HTTP_200_OK,
-                    headers={'Idempotent-Replayed': 'true'},
-                )
-
         # `date` (+ `meal_time`, défaut dîner) : ajout + datation en une fois (cartes « Complète ma semaine »).
         day = data.get('date')
         recipe_id = data.get('recipe_id')
         parsed_recipe_id = basket._parse_int(recipe_id, 'recipe_id') if recipe_id is not None else None
 
-        # Dédoublonnage sur (utilisateur, recette, date, meal_time) pour une envie non cuisinée
+        # Dédoublonnage d'un créneau daté : (utilisateur, recette | libellé, date, moment) d'une envie non
+        # cuisinée → l'existante est renvoyée (200). Les portions (`servings`) et les convives sont ignorés :
+        # re-caler le même plat sur le même créneau ne crée pas de second repas. Envies cuisinées exclues.
         if day:
-            target_date = basket._parse_date(day, 'date')
-            raw_meal_time = (str(data.get('meal_time') or 'dinner')).strip().lower()
-            meal_time = raw_meal_time if raw_meal_time in basket._MEAL_TIMES else 'dinner'
-
-            existing = None
-            if parsed_recipe_id is not None:
-                existing = (
-                    BasketItem.objects.filter(
-                        user=request.user,
-                        recipe_id=parsed_recipe_id,
-                        meal_plan__date=target_date,
-                        meal_plan__confirmed=False,
-                    )
-                    .filter(Q(meal_plan__meal_time=meal_time) | Q(meal_plan__slot_key=meal_time))
-                    .select_related('recipe', 'meal_plan', 'recipe_batch', 'inspired_by_post')
-                    .first()
-                )
-            elif data.get('label'):
-                label = (data.get('label') or '').strip()
-                if label:
-                    existing = (
-                        BasketItem.objects.filter(
-                            user=request.user,
-                            recipe_id__isnull=True,
-                            label=label,
-                            meal_plan__date=target_date,
-                            meal_plan__confirmed=False,
-                        )
-                        .filter(Q(meal_plan__meal_time=meal_time) | Q(meal_plan__slot_key=meal_time))
-                        .select_related('recipe', 'meal_plan', 'recipe_batch', 'inspired_by_post')
-                        .first()
-                    )
-
-            if existing:
-                payload = basket_item_payload(existing, request)
-                if client_request_id:
-                    _save_basket_idempotency_record(request.user, client_request_id, payload, request)
-                return Response(payload, status=status.HTTP_200_OK)
+            existing = self._uncooked_slot_item(request.user, data, day, parsed_recipe_id)
+            if existing is not None:
+                return Response(basket_item_payload(existing, request), status=status.HTTP_200_OK)
 
         with transaction.atomic():
             item = basket.add_item(
@@ -280,10 +266,26 @@ class BasketViewSet(viewsets.ViewSet):
             if day:
                 basket.schedule_item(request.user, item, date=day, meal_time=data.get('meal_time'))
         item = basket.get_item(request.user, item.id)
-        payload = basket_item_payload(item, request)
-        if client_request_id:
-            _save_basket_idempotency_record(request.user, client_request_id, payload, request)
-        return Response(payload, status=status.HTTP_201_CREATED)
+        return Response(basket_item_payload(item, request), status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _uncooked_slot_item(user, data, day, recipe_id):
+        target_date = basket._parse_date(day, 'date')
+        raw_meal_time = str(data.get('meal_time') or 'dinner').strip().lower()
+        meal_time = raw_meal_time if raw_meal_time in basket._MEAL_TIMES else 'dinner'
+        qs = BasketItem.objects.filter(user=user, meal_plan__date=target_date, meal_plan__confirmed=False)
+        if recipe_id is not None:
+            qs = qs.filter(recipe_id=recipe_id)
+        else:
+            label = str(data.get('label') or '').strip()
+            if not label:
+                return None
+            qs = qs.filter(recipe_id__isnull=True, label=label)
+        return (
+            qs.filter(Q(meal_plan__meal_time=meal_time) | Q(meal_plan__slot_key=meal_time))
+            .select_related('recipe', 'meal_plan', 'recipe_batch', 'inspired_by_post')
+            .first()
+        )
 
     @_basket_errors
     def retrieve(self, request, pk=None):

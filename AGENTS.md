@@ -511,6 +511,10 @@ Le front met en file les actions faites en magasin sans réseau et les rejoue. C
   `archive/` **sans corps = bascule, DÉPRÉCIÉ** (gardé pour l'app 1.0.9). Les listes archivées ne sont
   masquées que du `GET /shopping-lists/` (`include_archived=true`) : les actions de détail les atteignent.
 - Tests : `recipes/tests/test_shopping_offline_idempotency_api.py`.
+- `POST /api/basket/` accepte aussi `client_request_id` (≤ 64 car., corps) : même `_claim` (clé `basket:<id>` par
+  utilisateur, réservée avant la création dans la même transaction, corps différent → 409). Si l'envie rejouée a été
+  supprimée, elle est recréée (201). Envie datée : dédoublonnage du créneau (user, recette | libellé, date, moment)
+  hors envies cuisinées, sans tenir compte des portions ni des convives. Tests : `recipes/tests/test_mealplan_basket_api.py`.
 
 ## Fiche produit des courses (`recipes/services/ingredient_info.py`)
 

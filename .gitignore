@@ -33,3 +33,6 @@ staticfiles/
 
 .pytest_cache/
 .ruff_cache/
+
+# uv : on installe via requirements*.txt (sfw uv pip install), pas de lockfile uv
+uv.lock

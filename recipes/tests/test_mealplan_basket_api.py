@@ -260,3 +260,114 @@ def test_basket_create_deduplicates_uncooked_slot(api, user, make_recipe):
     assert resp_free2.status_code == 200
     assert resp_free2.data['id'] == free_id
     assert BasketItem.objects.filter(user=user).count() == 2
+
+
+def _dated(recipe, day, request_id, **extra):
+    return {
+        'recipe_id': recipe.id,
+        'date': day.isoformat(),
+        'meal_time': 'dinner',
+        'client_request_id': request_id,
+        **extra,
+    }
+
+
+def test_client_request_id_replay_after_delete_recreates(api, user, make_recipe):
+    """Caler → Annuler → Caler (même id) : l'envie supprimée n'est pas « rejouée », elle est recréée."""
+    client = api.as_user(user)
+    risotto = make_recipe(user, 'Risotto')
+    tuesday = current_week_start(user) + timedelta(days=1)
+    payload = _dated(risotto, tuesday, 'week:card:1')
+
+    first = client.post(BASKET_URL, payload, format='json')
+    assert first.status_code == 201, first.data
+    assert client.delete(f'{BASKET_URL}{first.data["id"]}/').status_code == 204
+    assert not BasketItem.objects.filter(user=user).exists()
+
+    again = client.post(BASKET_URL, payload, format='json')
+    assert again.status_code == 201, again.data
+    assert again.data['id'] != first.data['id']
+    assert BasketItem.objects.filter(user=user, id=again.data['id']).exists()
+
+    # Et le nouvel élément est bien celui rejoué ensuite.
+    replay = client.post(BASKET_URL, payload, format='json')
+    assert replay.status_code == 200
+    assert replay.data['id'] == again.data['id']
+    assert replay.headers.get('Idempotent-Replayed') == 'true'
+    assert BasketItem.objects.filter(user=user).count() == 1
+
+
+def test_client_request_id_with_other_payload_is_a_conflict(api, user, make_recipe):
+    client = api.as_user(user)
+    risotto, gratin = make_recipe(user, 'Risotto'), make_recipe(user, 'Gratin')
+    tuesday = current_week_start(user) + timedelta(days=1)
+
+    assert client.post(BASKET_URL, _dated(risotto, tuesday, 'same-id'), format='json').status_code == 201
+    conflict = client.post(BASKET_URL, _dated(gratin, tuesday, 'same-id'), format='json')
+    assert conflict.status_code == 409
+    assert conflict.data['error'] == 'idempotency_key_reused'
+    assert list(BasketItem.objects.filter(user=user).values_list('recipe_id', flat=True)) == [risotto.id]
+
+
+def test_client_request_id_is_scoped_per_user(make_user, make_recipe):
+    from rest_framework.test import APIClient
+
+    alice, bob = make_user('alice'), make_user('bob')
+    created = []
+    for who in (alice, bob):
+        client = APIClient()
+        client.force_authenticate(user=who)
+        recipe = make_recipe(who, 'Risotto')
+        tuesday = current_week_start(who) + timedelta(days=1)
+        resp = client.post(BASKET_URL, _dated(recipe, tuesday, 'shared-id'), format='json')
+        assert resp.status_code == 201, resp.data
+        created.append(resp.data['id'])
+    assert BasketItem.objects.get(id=created[0]).user_id == alice.id
+    assert BasketItem.objects.get(id=created[1]).user_id == bob.id
+
+
+def test_client_request_id_is_claimed_before_creation_and_released_on_error(api, user, make_recipe):
+    """La clé est réservée (contrainte unique) avant la création, dans la même transaction : une requête
+    concurrente attend puis rejoue. Une erreur métier libère la clé."""
+    from unittest import mock
+
+    from core.models import IdempotencyRecord
+    from recipes.services import basket_service
+
+    client = api.as_user(user)
+    risotto = make_recipe(user, 'Risotto')
+    tuesday = current_week_start(user) + timedelta(days=1)
+    seen = []
+    real_add_item = basket_service.add_item
+
+    def spy(*args, **kwargs):
+        seen.append(list(IdempotencyRecord.objects.filter(user=user).values_list('key', 'status_code')))
+        return real_add_item(*args, **kwargs)
+
+    with mock.patch.object(basket_service, 'add_item', side_effect=spy):
+        assert client.post(BASKET_URL, _dated(risotto, tuesday, 'claim-1'), format='json').status_code == 201
+    assert seen == [[('basket:claim-1', None)]]
+    record = IdempotencyRecord.objects.get(user=user, key='basket:claim-1')
+    assert record.status_code == 201
+
+    bad = client.post(BASKET_URL, {'recipe_id': 999999, 'client_request_id': 'claim-2'}, format='json')
+    assert bad.status_code >= 400
+    assert not IdempotencyRecord.objects.filter(user=user, key='basket:claim-2').exists()
+
+
+def test_slot_dedup_ignores_servings_and_excludes_cooked(api, user, make_recipe):
+    client = api.as_user(user)
+    tarte = make_recipe(user, 'Tarte')
+    thursday = current_week_start(user) + timedelta(days=3)
+    base = {'recipe_id': tarte.id, 'date': thursday.isoformat(), 'meal_time': 'dinner'}
+
+    first = client.post(BASKET_URL, {**base, 'servings': 2}, format='json')
+    assert first.status_code == 201
+    same_slot = client.post(BASKET_URL, {**base, 'servings': 6}, format='json')
+    assert same_slot.status_code == 200
+    assert same_slot.data['id'] == first.data['id']
+
+    MealPlan.objects.filter(id=first.data['meal_plan']['id']).update(confirmed=True)
+    after_cooked = client.post(BASKET_URL, base, format='json')
+    assert after_cooked.status_code == 201
+    assert after_cooked.data['id'] != first.data['id']
