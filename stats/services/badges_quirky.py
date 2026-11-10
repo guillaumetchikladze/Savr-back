@@ -747,7 +747,7 @@ QUIRKY_BADGES: tuple[BadgeDef, ...] = (
     ),
     _b(
         'dish_anniversary',
-        'Joyeux anniversaire, le plat',
+        'L’anniversaire du plat',
         '🎂',
         'Le même plat cuisiné à un an d’écart, jour pour jour (à un jour près).',
         'Une tradition est née.',

@@ -108,6 +108,8 @@ def test_dish_anniversary_is_a_secret_within_one_day(user, cook):
     assert new['dish_anniversary']['secret'] is True
     assert new['dish_anniversary']['celebration'] == 'secret'
     assert new['dish_anniversary']['context']['dish'] == 'Blanquette'
+    # Titre court : la légende sur 2 lignes ne finit plus en « Joyeux anniversaire, . ».
+    assert new['dish_anniversary']['title'] == 'L’anniversaire du plat'
 
 
 def test_calendar_chandeleur_and_summer_raclette(user, cook):
