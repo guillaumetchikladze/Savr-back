@@ -141,10 +141,14 @@ class PendingAction(models.Model):
     ACTION_MEAL_DELETION = 'meal_deletion'
     ACTION_MEAL_INVITATION = 'meal_invitation'
     ACTION_RECIPE_REVISION = 'recipe_revision'
+    ACTION_TABLE_INVITATION = 'table_invitation'
+    ACTION_SHOPPING_LIST_ITEM = 'shopping_list_item'
     ACTION_TYPE_CHOICES = [
         (ACTION_MEAL_DELETION, 'Meal deletion'),
         (ACTION_MEAL_INVITATION, 'Meal invitation'),
         (ACTION_RECIPE_REVISION, 'Recipe revision'),
+        (ACTION_TABLE_INVITATION, 'Table invitation'),
+        (ACTION_SHOPPING_LIST_ITEM, 'Shared shopping list item'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

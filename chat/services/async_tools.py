@@ -23,7 +23,6 @@ from chat.services.tool_schemas import (
     PlanWeekResult,
     RecipeImportResult,
     SearchRecipesResult,
-    TableInvitationResult,
     UndoCookedResult,
 )
 from core.celery_dispatch import publish_tracked
@@ -43,7 +42,6 @@ from recipes.services.meal_plan_service import (
 from recipes.services.recipe_revision_service import propose_recipe_revision_data
 from recipes.services.recipe_search_service import search_recipes_for_user
 from recipes.services.shopping_list_service import (
-    add_item_to_shopping_list,
     get_shopping_list_items_for_user,
 )
 
@@ -214,11 +212,12 @@ async def add_shopping_list_item(
     ingredient_name: str,
     quantity: float = 1,
     unit: str = 'piece',
-) -> AddShoppingListItemResult:
-    """Ajoute un article à une liste de courses (exécution immédiate)."""
+) -> AddShoppingListItemResult | MutationProposal:
+    """Ajoute un article à une liste de courses. Sa propre liste : exécution immédiate. Liste partagée avec
+    d'autres : carte de confirmation dans l'app (rien n'est ajouté avant « Confirmer »)."""
     user = ctx.context.user
     return await _run_sync(
-        add_item_to_shopping_list,
+        planning_tools.add_or_propose_shopping_list_item,
         user,
         shopping_list_id,
         ingredient_name,
@@ -583,8 +582,9 @@ async def invite_to_table(
     invitee_ids: list[int] | None = None,
     table_id: int | None = None,
     table_name: str | None = None,
-) -> TableInvitationResult:
-    """Invite des ami·es à une de ses tablées (ils acceptent ou refusent dans l'app). Exécution immédiate.
+) -> MutationProposal:
+    """Invite des ami·es à une de ses tablées : affiche une carte de confirmation (rien n'est envoyé avant
+    « Confirmer » ; ensuite ils acceptent ou refusent dans l'app). Ami·es seulement.
 
     Args:
         invitee_names: prénoms ou pseudos des ami·es.
@@ -594,7 +594,7 @@ async def invite_to_table(
     """
     user = ctx.context.user
     return await _run_sync(
-        planning_tools.invite_to_table_for_user,
+        planning_tools.propose_invite_to_table,
         user,
         table_id=table_id,
         table_name=table_name,
@@ -610,5 +610,8 @@ MUTATION_TOOL_NAMES = frozenset(
         'send_invitation_proposal',
         'propose_recipe_revision',
         'invite_to_meal',
+        # Carte seulement quand d'autres personnes sont touchées (sortie MutationProposal) :
+        'invite_to_table',
+        'add_shopping_list_item',  # liste partagée ; sa propre liste → ajout immédiat
     }
 )

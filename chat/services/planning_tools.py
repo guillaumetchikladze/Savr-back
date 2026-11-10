@@ -10,9 +10,14 @@ Les wrappers async exposés au modèle sont dans `async_tools.py`. Tout passe pa
 - dater / dé-dater une envie : `basket_service.schedule_item` / `unschedule_item` ;
 - déplacer un repas : `meal_plan_service.update_composer_slot` (créneau standard pris → « other ») ;
 - inviter à un repas : `invitation_service.propose_meal_invitation` → carte de confirmation (PendingAction) ;
-- inviter à une tablée : `tables.services.invite` (l'ami·e accepte ou refuse dans l'app).
+- inviter à une tablée : `propose_invite_to_table` → carte de confirmation, puis `tables.services.invite`
+  (l'ami·e accepte ou refuse dans l'app) ;
+- ajouter un article à une liste de courses **partagée** : `add_or_propose_shopping_list_item` → carte de
+  confirmation ; sa propre liste (personne d'autre) : ajout immédiat.
 
 Réversible = exécuté sans confirmation, avec un `UndoHint` (appel REST que l'app rejoue tel quel).
+Ce qui touche d'autres personnes passe par une carte : un texte importé ou collé (injection de prompt) ne
+doit pas pouvoir déclencher seul une invitation ou une écriture dans la liste d'un autre.
 """
 
 from __future__ import annotations
@@ -557,16 +562,8 @@ def propose_invite_to_meal(
     return proposal
 
 
-def invite_to_table_for_user(
-    user: AbstractBaseUser,
-    *,
-    table_id=None,
-    table_name: str | None = None,
-    invitee_ids=None,
-    invitee_names=None,
-) -> TableInvitationResult:
-    """Invite des ami·es à une tablée dont l'utilisateur est membre (consentement : ils acceptent dans l'app)."""
-    from tables import services as tables
+def _resolve_table_membership(user: AbstractBaseUser, *, table_id=None, table_name: str | None = None):
+    """Appartenance (acceptée) de l'utilisateur à la tablée visée, sinon ValueError."""
     from tables.models import TableMember
 
     memberships = TableMember.objects.select_related('table').filter(user=user, status=TableMember.STATUS_ACCEPTED)
@@ -587,6 +584,68 @@ def invite_to_table_for_user(
         if len(all_m) != 1:
             raise ValueError('Précise la tablée (table_id ou table_name).' if all_m else 'Tu n’as pas de tablée.')
         m = all_m[0]
+    return m
+
+
+def propose_invite_to_table(
+    user: AbstractBaseUser,
+    *,
+    table_id=None,
+    table_name: str | None = None,
+    invitee_ids=None,
+    invitee_names=None,
+) -> MutationProposal:
+    """Carte de confirmation `table_invitation_proposal` : rien n'est envoyé avant le « Confirmer » de l'app."""
+    from tables.models import TableMember
+
+    table = _resolve_table_membership(user, table_id=table_id, table_name=table_name).table
+    friends, missing = resolve_friends(user, ids=invitee_ids, names=invitee_names)
+    if not friends:
+        who = ', '.join(missing) or 'personne'
+        raise ValueError(f'Aucun·e ami·e trouvé·e ({who}) : on ne peut inviter que ses ami·es.')
+    present = set(TableMember.objects.filter(table=table, user__in=friends).values_list('user_id', flat=True))
+    to_invite = [f for f in friends if f.id not in present]
+    already = [f.username for f in friends if f.id in present]
+    if not to_invite:
+        raise ValueError(f'Déjà à la tablée « {table.name} » ou invité·e : {", ".join(already)}.')
+
+    names = [f.username for f in to_invite]
+    warnings = []
+    if already:
+        warnings.append(f'Déjà à la tablée ou invité·e : {", ".join(already)}.')
+    if missing:
+        warnings.append(f'Pas trouvé parmi tes ami·es : {", ".join(missing)}.')
+    label = f'{table.emoji} {table.name}'.strip() if table.emoji else table.name
+    return MutationProposal(
+        card_type='table_invitation_proposal',
+        title=f'Inviter à « {label} »',
+        subtitle=f'{", ".join(names)} pourra accepter ou refuser dans l’app.',
+        details={
+            'table_id': table.id,
+            'table_name': table.name,
+            'invitee_ids': [f.id for f in to_invite],
+            'invitee_usernames': names,
+        },
+        warnings=warnings,
+    )
+
+
+def invite_to_table_for_user(
+    user: AbstractBaseUser,
+    *,
+    table_id=None,
+    table_name: str | None = None,
+    invitee_ids=None,
+    invitee_names=None,
+) -> TableInvitationResult:
+    """
+    Invite des ami·es à une tablée dont l'utilisateur est membre (consentement : ils acceptent dans l'app).
+    Exécution d'une carte confirmée (`table_invitation`) : l'outil de l'agent propose d'abord la carte.
+    """
+    from tables import services as tables
+    from tables.models import TableMember
+
+    m = _resolve_table_membership(user, table_id=table_id, table_name=table_name)
     table = m.table
 
     friends, missing = resolve_friends(user, ids=invitee_ids, names=invitee_names)
@@ -640,3 +699,62 @@ _TABLE_ERRORS_FR = {
     'table_not_found': 'Tablée introuvable.',
     'user_ids_required': 'Indique au moins un·e ami·e.',
 }
+
+
+# ---------------------------------------------------------------------------
+# Liste de courses : ajout direct sur sa liste, carte de confirmation sur une liste partagée
+# ---------------------------------------------------------------------------
+def add_or_propose_shopping_list_item(
+    user: AbstractBaseUser,
+    shopping_list_id: int,
+    ingredient_name: str,
+    *,
+    quantity: float = 1.0,
+    unit: str = 'piece',
+):
+    """
+    Liste dont l'utilisateur est le seul membre → ajout immédiat (`AddShoppingListItemResult`).
+    Liste partagée avec d'autres → carte `shopping_list_item_proposal` (rien n'est écrit avant « Confirmer »).
+    """
+    from recipes.models import ShoppingListMember
+    from recipes.services.shopping_list_service import (
+        _get_accessible_shopping_list,
+        _normalize_unit,
+        add_item_to_shopping_list,
+    )
+
+    name = ' '.join((ingredient_name or '').split())
+    if not name:
+        raise ValueError("Nom d'ingrédient requis.")
+    shopping_list = _get_accessible_shopping_list(user, shopping_list_id)
+    others = list(
+        ShoppingListMember.objects.filter(shopping_list=shopping_list)
+        .exclude(user=user)
+        .order_by('joined_at')
+        .values_list('user__username', flat=True)[:6]
+    )
+    if not others:
+        return add_item_to_shopping_list(user, shopping_list.id, name, quantity=quantity, unit=unit)
+
+    try:
+        qty = float(quantity)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Quantité invalide.') from exc
+    if not qty > 0:
+        raise ValueError('Quantité invalide.')
+    unit = _normalize_unit(unit)
+    list_name = shopping_list.name or 'Liste de courses'
+    shared = ', '.join(others[:5]) + ('…' if len(others) > 5 else '')
+    return MutationProposal(
+        card_type='shopping_list_item_proposal',
+        title=f'Ajouter « {name[:80]} » à « {list_name} »',
+        subtitle=f'{qty:g} {unit} · liste partagée avec {shared}.',
+        details={
+            'shopping_list_id': shopping_list.id,
+            'shopping_list_name': list_name,
+            'ingredient_name': name[:120],
+            'quantity': qty,
+            'unit': unit,
+            'shared_with': others[:5],
+        },
+    )

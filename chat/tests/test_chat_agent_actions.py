@@ -309,6 +309,97 @@ def test_invite_to_table_invites_friends_and_owner_can_undo(user, api, make_user
         planning_tools.invite_to_table_for_user(user, table_id=999999, invitee_names=['Léa'])
 
 
+def _save_card(user, proposal, tool_name):
+    import uuid
+
+    from chat.consumers import _save_mutation
+
+    conv = Conversation.objects.create(user=user)
+    msg, action = _save_mutation(conv, uuid.uuid4(), proposal, tool_name)
+    assert msg.message_type == Message.TYPE_MUTATION_PROPOSAL
+    return action
+
+
+def test_invite_to_table_tool_goes_through_a_confirmation_card(user, make_user, friend):
+    """Injection de prompt (contenu importé) : l'outil ne fait que proposer, rien n'est envoyé avant confirmation."""
+    stranger = make_user('marc')
+    table, _ = table_services.create_table(user, name='Famille', emoji='🏠')
+
+    proposal = planning_tools.propose_invite_to_table(user, table_name='famille', invitee_names=['Léa', 'marc'])
+
+    assert 'invite_to_table' in MUTATION_TOOL_NAMES
+    assert proposal.card_type == 'table_invitation_proposal'  # ≠ carte résultat `table_invitation` de l'app
+    assert proposal.details == {
+        'table_id': table.id,
+        'table_name': 'Famille',
+        'invitee_ids': [friend.id],
+        'invitee_usernames': [friend.username],
+    }
+    assert any('marc' in w for w in proposal.warnings)
+    assert not TableMember.objects.filter(table=table, user=friend).exists()  # rien d'envoyé
+
+    action = _save_card(user, proposal, 'invite_to_table')
+    assert action.action_type == PendingAction.ACTION_TABLE_INVITATION
+    result = execute_pending_action(user, action)
+    assert result['invitees'][0]['status'] == 'invited'
+    assert TableMember.objects.get(table=table, user=friend).status == TableMember.STATUS_INVITED
+
+    with pytest.raises(ValueError, match='Déjà'):
+        planning_tools.propose_invite_to_table(user, table_id=table.id, invitee_ids=[friend.id])
+    with pytest.raises(ValueError, match='ami'):
+        planning_tools.propose_invite_to_table(user, table_id=table.id, invitee_ids=[stranger.id])
+    # Payload confirmé revérifié : une tablée dont on n'est pas membre est refusée à l'exécution.
+    other_table, _ = table_services.create_table(stranger, name='Autre')
+    forged = _save_card(
+        user,
+        proposal.model_copy(update={'details': {'table_id': other_table.id, 'invitee_ids': [friend.id]}}),
+        'invite_to_table',
+    )
+    with pytest.raises(ValueError, match='introuvable'):
+        execute_pending_action(user, forged)
+
+
+def test_add_shopping_list_item_needs_confirmation_only_on_a_shared_list(user, make_user, make_shopping_list):
+    from chat.services.tool_schemas import AddShoppingListItemResult, MutationProposal
+    from recipes.models import ShoppingListItem
+
+    mine = make_shopping_list(user, name='Perso')
+    shared = make_shopping_list(user, name='Coloc', collaborators=[make_user('pauline')])
+    assert 'add_shopping_list_item' in MUTATION_TOOL_NAMES
+
+    # Sa propre liste : ajout immédiat, pas de carte.
+    own = planning_tools.add_or_propose_shopping_list_item(user, mine.id, 'Beurre', quantity=250, unit='g')
+    assert isinstance(own, AddShoppingListItemResult)
+    assert ShoppingListItem.objects.filter(shopping_list=mine, ingredient__name__iexact='beurre').exists()
+
+    # Liste partagée : carte de confirmation, rien d'écrit.
+    proposal = planning_tools.add_or_propose_shopping_list_item(user, shared.id, '  Vin   rouge ', quantity=6)
+    assert isinstance(proposal, MutationProposal)
+    assert proposal.card_type == 'shopping_list_item_proposal'
+    assert proposal.details['shared_with'] == ['pauline']
+    assert proposal.details['ingredient_name'] == 'Vin rouge'
+    assert not ShoppingListItem.objects.filter(shopping_list=shared).exists()
+
+    action = _save_card(user, proposal, 'add_shopping_list_item')
+    assert action.action_type == PendingAction.ACTION_SHOPPING_LIST_ITEM
+    result = execute_pending_action(user, action)
+    assert result['shopping_list_id'] == shared.id and result['quantity'] == 6
+    assert ShoppingListItem.objects.filter(shopping_list=shared, ingredient__name__iexact='vin rouge').exists()
+
+    # Liste d'un autre : refusée à la proposition comme à l'exécution d'un payload forgé.
+    foreign = make_shopping_list(make_user('marc'), name='Marc')
+    with pytest.raises(ValueError, match='accès refusé'):
+        planning_tools.add_or_propose_shopping_list_item(user, foreign.id, 'Sel')
+    forged = _save_card(
+        user, proposal.model_copy(update={'details': {**proposal.details, 'shopping_list_id': foreign.id}}), 'x'
+    )
+    forged.action_type = PendingAction.ACTION_SHOPPING_LIST_ITEM
+    forged.save(update_fields=['action_type'])
+    with pytest.raises(ValueError, match='accès refusé'):
+        execute_pending_action(user, forged)
+    assert not ShoppingListItem.objects.filter(shopping_list=foreign).exists()
+
+
 def test_session_context_lists_tables_with_ids(user):
     from chat.services.session_context import build_profile_context
 

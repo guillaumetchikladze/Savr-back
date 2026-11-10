@@ -523,9 +523,13 @@ OpenAI-compatible `GEMINI_OPENAI_BASE_URL`), indépendant de `AI_MODEL` (pipelin
   `meal_moved`, undo `PATCH /api/meal-plans/{id}/update-composer-slot/`), `remove_meal` (les plats redeviennent
   des envies sans date, repas vide supprimé ; refusé si invité·es, cuisiné ou photos ; carte `meal_removed`,
   undo par plat `POST /api/basket/{id}/schedule/`), `invite_to_meal` (ami·es seulement, nom ou prénom →
-  `propose_meal_invitation` : seule action avec confirmation, carte `meal_invitation` + PendingAction comme
-  `send_invitation_proposal`), `invite_to_table` (ami·es seulement → `tables.services.invite`, carte
-  `table_invitation`, undo `DELETE /api/tables/{id}/members/{user_id}/` si créateur·rice). Toujours en
+  `propose_meal_invitation` : carte `meal_invitation` + PendingAction comme `send_invitation_proposal`),
+  `invite_to_table` (ami·es seulement → carte de confirmation `table_invitation_proposal` (générique dans
+  `MutationCard`) + PendingAction `table_invitation` ; une fois confirmée : `tables.services.invite`, résultat
+  `table_invitation`, undo `DELETE /api/tables/{id}/members/{user_id}/` si créateur·rice). `add_shopping_list_item`
+  sur une liste partagée avec d'autres → carte `shopping_list_item_proposal` + PendingAction `shopping_list_item`
+  (sa propre liste : ajout immédiat). Tout ce qui touche d'autres personnes passe par une carte : un contenu
+  importé / collé (injection de prompt) ne déclenche rien seul ; l'exécution revérifie tout. Toujours en
   vérifiant l'appartenance (envie / repas / tablée de l'utilisateur). `UndoHint.body` (nouveau, optionnel) :
   corps JSON à rejouer. Le profil liste les tablées (`#id`). Prompt : lien de recette collé → import direct ;
   réversible = sans confirmation. Cartes : `.claude-work/specs/agent-v2.md` § « Tout actionnable ».

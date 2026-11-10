@@ -528,6 +528,8 @@ def _save_mutation(conv, turn_id, proposal, tool_name, tool_trace=None):
         'send_invitation_proposal': PendingAction.ACTION_MEAL_INVITATION,
         'invite_to_meal': PendingAction.ACTION_MEAL_INVITATION,
         'propose_recipe_revision': PendingAction.ACTION_RECIPE_REVISION,
+        'invite_to_table': PendingAction.ACTION_TABLE_INVITATION,
+        'add_shopping_list_item': PendingAction.ACTION_SHOPPING_LIST_ITEM,
     }
     action_type = action_type_map.get(tool_name, PendingAction.ACTION_MEAL_DELETION)
 
