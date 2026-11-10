@@ -255,6 +255,10 @@ def attach_photos(post: Post, photos: list[PostPhoto]) -> None:
             photo.meal_plan_id = post.meal_plan_id
             update_fields.append('meal_plan')
         photo.save(update_fields=update_fields)
+    # Upload direct S3 : la taille d'affichage est lue en tâche de fond (cadre du post côté app).
+    from .photo_dimensions import schedule_photo_dimensions
+
+    schedule_photo_dimensions(photos)
 
 
 def _meal_plan_batches(meal_plan: MealPlan) -> list[RecipeBatch]:

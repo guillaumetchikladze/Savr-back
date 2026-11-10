@@ -371,3 +371,15 @@ def generate_ingredient_info_batch_task(ingredient_ids: list[int]):
     stats = generate_many([int(i) for i in ingredient_ids])
     logger.info('[ingredient_info] lot de %d : %s', len(ingredient_ids), stats)
     return stats
+
+
+@shared_task(ignore_result=True)
+def fill_post_photo_dimensions(photo_ids: list[int]):
+    """Lit la taille d'affichage des photos uploadées en direct sur S3 (en-tête seulement)."""
+    from .models import PostPhoto
+    from .services.photo_dimensions import fill_photo_dimensions
+
+    photos = PostPhoto.objects.filter(id__in=[int(i) for i in photo_ids], width__isnull=True).exclude(image_path='')
+    filled = sum(1 for photo in photos if fill_photo_dimensions(photo))
+    logger.info('[photo_dimensions] %d/%d photos dimensionnées', filled, len(photo_ids))
+    return filled

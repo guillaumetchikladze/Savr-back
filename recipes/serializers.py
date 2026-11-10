@@ -2349,7 +2349,7 @@ class PostPhotoLightSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PostPhoto
-        fields = ['id', 'photo_type', 'presigned_url', 'captured_label', 'time_display']
+        fields = ['id', 'photo_type', 'presigned_url', 'captured_label', 'time_display', 'width', 'height']
 
     def get_presigned_url(self, obj):
         """Générer une URL pré-signée (client S3 partagé + cache)."""
@@ -2422,8 +2422,10 @@ class PostPhotoSerializer(serializers.ModelSerializer):
             'order',
             'is_draft',
             'created_at',
+            'width',
+            'height',
         ]
-        read_only_fields = ['created_at']
+        read_only_fields = ['created_at', 'width', 'height']
 
     def get_image_url(self, obj):
         """Construire l'URL complète à partir du chemin relatif"""
@@ -2874,7 +2876,8 @@ class PostPhotoListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PostPhoto
-        fields = ['id', 'photo_type', 'image_url', 'presigned_url', 'order', 'recipe_batch_id']
+        # width / height : taille d'affichage (null si inconnue) → cadre du post au ratio de la 1re photo.
+        fields = ['id', 'photo_type', 'image_url', 'presigned_url', 'order', 'recipe_batch_id', 'width', 'height']
 
     def get_image_url(self, obj):
         from savr_back.settings import build_s3_url

@@ -167,6 +167,18 @@ dans le feed, le détail et la réponse de `POST /posts/cooked/`. Aperçu sans �
   (invités, recettes du repas, fin du mode cuisine). Changer les règles → incrémenter `SNAPSHOT_VERSION`.
 - Backfill optionnel en prod : `python manage.py backfill_post_highlights`. Tests : `stats/tests/test_stats_highlights.py`.
 
+## Taille des photos de post (`recipes/services/photo_dimensions.py`)
+
+`PostPhoto.width` / `height` (migration recipes 0085, null = inconnue) : taille **d'affichage** (orientation EXIF 5-8
+inversée), exposée dans `PostPhotoListSerializer` (feed), `PostPhotoSerializer` (détail) et `PostPhotoLightSerializer`.
+L'app cadre le post au ratio de la 1re photo (borné 4:5 → 1,91:1) ; sans taille elle garde le carré.
+
+- Upload multipart (`upload_photo`, `upload_photo_to_meal_plan`) : lu sur le fichier avant l'envoi S3.
+- Upload direct S3 (`confirm_photo_upload`, `/posts/{id}/photos/`, `attach_photos`, `publish_from_meal_plan`, retouche) :
+  `schedule_photo_dimensions` → tâche `fill_post_photo_dimensions` après commit (lit seulement l'en-tête via l'URL présignée).
+- Existant : `python manage.py backfill_post_photo_dimensions [--all-photos] [--limit N] [--dry-run]` (idempotent ; fichier
+  absent / injoignable → laissé à null, compté en échec). Tests : `recipes/tests/test_posts_photo_dimensions.py`.
+
 ## Panier « Cette semaine » et « À mon tour » (`recipes/services/basket_service.py`)
 
 Envies **sans date** (recette ou plat libre) par semaine (lundi, fuseau utilisateur) : modèle `BasketItem`,

@@ -1192,6 +1192,10 @@ class PostPhoto(models.Model):
         blank=True,
         help_text='Chemin relatif de la photo dans S3 (ex: meal_plans/70/6096a520a71247229f1cae315fc2bd84.jpg)',
     )
+    # Taille d'affichage (orientation EXIF appliquée) : l'app cadre le post au ratio de la 1re photo.
+    # Null = inconnue (photo pas encore lue, fichier absent) → l'app garde le cadre carré.
+    width = models.PositiveIntegerField(null=True, blank=True, help_text="Largeur d'affichage en px")
+    height = models.PositiveIntegerField(null=True, blank=True, help_text="Hauteur d'affichage en px")
     step = models.ForeignKey(
         Step,
         on_delete=models.SET_NULL,

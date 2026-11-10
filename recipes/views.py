@@ -79,6 +79,7 @@ from .services.meal_plan_service import (
     relink_composer_photos_to_meal_plan,
     update_composer_slot,
 )
+from .services.photo_dimensions import dimensions_from_file, schedule_photo_dimensions
 from .services.post_visibility import (
     FRIENDS,
     can_see_post,
@@ -3696,7 +3697,7 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 post__isnull=True,
                 is_draft=False,
             )
-            .only('id', 'photo_type', 'image_path', 'created_at', 'step_id')
+            .only('id', 'photo_type', 'image_path', 'created_at', 'step_id', 'width', 'height')
             .select_related('step')
             .order_by('-created_at')
         )
@@ -5389,9 +5390,10 @@ class PostViewSet(viewsets.ModelViewSet):
                 draft = PostPhoto.objects.get(id=draft_id, recipe_batch=recipe_batch, is_draft=True)
                 draft.image_path = image_path
                 draft.is_draft = False
+                draft.width = draft.height = None
                 if not draft.uploaded_by_id:
                     draft.uploaded_by = request.user
-                draft.save(update_fields=['image_path', 'is_draft', 'uploaded_by'])
+                draft.save(update_fields=['image_path', 'is_draft', 'uploaded_by', 'width', 'height'])
                 post_photo = draft
             except PostPhoto.DoesNotExist:
                 return Response({'error': 'Draft not found or already finalized'}, status=status.HTTP_404_NOT_FOUND)
@@ -5424,6 +5426,7 @@ class PostViewSet(viewsets.ModelViewSet):
 
             post_photo = PostPhoto.objects.create(**photo_data)
 
+        schedule_photo_dimensions([post_photo])
         serializer = PostPhotoSerializer(post_photo, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -5508,7 +5511,9 @@ class PostViewSet(viewsets.ModelViewSet):
         if replace_on_post and original_photo.post_id:
             old_path = (original_photo.image_path or '').replace('s3:/', '').lstrip('/')
             original_photo.image_path = new_path
-            original_photo.save(update_fields=['image_path'])
+            original_photo.width = original_photo.height = None
+            original_photo.save(update_fields=['image_path', 'width', 'height'])
+            schedule_photo_dimensions([original_photo])
             if old_path and old_path != new_path:
                 try:
                     s3_client = build_s3_client()
@@ -5531,6 +5536,7 @@ class PostViewSet(viewsets.ModelViewSet):
             uploaded_by=request.user,
         )
         new_photo.save()
+        schedule_photo_dimensions([new_photo])
 
         serializer = PostPhotoSerializer(new_photo, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -5595,9 +5601,8 @@ class PostViewSet(viewsets.ModelViewSet):
             elif not content_type.startswith('image/'):
                 content_type = f'image/{file_extension}'
 
-            # S'assurer que le fichier est en mode lecture
-            if hasattr(photo_file, 'seek'):
-                photo_file.seek(0)
+            # Taille d'affichage lue avant l'envoi (remet le curseur au début).
+            size = dimensions_from_file(photo_file)
 
             # Upload vers S3
             s3_client.upload_fileobj(
@@ -5613,6 +5618,8 @@ class PostViewSet(viewsets.ModelViewSet):
                 'photo_type': photo_type,
                 'image_path': file_name,  # Stocker le chemin relatif
                 'uploaded_by': request.user,
+                'width': size[0] if size else None,
+                'height': size[1] if size else None,
             }
             if step_id:
                 try:
@@ -5690,6 +5697,7 @@ class PostViewSet(viewsets.ModelViewSet):
 
         # Associer toutes les photos au post (tout en conservant l'association au meal_plan)
         PostPhoto.objects.filter(id__in=[p.id for p in photos]).update(post=post)
+        schedule_photo_dimensions(photos)
 
         serializer = PostSerializer(post, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -5732,6 +5740,7 @@ class PostViewSet(viewsets.ModelViewSet):
             # Générer un nom de fichier unique
             file_extension = photo_file.name.split('.')[-1] if '.' in photo_file.name else 'jpg'
             file_name = f'posts/{post.id}/{uuid.uuid4()}.{file_extension}'
+            size = dimensions_from_file(photo_file)
 
             # Upload vers S3
             s3_client.upload_fileobj(
@@ -5747,6 +5756,8 @@ class PostViewSet(viewsets.ModelViewSet):
                 'photo_type': photo_type,
                 'image_path': file_name,  # Stocker le chemin relatif
                 'uploaded_by': request.user,
+                'width': size[0] if size else None,
+                'height': size[1] if size else None,
             }
             if step_id:
                 try:
