@@ -90,6 +90,18 @@ class UserSerializer(serializers.ModelSerializer):
     def get_has_set_equipment(self, obj):
         return bool(getattr(obj, 'kitchen_equipment_set_at', None))
 
+    def _mutual_complice_ids(self, viewer) -> set[int]:
+        """Amis mutuels du viewer (2 requêtes par réponse, partagées par tous les éléments d'une liste)."""
+        cache_key = '_mutual_complice_ids'
+        cached = self.context.get(cache_key) if isinstance(self.context, dict) else None
+        if cached is None:
+            following = set(Follow.objects.filter(follower_id=viewer.id).values_list('following_id', flat=True))
+            followers = set(Follow.objects.filter(following_id=viewer.id).values_list('follower_id', flat=True))
+            cached = following & followers
+            if isinstance(self.context, dict):
+                self.context[cache_key] = cached
+        return cached
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get('request')
@@ -97,6 +109,11 @@ class UserSerializer(serializers.ModelSerializer):
         if viewer is not None and getattr(viewer, 'id', None) != instance.id:
             for field in self.SELF_ONLY_FIELDS:
                 data.pop(field, None)
+            # Profil d'un autre : jamais l'email ; allergies / goûts / régimes réservés aux amis mutuels
+            # (`privacy.can_view_dietary_preferences`).
+            data.pop('email', None)
+            if not getattr(viewer, 'is_authenticated', False) or instance.id not in self._mutual_complice_ids(viewer):
+                data.update(food_dislikes=[], allergies=[], regimes=[], is_vegetarian=False)
         return data
 
     def update(self, instance, validated_data):
