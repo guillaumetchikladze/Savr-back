@@ -5,6 +5,7 @@ from accounts.permissions import IsValidated as IsAuthenticated
 
 from .basket_views import BasketViewSet
 from .battle_plan_views import battle_plan_view
+from .carnet_views import carnet_me_view, carnet_user_view
 from .density_views import feed_suggestions_view, onboarding_social_view
 from .dietary_views import (
     dietary_conflict_dismiss_view,
@@ -106,6 +107,8 @@ urlpatterns = [
         recipe_batch_sub_recipe_modes_view,
         name='recipe_batch_sub_recipe_modes',
     ),
+    path('carnet/me/', carnet_me_view, name='carnet_me'),
+    path('carnet/users/<int:user_id>/', carnet_user_view, name='carnet_user'),
     path('dishes/classics/', dish_classics_view, name='dish_classics'),
     path('dishes/recipe/<int:recipe_id>/', dish_recipe_view, name='dish_recipe'),
     path('dishes/label/<str:slug>/', dish_label_view, name='dish_label'),

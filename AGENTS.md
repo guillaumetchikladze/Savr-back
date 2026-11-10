@@ -226,6 +226,24 @@ Page d'un plat (historique, versions, amis) et rangée « Classiques » d'Accuei
   compare avec `get_dish` neutralisé). `top_dishes` de `/api/stats/me/` porte `dish_key` (cache stats `v3`).
 - Tests : `recipes/tests/test_posts_dish_api.py`.
 
+## Carnet d'un profil (`recipes/services/carnet_service.py`)
+
+`GET /api/carnet/me/` et `GET /api/carnet/users/<id>/` (`?cursor=` renvoyé par `next_cursor`, `?page_size=` ≤ 50, défaut 20) :
+les plats cuisinés, du plus récent au plus ancien, **avec ou sans recette**, et `count` exact (compteurs des profils).
+Aucun modèle ni migration.
+
+- Une entrée = un post de l'utilisateur (`post`), un repas cuisiné (`MealPlan.confirmed`) sans post (`meal`) ou un
+  ancien batch `is_cooked` sans repas cuisiné ni post (`batch`). Date = date du repas (sinon jour de création).
+  Champs : `key`, `kind`, `date`, `meal_time(_display)`, `title`, `dish_key`, `recipe {id, title, image_url}|null`,
+  `post_id|null`, `thumbnail {url, width, height}|null` (1re photo, pas de miniature), `photos_count`, `note`,
+  `first_time` (instantané de l'ardoise seulement, jamais calculé ici), `is_private` ; soi seulement : `batch_id`,
+  `meal_plan_id`, `servings`.
+- Visibilité : soi = tout ; un autre = `can_view_profile_content` (sinon 403 `profile_not_visible`, inconnu/inactif
+  404 `not_found`) puis ses posts **publiés** filtrés par `post_visibility.visible_posts`. Jamais ses repas sans post,
+  posts « rien que pour moi », batches ni convives ; les reposts (co-cuisinés) ne sont pas ses plats.
+- Curseur = (date, `created_at`, type, id) sur une `UNION ALL` des sources ; 2 requêtes de clés + chargement en lot
+  par type : nombre de requêtes constant (test). Tests : `recipes/tests/test_posts_carnet_api.py`.
+
 ## Foyer + invités (`accounts/services/household_service.py`, `recipes/services/diners_service.py`)
 
 Le foyer est réglé une fois et inclus par défaut dans chaque repas / envie, sans invitation. Contrat front :
