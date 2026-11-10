@@ -130,6 +130,40 @@ def _household_account_members(user: AbstractBaseUser) -> list:
     return [(e.name, e.user) for e in household_for(user.id) if e.user is not None]
 
 
+def dish_conflict_checker(user: AbstractBaseUser, recipe_ids):
+    """
+    `conflicts_for(recipe_id, text)` → [(raison, détail)] : préférences de l'utilisateur (allergie, régime,
+    n'aime pas) + allergies des comptes du foyer. Recettes : `recipe_ids` analysées en une passe ; plat libre :
+    analyse du texte. Partagé par plan_week et propose_week_meals (wk02).
+    """
+    recipe_ids = list(recipe_ids or [])
+    recipe_conflicts = conflict_details_by_recipe_id(recipe_ids, user) if recipe_ids else {}
+    members = _household_account_members(user)
+    member_recipe_conflicts = [
+        (name, conflict_details_by_recipe_id(recipe_ids, member)) for name, member in members if recipe_ids
+    ]
+
+    def conflicts_for(recipe_id: int | None, text: str) -> list[tuple[str, str]]:
+        if recipe_id is not None:
+            own = (recipe_conflicts.get(recipe_id) or {}).get('hits', [])
+            others = [
+                (name, h)
+                for name, by_id in member_recipe_conflicts
+                for h in (by_id.get(recipe_id) or {}).get('hits', [])
+                if h['reason'] == 'allergy'
+            ]
+        else:
+            own = text_conflict_hits(text, user)
+            others = [
+                (name, h) for name, member in members for h in text_conflict_hits(text, member, kinds=('allergy',))
+            ]
+        return [(h['reason'], _conflict_detail(h)) for h in own] + [
+            (h['reason'], _conflict_detail(h, name)) for name, h in others
+        ]
+
+    return conflicts_for
+
+
 # ---------------------------------------------------------------------------
 # plan_week : envies du panier (sans date par défaut)
 # ---------------------------------------------------------------------------
@@ -166,32 +200,8 @@ def plan_week_for_user(
     week_start = basket.monday_of(target_date) if target_date else basket.parse_week(week, user)
 
     recipes = _accessible_recipes(user, rids)
-    recipe_conflicts = conflict_details_by_recipe_id(list(recipes), user) if recipes else {}
-    members = _household_account_members(user)
-    member_recipe_conflicts = [
-        (name, conflict_details_by_recipe_id(list(recipes), member)) for name, member in members if recipes
-    ]
-
+    conflicts_for = dish_conflict_checker(user, list(recipes))
     result = PlanWeekResult(week_start=week_start.isoformat())
-
-    def conflicts_for(recipe_id: int | None, text: str) -> list[tuple[str, str]]:
-        """[(raison, détail)] : préférences de l'utilisateur + allergies des comptes du foyer."""
-        if recipe_id is not None:
-            own = (recipe_conflicts.get(recipe_id) or {}).get('hits', [])
-            others = [
-                (name, h)
-                for name, by_id in member_recipe_conflicts
-                for h in (by_id.get(recipe_id) or {}).get('hits', [])
-                if h['reason'] == 'allergy'
-            ]
-        else:
-            own = text_conflict_hits(text, user)
-            others = [
-                (name, h) for name, member in members for h in text_conflict_hits(text, member, kinds=('allergy',))
-            ]
-        return [(h['reason'], _conflict_detail(h)) for h in own] + [
-            (h['reason'], _conflict_detail(h, name)) for name, h in others
-        ]
 
     dishes = [(rid, '') for rid in rids] + [(None, text) for text in texts]
     for recipe_id, text in dishes:

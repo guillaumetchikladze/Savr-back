@@ -4,7 +4,7 @@ from agents import RunContextWrapper, function_tool
 from channels.db import database_sync_to_async
 from django.db import close_old_connections
 
-from chat.services import kitchen_tools, planning_tools
+from chat.services import kitchen_tools, planning_tools, week_fill
 from chat.services.agent_context import AgentContext
 from chat.services.tool_schemas import (
     AddRecipeResult,
@@ -21,9 +21,12 @@ from chat.services.tool_schemas import (
     MealChangeResult,
     MutationProposal,
     PlanWeekResult,
+    ProposedMeal,
     RecipeImportResult,
     SearchRecipesResult,
     UndoCookedResult,
+    WeekContextResult,
+    WeekMealProposalsResult,
 )
 from core.celery_dispatch import publish_tracked
 from recipes.services.invitation_service import (
@@ -617,3 +620,62 @@ MUTATION_TOOL_NAMES = frozenset(
         'add_to_shopping_list_from_basket',  # liste existante partagée ; nouvelle / propre liste → immédiat
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# « Complète ma semaine » (wk02)
+# ---------------------------------------------------------------------------
+@function_tool(strict_mode=False)
+async def get_week_context(
+    ctx: RunContextWrapper[AgentContext],
+    week: str | None = None,
+) -> WeekContextResult:
+    """Contexte pour compléter la semaine (lecture seule) : créneaux libres, déjà prévu, envies sans date,
+    semaine dernière (à ne pas répéter), plats préférés, carnet, rythme, cuisines récentes, convives, contraintes.
+    À appeler pour « complète / remplis ma semaine », « propose des repas pour les jours vides ».
+
+    Args:
+        week: n'importe quel jour (YYYY-MM-DD) de la semaine visée ; défaut : semaine en cours.
+    """
+    user = ctx.context.user
+    return await _run_sync(week_fill.build_week_context, user, week)
+
+
+@function_tool(strict_mode=False)
+async def propose_week_meals(
+    ctx: RunContextWrapper[AgentContext],
+    meals: list[ProposedMeal],
+    week: str | None = None,
+) -> WeekMealProposalsResult:
+    """Affiche une carte de repas proposés pour les créneaux libres (après get_week_context). N'écrit RIEN :
+    l'utilisateur valide chaque plat d'un tap (le caler sur son créneau ou l'ajouter sans date).
+
+    Args:
+        meals: un plat par créneau libre (≤ 10) : basket_item_id (envie existante) ou recipe_id (carnet,
+            favourites, search_recipes) ou label (idée neuve), date + meal_time du créneau, reason courte.
+        week: n'importe quel jour (YYYY-MM-DD) de la semaine visée ; défaut : semaine en cours.
+    """
+    user = ctx.context.user
+    return await _run_sync(week_fill.propose_week_meals_for_user, user, meals, week)
+
+
+def _inline_schema_refs(schema: dict) -> dict:
+    """Remplace les `$ref` (`$defs`) par leur définition : schéma plat, accepté par Gemini (OpenAI-compatible)."""
+    defs = schema.get('$defs') or {}
+
+    def resolve(node):
+        if isinstance(node, dict):
+            ref = node.get('$ref')
+            if isinstance(ref, str) and ref.startswith('#/$defs/'):
+                target = dict(defs.get(ref.rsplit('/', 1)[-1], {}))
+                extra = {k: v for k, v in node.items() if k != '$ref'}
+                return resolve({**target, **extra})
+            return {k: resolve(v) for k, v in node.items() if k != '$defs'}
+        if isinstance(node, list):
+            return [resolve(v) for v in node]
+        return node
+
+    return resolve(schema)
+
+
+propose_week_meals.params_json_schema = _inline_schema_refs(propose_week_meals.params_json_schema)

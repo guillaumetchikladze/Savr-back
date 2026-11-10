@@ -2,7 +2,8 @@
 API du panier « Cette semaine » (envies non datées). Contrat front : `.claude-work/specs/basket.md`.
 
     GET    /basket/?week=YYYY-MM-DD          semaine (défaut : courante, fuseau de l'utilisateur)
-    POST   /basket/                          {recipe_id | label, servings?, week?, guest_count?, excluded_household_ids?}
+    POST   /basket/                          {recipe_id | label, servings?, week?, guest_count?, excluded_household_ids?,
+                                              date?, meal_time?}  date → envie datée tout de suite (tout ou rien)
     PATCH  /basket/{id}/                     {servings?, label?, guest_count?, excluded_household_ids?}
     POST   /basket/diners/                   {week?, guest_count?, excluded_household_ids?}  en-tête « Pour N »
     DELETE /basket/{id}/
@@ -22,6 +23,7 @@ from __future__ import annotations
 from datetime import timedelta
 from functools import wraps
 
+from django.db import transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -170,15 +172,20 @@ class BasketViewSet(viewsets.ViewSet):
     @_basket_errors
     def create(self, request):
         data = request.data
-        item = basket.add_item(
-            request.user,
-            recipe_id=data.get('recipe_id'),
-            label=data.get('label'),
-            servings=data.get('servings'),
-            week=data.get('week'),
-            guest_count=data.get('guest_count'),
-            excluded_household_ids=data.get('excluded_household_ids'),
-        )
+        # `date` (+ `meal_time`, défaut dîner) : ajout + datation en une fois (cartes « Complète ma semaine »).
+        day = data.get('date')
+        with transaction.atomic():
+            item = basket.add_item(
+                request.user,
+                recipe_id=data.get('recipe_id'),
+                label=data.get('label'),
+                servings=data.get('servings'),
+                week=day or data.get('week'),
+                guest_count=data.get('guest_count'),
+                excluded_household_ids=data.get('excluded_household_ids'),
+            )
+            if day:
+                basket.schedule_item(request.user, item, date=day, meal_time=data.get('meal_time'))
         item = basket.get_item(request.user, item.id)
         return Response(basket_item_payload(item, request), status=status.HTTP_201_CREATED)
 

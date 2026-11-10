@@ -259,7 +259,7 @@ class BattlePlanResult(BaseModel):
 class CardAction(BaseModel):
     """Bouton d'une carte résultat. `kind` stable côté app ; appel REST (`method` + `path` + `body`) si présent."""
 
-    kind: str = Field(description='open_recipe, add_to_week, open_week, open_meal, open_table')
+    kind: str = Field(description='open_recipe, add_to_week, schedule, open_week, open_meal, open_table')
     label: str
     method: str | None = None
     path: str | None = None
@@ -331,4 +331,115 @@ class TableInvitationResult(BaseModel):
     not_found: list[str] = Field(default_factory=list, description='Noms sans ami·e correspondant')
     actions: list[CardAction] = Field(default_factory=list)
     undo: UndoHint | None = None
+    message: str = ''
+
+
+# ---------------------------------------------------------------------------
+# « Complète ma semaine » (wk02) : contexte calculé côté serveur + propositions validées au tap
+# ---------------------------------------------------------------------------
+class WeekSlot(BaseModel):
+    date: str
+    meal_time: str = Field(description='lunch ou dinner')
+    label: str = Field('', description='« jeu. 12 soir »')
+
+
+class WeekMealEntry(BaseModel):
+    date: str
+    meal_time: str
+    title: str
+    cooked: bool = False
+    meal_plan_id: int | None = None
+
+
+class WeekBasketEntry(BaseModel):
+    basket_item_id: int
+    title: str
+    recipe_id: int | None = None
+    status: str = Field('todo', description='todo (sans date cette semaine) ou not_done (semaine dernière)')
+
+
+class WeekFavouriteDish(BaseModel):
+    title: str
+    recipe_id: int | None = None
+    times: int = Field(description='Jours distincts où il l’a cuisiné (6 derniers mois)')
+    last_cooked: str
+    days_ago: int
+    cuisine: str = ''
+
+
+class WeekBookRecipe(BaseModel):
+    recipe_id: int
+    title: str
+    total_time_min: int | None = None
+    cuisine: str = ''
+    times_cooked: int = 0
+    last_cooked: str | None = None
+
+
+class WeekContextResult(BaseModel):
+    """`get_week_context` : de quoi compléter la semaine (lecture seule, aucune carte)."""
+
+    week_start: str
+    week_end: str
+    today: str
+    is_past_week: bool = False
+    people: int = Field(1, description='Convives de la semaine (toi + foyer + invités)')
+    lunches_included: bool = Field(False, description='Midis comptés (il planifie souvent ses déjeuners)')
+    empty_slots: list[WeekSlot] = Field(default_factory=list, description='Créneaux libres, du plus proche')
+    planned: list[WeekMealEntry] = Field(default_factory=list, description='Déjà prévu ou cuisiné cette semaine')
+    basket_unscheduled: list[WeekBasketEntry] = Field(
+        default_factory=list, description='Envies sans date de la semaine : à caler en premier'
+    )
+    last_week: list[WeekMealEntry] = Field(
+        default_factory=list, description='Prévu / cuisiné la semaine dernière : à ne pas répéter'
+    )
+    last_week_not_done: list[WeekBasketEntry] = Field(
+        default_factory=list, description='Envies de la semaine dernière pas faites : à reproposer'
+    )
+    favourites: list[WeekFavouriteDish] = Field(default_factory=list, description='Ses plats les plus cuisinés')
+    book: list[WeekBookRecipe] = Field(
+        default_factory=list, description='Recettes de son carnet pas faites depuis 3 semaines (ou jamais)'
+    )
+    cooked_per_week: float = Field(0, description='Plats cuisinés par semaine (8 dernières semaines)')
+    recent_cuisines: list[str] = Field(default_factory=list, description='Cuisines du mois (« italienne ×3 »)')
+    constraints: list[str] = Field(default_factory=list, description='Préférences, foyer, cuisine')
+    target_count: int = Field(0, description='Nombre de nouveaux plats à proposer (indicatif)')
+    message: str = ''
+
+
+class ProposedMeal(BaseModel):
+    """Un plat proposé par l'agent pour un créneau libre."""
+
+    recipe_id: int | None = Field(None, description='Recette (carnet, favourites, search_recipes)')
+    basket_item_id: int | None = Field(None, description='Envie existante (basket_unscheduled, last_week_not_done)')
+    label: str | None = Field(None, description='Plat libre (idée neuve sans fiche)')
+    date: str | None = Field(None, description='YYYY-MM-DD d’un créneau libre (empty_slots)')
+    meal_time: str | None = Field(None, description='lunch ou dinner (défaut dinner)')
+    reason: str | None = Field(None, description='Pourquoi, en quelques mots (« ton classique », « de saison »)')
+
+
+class WeekMealProposal(BaseModel):
+    key: str
+    title: str
+    recipe_id: int | None = None
+    basket_item_id: int | None = None
+    is_free_text: bool = False
+    image_url: str | None = None
+    total_time_min: int | None = None
+    source: str = Field('nouveau', description='panier, historique, carnet ou nouveau')
+    reason: str = ''
+    date: str | None = None
+    meal_time: str | None = None
+    slot_label: str | None = None
+    actions: list[CardAction] = Field(default_factory=list)
+
+
+class WeekMealProposalsResult(BaseModel):
+    """`propose_week_meals` : carte de propositions ; rien n'est écrit avant le tap de l'utilisateur."""
+
+    card_type: str = 'week_meal_proposals'
+    week_start: str
+    week_end: str
+    proposals: list[WeekMealProposal] = Field(default_factory=list)
+    skipped: list[SkippedDish] = Field(default_factory=list)
     message: str = ''

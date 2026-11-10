@@ -537,6 +537,18 @@ OpenAI-compatible `GEMINI_OPENAI_BASE_URL`), indépendant de `AI_MODEL` (pipelin
   vérifiant l'appartenance (envie / repas / tablée de l'utilisateur). `UndoHint.body` (nouveau, optionnel) :
   corps JSON à rejouer. Le profil liste les tablées (`#id`). Prompt : lien de recette collé → import direct ;
   réversible = sans confirmation. Cartes : `.claude-work/specs/agent-v2.md` § « Tout actionnable ».
+- « Complète ma semaine » (wk02, `chat/services/week_fill.py`, sync et testable ; wrappers dans `async_tools.py`) :
+  puce « Complète ma semaine » sous la barre IA de « Cette semaine » → message envoyé au chat. `get_week_context`
+  (lecture seule) calcule côté serveur : créneaux libres (dîners ; midis si ≥ 3 déjeuners prévus en 4 semaines ;
+  aujourd'hui avant 12 h / 20 h, heure locale ; invitation acceptée = pris), déjà prévu, envies sans date, semaine
+  dernière (à ne pas répéter) et ses envies pas faites, plats préférés (≥ 2 jours sur 180 j), carnet (ses recettes +
+  ses collections, visibles, sans conflit, pas faites depuis 21 j), rythme, cuisines du mois, convives, contraintes
+  (lignes du profil), `target_count`. `propose_week_meals` **n'écrit rien** : carte `week_meal_proposals`, plats
+  revérifiés (accès, préférences + allergies du foyer via `kitchen_tools.dish_conflict_checker`, créneau dans la
+  semaine), boutons `CardAction` `schedule` (POST `/api/basket/` avec `date` + `meal_time`, ou
+  `/api/basket/{id}/schedule/` pour une envie) / `add_to_week` / `open_recipe`, rejoués au tap par l'app.
+  `POST /api/basket/` accepte `date` (+ `meal_time`) : ajout + datation atomiques. Schéma du tool aplati (pas de
+  `$ref`, Gemini). Tests : `chat/tests/test_chat_week_fill.py`.
 - Tracing SDK Agents : désactivé par défaut (`chat/services/tracing.py`, appelé au démarrage et à l'import de
   `agent_factory`) ; opt-in via `AGENT_TRACING_ENABLED=true` (les traces contiennent des données utilisateur).
 - Tests : `chat/tests/test_chat_agent_v2.py`, `chat/tests/test_chat_agent_actions.py` (aller-retour tool
