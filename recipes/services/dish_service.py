@@ -300,7 +300,7 @@ def _user_light(users, request) -> dict[int, dict]:
     return {u.id: UserLightSerializer(u, context=context).data for u in users}
 
 
-def _post_payload(post: Post, *, user_payload: dict | None = None) -> dict:
+def _post_payload(post: Post, *, user_payload: dict | None = None, changes: dict | None = None) -> dict:
     from stats.services.highlights import post_ardoise
 
     photos = list(post.photos.all())
@@ -316,10 +316,29 @@ def _post_payload(post: Post, *, user_payload: dict | None = None) -> dict:
         'cookies_count': getattr(post, '_miam', 0),
         'is_published': post.is_published,
         'created_at': post.created_at.isoformat() if post.created_at else None,
+        # « Ce que tu as changé » sur cette recette dans ce repas (ckd2 lot 3b) : post déjà visible du lecteur.
+        'changes': (changes or {}).get(post.meal_plan_id, '') if post.meal_plan_id else '',
     }
     if user_payload is not None:
         data['user'] = user_payload
     return data
+
+
+def _recipe_changes(recipe_id, posts: dict[int, Post]) -> dict[int, str]:
+    """« Ce que tu as changé » de la recette par repas des posts chargés (1 requête, 0 sans recette)."""
+    meal_ids = {p.meal_plan_id for p in posts.values() if p.meal_plan_id}
+    if not recipe_id or not meal_ids:
+        return {}
+    rows = (
+        MealPlanRecipeBatch.objects.filter(meal_plan_id__in=meal_ids, recipe_batch__recipe_id=recipe_id)
+        .exclude(changes='')
+        .order_by('order', 'id')
+        .values_list('meal_plan_id', 'changes')
+    )
+    out: dict[int, str] = {}
+    for meal_id, text in rows:
+        out.setdefault(meal_id, text)
+    return out
 
 
 def _load_posts(ids) -> dict[int, Post]:
@@ -428,6 +447,7 @@ def build_dish_page(user, ref: DishRef, *, request=None, page: int = 1, page_siz
         + [r['id'] for r in friend_page]
         + ([my_posts[photo_meal['id']]['id']] if photo_meal else [])
     )
+    changes = _recipe_changes(ref.recipe_id, posts)
 
     versions = []
     for m in page_meals:
@@ -443,7 +463,7 @@ def build_dish_page(user, ref: DishRef, *, request=None, page: int = 1, page_siz
                 'label': m['label'],
                 'cooking_minutes': minutes.get(m['id']),
                 'is_favorite': m['id'] == favorite,
-                'post': _post_payload(post) if post is not None else None,
+                'post': _post_payload(post, changes=changes) if post is not None else None,
             }
         )
     measured = [minutes[i] for i in meal_ids if i in minutes]
@@ -467,7 +487,10 @@ def build_dish_page(user, ref: DishRef, *, request=None, page: int = 1, page_siz
         post = posts.get(r['id'])
         if post is not None:
             friend_posts.append(
-                {**_post_payload(post, user_payload=light.get(post.user_id)), 'cooked_on': r['date'].isoformat()}
+                {
+                    **_post_payload(post, user_payload=light.get(post.user_id), changes=changes),
+                    'cooked_on': r['date'].isoformat(),
+                }
             )
 
     # --- Titre, image ---

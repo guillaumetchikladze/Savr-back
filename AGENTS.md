@@ -121,6 +121,13 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   invitation refusée + repost retiré (204, 404 sinon). Posts : `guests` [{UserLight, first_name, can_view_profile}]
   (invitations acceptées, chargées en lot ; lien seulement si le lecteur suit le convive ou est le convive).
   Tests : `recipes/tests/test_posts_cooked_guests_api.py`.
+- « Ce que tu as changé » (lot 3b) : `changes` (500 car., nettoyé, 400 `invalid_changes` si pas un texte) sur
+  `MealPlanRecipeBatch.changes` de la recette suivie du plat (trouvée, prévue, lien) ; ignoré pour une recette écrite
+  ou un nom seul. Exposé **seulement** sur les posts (`dishes` [{recipe_batch_id, recipe, changes, author}] du fil /
+  détail, `changes` des posts de la page du plat), donc avec l'audience du post (« toi seulement » = soi) ; jamais
+  dans les API du planning, jamais de profilage ni de classement. Annuler le retire (`cooked_undo.changes`) ;
+  `PATCH /posts/{id}/update-content/` accepte `changes: [{recipe_batch_id, changes}]`. Tests :
+  `recipes/tests/test_posts_cooked_changes_api.py`.
 
 ## Stats, badges et Récap (app `stats`)
 

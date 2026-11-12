@@ -5042,7 +5042,8 @@ class PostViewSet(viewsets.ModelViewSet):
         cooked_at? (ISO, défaut maintenant), meal_time?, comment?, photo_ids?, cooking_time_minutes?,
         publish (défaut true), recipe_text? (« Ta recette » écrite, 5000 car.), import_url? (lien collé),
         guest_ids? (convives directs : amis / tablées, notifiés), household_guest_ids? (foyer préajouté d'un
-        plat du planning `meal_plan_id`, jamais notifié) — ckd2 lot 3, `services/dish_guests.py`.
+        plat du planning `meal_plan_id`, jamais notifié) — ckd2 lot 3, `services/dish_guests.py`,
+        changes? (« Ce que tu as changé », 500 car., sur la recette suivie du plat — ckd2 lot 3b).
         Au moins recipe_id, label, meal_plan_id, basket_item_id, recipe_text ou import_url.
         Sans recipe_id, le plat devient toujours une recette (`services/cooked_recipe.py`).
         Header optionnel `Idempotency-Key`.
@@ -5084,6 +5085,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 import_url=data.get('import_url'),
                 guest_ids=data.get('guest_ids'),
                 household_guest_ids=data.get('household_guest_ids'),
+                changes=data.get('changes'),
             )
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
@@ -5967,9 +5969,41 @@ class PostViewSet(viewsets.ModelViewSet):
         except PostPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    @staticmethod
+    def _update_post_changes(post, items):
+        """Met à jour « Ce que tu as changé » des recettes du repas du post ; message d'erreur ou None."""
+        from .services.cooked_service import CookedError, clean_changes
+
+        if not isinstance(items, list) or not all(isinstance(it, dict) for it in items):
+            return 'changes must be a list of {recipe_batch_id, changes}'
+        if not post.meal_plan_id or post.meal_plan.user_id != post.user_id:
+            return 'This post has no recipe to change' if items else None
+        by_batch = {}
+        for it in items:
+            try:
+                batch_id = int(it.get('recipe_batch_id'))
+                by_batch[batch_id] = clean_changes(it.get('changes') if it.get('changes') is not None else '')
+            except (TypeError, ValueError):
+                return 'recipe_batch_id must be an integer'
+            except CookedError as exc:
+                return exc.message
+        mprbs = {
+            m.recipe_batch_id: m
+            for m in MealPlanRecipeBatch.objects.filter(meal_plan_id=post.meal_plan_id, recipe_batch_id__in=by_batch)
+        }
+        if len(mprbs) != len(by_batch):
+            return 'Some recipes are not in this post'
+        for batch_id, text in by_batch.items():
+            mprb = mprbs[batch_id]
+            if mprb.changes != text:
+                mprb.changes = text
+                mprb.save(update_fields=['changes', 'updated_at'])
+        return None
+
     @action(detail=True, methods=['patch'], url_path='update-content')
     def update_content(self, request, pk=None):
-        """Mettre à jour la légende et/ou la sélection de photos d'un post publié."""
+        """Mettre à jour la légende, la sélection de photos et/ou « Ce que tu as changé »
+        (`changes: [{recipe_batch_id, changes}]`, ckd2 lot 3b) d'un post publié."""
         post = self.get_object()
 
         if post.user_id != request.user.id:
@@ -5977,6 +6011,13 @@ class PostViewSet(viewsets.ModelViewSet):
 
         if not post.is_published:
             return Response({'error': 'Post is not published'}, status=status.HTTP_400_BAD_REQUEST)
+
+        changes = request.data.get('changes')
+        if changes is not None:
+            # « Ce que tu as changé » (ckd2 lot 3b) : [{recipe_batch_id, changes}] sur les recettes du repas du post.
+            error = self._update_post_changes(post, changes)
+            if error:
+                return Response({'error': error, 'code': 'invalid_changes'}, status=status.HTTP_400_BAD_REQUEST)
 
         update_fields = []
         if 'comment' in request.data:

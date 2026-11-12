@@ -54,6 +54,8 @@ from recipes.utils import get_accessible_meal_plan_filter
 
 MAX_POST_PHOTOS = 20
 LABEL_MAX_LENGTH = 120
+# « Ce que tu as changé » (ckd2 lot 3b), par recette du repas (`MealPlanRecipeBatch.changes`).
+CHANGES_MAX_LENGTH = 500
 _STANDARD_SLOTS = ('breakfast', 'lunch', 'dinner')
 _ALLOWED_MEAL_TIMES = (*_STANDARD_SLOTS, 'other')
 
@@ -263,6 +265,28 @@ def attach_photos(post: Post, photos: list[PostPhoto]) -> None:
     schedule_photo_dimensions(photos)
 
 
+def clean_changes(value) -> str:
+    """« Ce que tu as changé » : texte libre nettoyé (espaces de bord), plafonné ; '' si absent."""
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        raise CookedError('changes must be a string', 400, 'invalid_changes')
+    return value.strip()[:CHANGES_MAX_LENGTH].strip()
+
+
+def set_batch_changes(meal_plan: MealPlan, batch_id: int, changes: str, undo: dict | None = None) -> None:
+    """Pose « Ce que tu as changé » sur la recette `batch_id` du repas ; l'ancienne valeur va dans `undo`."""
+    if not changes:
+        return
+    mprb = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan, recipe_batch_id=batch_id).first()
+    if mprb is None or mprb.changes == changes:
+        return
+    if undo is not None:
+        undo.setdefault('changes', []).append({'mprb_id': mprb.id, 'previous': mprb.changes})
+    mprb.changes = changes
+    mprb.save(update_fields=['changes', 'updated_at'])
+
+
 def _meal_plan_batches(meal_plan: MealPlan) -> list[RecipeBatch]:
     return [
         mprb.recipe_batch
@@ -370,6 +394,7 @@ def log_cooked(
     import_url: str | None = None,
     guest_ids=None,
     household_guest_ids=None,
+    changes=None,
 ) -> CookedResult:
     """
     « J'ai cuisiné X » en 1 appel : repas (réutilisé ou créé, confirmé), recette liée et batches
@@ -384,12 +409,17 @@ def log_cooked(
     Convives (ckd2 lot 3, `dish_guests`) : `guest_ids` (amis, « Avec qui » / @Léa) ajoutés directement,
     notifiés ; `household_guest_ids` (foyer préajouté d'un plat du planning, `meal_plan_id`) muets.
     Plat non publié : gardés sur `Post.held_guests`, ajoutés à la publication.
+
+    « Ce que tu as changé » (ckd2 lot 3b) : `changes` va sur la recette du plat dans le repas
+    (`MealPlanRecipeBatch.changes`), seulement pour une recette suivie (trouvée, prévue, lien) — jamais
+    pour une recette écrite ou un nom seul (c'est sa recette). Annuler le retire avec le log.
     """
     from . import cooked_recipe, dish_guests
 
     # ---- Validation (aucune écriture) ----
     label = (label or '').strip()[:LABEL_MAX_LENGTH]
     comment = (comment or '').strip()
+    changes = clean_changes(changes)
 
     recipe = None
     rid = _parse_int(recipe_id, 'recipe_id')
@@ -458,6 +488,8 @@ def log_cooked(
                 cooked_recipe.default_link_title(host) if url else cooked_recipe.WRITTEN_RECIPE_DEFAULT_TITLE
             )
             new_recipe = (title, plan, bool(dish_name))
+    if recipe_text or reused_named_recipe or (new_recipe is not None and not url):
+        changes = ''  # sa propre recette (écrite ou au nom du plat) : rien à « changer »
 
     if meal_time not in (None, ''):
         meal_time = str(meal_time).strip().lower()
@@ -568,6 +600,8 @@ def log_cooked(
             inspired_by = basket_item.inspired_by_post if basket_item.inspired_by_post_id else None
 
         cover = next((b for b in batches if recipe and b.recipe_id == recipe.id), batches[0] if batches else None)
+        if cover is not None:
+            set_batch_changes(meal_plan, cover.id, changes, undo)
         post = Post.objects.create(
             user=user,
             meal_plan=meal_plan,
@@ -657,6 +691,9 @@ def undo_cooked(post: Post) -> None:
             RecipeBatch.objects.filter(
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
+
+        for change in undo.get('changes') or []:  # « Ce que tu as changé » posé sur une recette prévue
+            MealPlanRecipeBatch.objects.filter(id=change.get('mprb_id')).update(changes=change.get('previous') or '')
 
         uncooked = undo.get('uncooked_batch_ids') or []
         if uncooked:

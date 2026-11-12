@@ -793,6 +793,14 @@ class MealPlanRecipeBatch(models.Model):
         default=False, help_text="True si l'utilisateur a détaché les portions du nombre de personnes"
     )
     order = models.IntegerField(default=0, help_text="Ordre d'affichage dans le meal plan")
+    changes = models.TextField(
+        blank=True,
+        default='',
+        help_text=(
+            '« Ce que tu as changé » (ckd2 lot 3b) : adaptation de la recette pour ce repas. Même audience '
+            'que le post du repas (exposé seulement sur les posts) ; jamais de profilage.'
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

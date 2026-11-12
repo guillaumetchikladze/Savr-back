@@ -2706,6 +2706,20 @@ class DishFieldMixin(serializers.Serializer):
         return post_dish(obj)
 
 
+class DishesFieldMixin(serializers.Serializer):
+    """
+    Plats du post (ckd2 lots 3b / 3c) : `dishes` = [{recipe_batch_id, recipe, changes, author}] dans l'ordre
+    du repas, avec « Ce que tu as changé » par recette (audience du post). Voir `services.post_dishes`.
+    """
+
+    dishes = serializers.SerializerMethodField()
+
+    def get_dishes(self, obj):
+        from .services.post_dishes import post_dishes
+
+        return post_dishes(obj, self.context)
+
+
 class CaptionLinksFieldMixin(serializers.Serializer):
     """
     Mots de l'auteur → recettes (hl1) : `caption_links` = [{start, end, recipe_id}] (positions UTF-16 sur `comment`,
@@ -2722,6 +2736,7 @@ class CaptionLinksFieldMixin(serializers.Serializer):
 
 
 class PostSerializer(
+    DishesFieldMixin,
     GuestsFieldMixin,
     CaptionLinksFieldMixin,
     PostEquipmentFieldsMixin,
@@ -2756,6 +2771,7 @@ class PostSerializer(
             'label',
             'display_title',
             'dish',
+            'dishes',
             'missing_equipment',
             'missing_equipment_label',
             'adapt_recipe_id',
@@ -3003,6 +3019,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
 
 
 class PostListSerializer(
+    DishesFieldMixin,
     GuestsFieldMixin,
     CaptionLinksFieldMixin,
     PostEquipmentFieldsMixin,
@@ -3034,6 +3051,7 @@ class PostListSerializer(
             'label',
             'display_title',
             'dish',
+            'dishes',
             'missing_equipment',
             'missing_equipment_label',
             'adapt_recipe_id',
