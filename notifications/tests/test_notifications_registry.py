@@ -98,10 +98,10 @@ def test_a_mon_tour_renders_single_and_aggregated():
 
 
 def test_post_guest_only_informs_and_offers_to_leave():
-    """Être mis dans un plat ne demande aucune validation : pas de « republier », seulement « te retirer »."""
+    """Un repas publié avec toi ne demande aucune validation : pas de « republier », seulement « te retirer »."""
     spec = get_type('post_guest')
     title, body = spec.render({'actor': 'Tom', 'dish': '« Gnocchis au pesto »'})
-    assert title == 'Tom t’a mis dans son plat'
+    assert title == 'Tom a publié un repas avec toi'
     assert body == '« Gnocchis au pesto », cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer.'
     _, untitled = spec.render({'actor': 'Tom', 'dish': 'ton plat'})
     assert untitled == 'Cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer.'

@@ -110,7 +110,7 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   (`User.plan == 'premium'`, `accounts.entitlements.is_premium`) ; au-delà, formalize → 429
   `ai_quota_exceeded`, « J'ai cuisiné » garde la recette brute (`recipe_job.status = skipped`).
 - Convives directs (lot 3, `recipes/services/dish_guests.py`) : `guest_ids` (« Avec qui » / @Léa) = `MealInvitation`
-  du repas **déjà acceptée** (`source='direct'`), notif `post_guest` (« Tom t’a mis dans son plat » / « « Gnocchis », cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer. » : informe seulement, **aucune validation** demandée, ouvre le post) ;
+  du repas **déjà acceptée** (`source='direct'`), notif `post_guest` (« Tom a publié un repas avec toi » / « « Gnocchis », cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer. » : informe seulement, **aucune validation** demandée, ouvre le post) ;
   `household_guest_ids` = foyer préajouté d'un plat du planning (`meal_plan_id` seulement, compte du foyer accepté) →
   `source='household'`, jamais notifié (hors planning : convive ordinaire). Ajoutables = `guest_candidates` (amis dans
   un sens ou l'autre, foyer, membres acceptés de ses tablées, hors blocages / inactifs) ; un autre id est ignoré,

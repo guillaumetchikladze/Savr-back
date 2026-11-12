@@ -153,7 +153,7 @@ def _render_post_guest(ctx: dict) -> tuple[str, str]:
     dish = ctx.get('dish') or ''
     together = f'{dish}, cuisiné ensemble.' if dish.startswith('«') else 'Cuisiné ensemble.'
     return (
-        f'{ctx.get("actor") or "Quelqu’un"} t’a mis dans son plat',
+        f'{ctx.get("actor") or "Quelqu’un"} a publié un repas avec toi',
         f'{together} Ce n’est pas toi ? Tu peux te retirer.',
     )
 

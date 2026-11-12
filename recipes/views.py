@@ -5269,7 +5269,7 @@ class PostViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='guest-candidates')
     def guest_candidates(self, request):
         """
-        Qui mettre dans son plat (« Avec qui » / @ dans « Pour tes amis », ckd2 lot 3), dans l'ordre :
+        Avec qui publier un repas (« Avec qui » / @ dans « Pour tes amis », ckd2 lot 3), dans l'ordre :
         amis mutuels, foyer, autres amis, membres de ses tablées. Chaque entrée : UserLight +
         `first_name` (prénom, sinon pseudo), `kind` (mutual|household|friend|table), `is_household`.
         """

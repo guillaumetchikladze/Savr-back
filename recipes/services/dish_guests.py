@@ -8,7 +8,7 @@ même modèle que les invitations acceptées d'avant, donc visibilité du post, 
 - Qui peut être ajouté (`guest_candidates`) : amis (suivi approuvé dans un sens ou l'autre ; mutuels
   d'abord), comptes du foyer, membres acceptés de ses tablées ; jamais soi, un compte inactif ou bloqué.
   Un id hors de cette liste est ignoré (le post part quand même).
-- `source` : `direct` (notifié « Tom t'a mis dans son plat ») ; `household` = foyer préajouté parce que
+- `source` : `direct` (notifié « Tom a publié un repas avec toi ») ; `household` = foyer préajouté parce que
   le plat vient du planning partagé (repas existant), **jamais notifié** ; un id du foyer envoyé hors
   planning est traité comme un convive ordinaire.
 - Plat « rien que pour toi » (post non publié) : aucun convive ajouté ni notifié (sinon il verrait le
@@ -67,7 +67,7 @@ _KIND_ORDER = {'mutual': 0, 'household': 1, 'friend': 2, 'table': 3}
 
 def guest_candidates(user) -> list[GuestCandidate]:
     """
-    Personnes qu'on peut mettre dans son plat, dans l'ordre des suggestions du @ :
+    Personnes avec qui on peut publier un repas, dans l'ordre des suggestions du @ :
     amis mutuels, foyer, autres amis, membres de ses tablées (puis prénom). 5 requêtes.
     """
     from accounts.blocks import blocked_user_ids_for
