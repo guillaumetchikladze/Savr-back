@@ -16,8 +16,8 @@ Import au collage (ckd2 lot 2 bis) : `POST /recipes/import-link/` pose la recett
 collé dans « La recette » (privée tant que le plat n'est pas posté, réutilisée si le lien est déjà
 importé) et lance l'import (`JOB_LINK`) ; l'app suit `/recipes/formalize/status/<id>/` et envoie
 `recipe_id` à Valider. `log_cooked` la rend publique (et renvoie l'import en cours en `recipe_job`) ;
-Annuler la rend privée ; ✕ / autre lien → `DELETE /recipes/import-link/<recipe_id>/` la supprime si
-elle n'a jamais été postée.
+Annuler la supprime comme une recette créée par le log (l'app ne garde pas de brouillon après Annuler) ;
+✕ / autre lien → `DELETE /recipes/import-link/<recipe_id>/` la supprime si elle n'a jamais été postée.
 
 Mise en forme et import : ouverts à tous, plafonnés par mois sauf premium (`ai_recipe_quota`).
 Les anciens posts sans recette restent tels quels.
@@ -315,16 +315,3 @@ def publish_link_recipe(recipe: Recipe) -> None:
     """Posté (`log_cooked`) : la recette du collage devient visible comme toute recette de l'app."""
     Recipe.objects.filter(id=recipe.id).update(is_public=True)
     recipe.is_public = True
-
-
-def unpublish_link_recipe(user, recipe_id) -> None:
-    """Annuler : la recette du collage redevient privée (le brouillon peut encore la poster)."""
-    from django.db.models import Exists, OuterRef
-
-    from recipes.models import RecipeBatch
-
-    if not recipe_id:
-        return
-    Recipe.objects.filter(id=recipe_id, created_by=user).exclude(
-        Exists(RecipeBatch.objects.filter(recipe_id=OuterRef('pk')))
-    ).update(is_public=False)

@@ -97,7 +97,7 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   already_imported, recipe{id,title,image_url}[, code]}` (201 créée / 200 réutilisée ; status pending|processing|success|
   skipped). Recette privée « Recette de <domaine> » jusqu'au post, import `cooked_link` sans droit `ai` ; lien déjà
   importé réutilisé (sa propre recette vide réimportée). `log_cooked` avec ce `recipe_id` la rend publique, renvoie l'import
-  en cours en `recipe_job`, ignore le label « Recette de <domaine> » ; Annuler la rend privée ;
+  en cours en `recipe_job`, ignore le label « Recette de <domaine> » ; Annuler la supprime ;
   `DELETE /recipes/import-link/<recipe_id>/` (✕ / autre lien) la supprime si jamais postée (204 toujours).
 - Mise en forme IA (`POST /recipes/formalize/` + les tâches ci-dessus + import au collage) : ouverte à tous, plafond
   `AI_RECIPE_MONTHLY_CAP` (30) par utilisateur et mois calendaire (`ai_recipe_quota`), aucun plafond pour les premium

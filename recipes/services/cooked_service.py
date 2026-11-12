@@ -592,8 +592,6 @@ def undo_cooked(post: Post) -> None:
     `cooked_undo` (repas créé → supprimé ; repas existant → confirmé/recettes/batches restaurés).
     Sans `cooked_undo` (autres flux) : suppression simple du post.
     """
-    from . import cooked_recipe
-
     undo = post.cooked_undo or {}
     meal_plan = post.meal_plan
     user = post.user
@@ -614,7 +612,7 @@ def undo_cooked(post: Post) -> None:
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
             _delete_created_recipe(user, undo.get('created_recipe_id'))
-            cooked_recipe.unpublish_link_recipe(user, undo.get('link_recipe_id'))
+            _delete_created_recipe(user, undo.get('link_recipe_id'))  # recette du collage (lot 2 bis)
             return
 
         added = undo.get('added_recipe_ids') or []
@@ -639,7 +637,7 @@ def undo_cooked(post: Post) -> None:
         meal_plan.custom_label = undo.get('custom_label', meal_plan.custom_label) or ''
         meal_plan.save(update_fields=['confirmed', 'meal_type', 'custom_label', 'updated_at'])
         _delete_created_recipe(user, undo.get('created_recipe_id'))
-        cooked_recipe.unpublish_link_recipe(user, undo.get('link_recipe_id'))
+        _delete_created_recipe(user, undo.get('link_recipe_id'))  # recette du collage (lot 2 bis)
 
 
 def _delete_created_recipe(user, recipe_id) -> None:

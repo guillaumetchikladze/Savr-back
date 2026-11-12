@@ -244,16 +244,21 @@ def test_fallback_import_url_finds_the_pasted_recipe(paste, cooked, user, celery
     assert len(_recipe_tasks(celery_delay)) == 1
 
 
-def test_undo_makes_the_pasted_recipe_private_again_and_it_can_be_posted_later(paste, cooked, api, user):
+def test_undo_removes_the_pasted_recipe_like_a_recipe_created_by_the_log(paste, cooked, api, user, make_recipe):
     data = paste(user).data
     resp = cooked(user, recipe_id=data['recipe_id'])
 
     assert api.as_user(user).delete(f'/api/posts/{resp.data["id"]}/?undo_cooked=true').status_code == 204
 
-    recipe = Recipe.objects.get(id=data['recipe_id'])  # gardée pour le brouillon, mais privée
-    assert not recipe.is_public
-    again = cooked(user, recipe_id=data['recipe_id'], cooked_at='2026-11-09T20:00:00+01:00')
-    assert again.status_code == 201 and Recipe.objects.get(id=data['recipe_id']).is_public
+    assert not Recipe.objects.filter(id=data['recipe_id']).exists()
+    assert not RecipeImportRequest.objects.exists()  # son import s'arrête avec elle
+
+    # Une recette déjà postée, recollée puis repostée, n'est jamais supprimée par Annuler.
+    posted = paste(user, OTHER_LINK).data['recipe_id']
+    cooked(user, recipe_id=posted)
+    again = cooked(user, recipe_id=posted, cooked_at='2026-11-09T20:00:00+01:00')
+    api.as_user(user).delete(f'/api/posts/{again.data["id"]}/?undo_cooked=true')
+    assert Recipe.objects.filter(id=posted, is_public=True).exists()
 
 
 # ---------------------------------------------------------------------------
