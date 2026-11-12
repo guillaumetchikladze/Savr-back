@@ -13,6 +13,11 @@ Deux niveaux :
   commentaires des inconnus (décision densité : miam + « À mon tour » seulement).
 
 Un post invisible renvoie **404** (jamais 403) pour ne pas révéler son existence.
+
+Post non publié (« rien que pour toi », pvo1) : visible de son **seul auteur** pour les actions ciblant
+un post (`own_unpublished=True`, défaut de `get_visible_post_or_404` : détail, miams, mots, …) ; jamais
+pour les autres, même convives (les `held_guests` ne sont convives qu'à la publication) ; jamais dans les
+listes (`visible_posts` sans `own_unpublished` : fil, tablées, plats, carnet d'un autre).
 """
 
 from __future__ import annotations
@@ -32,14 +37,20 @@ def _followed_ids(user) -> QuerySet:
     return Follow.objects.filter(follower_id=user.id).values('following_id')
 
 
-def visible_posts(user, *, level: str = VIEW, queryset: QuerySet | None = None) -> QuerySet:
-    """Posts que `user` peut voir (`VIEW`) ou commenter (`FRIENDS`) ; `queryset` permet de garder ses préchargements."""
+def visible_posts(
+    user, *, level: str = VIEW, queryset: QuerySet | None = None, own_unpublished: bool = False
+) -> QuerySet:
+    """
+    Posts que `user` peut voir (`VIEW`) ou commenter (`FRIENDS`) ; `queryset` permet de garder ses préchargements.
+    `own_unpublished` : ses propres posts non publiés en plus (ouvrir son plat « rien que pour toi »).
+    """
     from accounts.blocks import blocked_user_ids_for
 
     qs = Post.objects.all() if queryset is None else queryset
     if not user or not getattr(user, 'is_authenticated', False):
         return qs.none()
-    qs = qs.filter(is_published=True, user__is_active=True)
+    published = Q(is_published=True) | Q(user_id=user.id) if own_unpublished else Q(is_published=True)
+    qs = qs.filter(published, user__is_active=True)
 
     followed = _followed_ids(user)
     my_reposts = PostRepost.objects.filter(user_id=user.id).values('original_post_id')
@@ -66,9 +77,13 @@ def can_see_post(user, post: Post, *, level: str = VIEW) -> bool:
     return visible_posts(user, level=level).filter(pk=post.pk).exists()
 
 
-def get_visible_post_or_404(user, pk, *, level: str = VIEW, queryset: QuerySet | None = None) -> Post:
-    """Post visible par `user` (sinon `Http404`, même réponse qu'un id inexistant)."""
-    return get_object_or_404(visible_posts(user, level=level, queryset=queryset), pk=pk)
+def get_visible_post_or_404(
+    user, pk, *, level: str = VIEW, queryset: QuerySet | None = None, own_unpublished: bool = True
+) -> Post:
+    """Post visible par `user` (sinon `Http404`, même réponse qu'un id inexistant) ; le sien même non publié."""
+    return get_object_or_404(
+        visible_posts(user, level=level, queryset=queryset, own_unpublished=own_unpublished), pk=pk
+    )
 
 
 def request_blocked_user_ids(request) -> set[int]:

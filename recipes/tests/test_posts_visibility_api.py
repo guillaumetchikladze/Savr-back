@@ -6,6 +6,7 @@ invisible → 404 (jamais 403), commentaires réservés au cercle des amis, écr
 from datetime import date
 
 import pytest
+from django.contrib.auth import get_user_model
 
 from accounts.models import Notification, UserBlock
 from recipes.models import MealInvitation, Post, PostComment, PostCookie, PostReport, PostRepost
@@ -200,3 +201,67 @@ def test_writes_stay_owner_only_whatever_the_query_params(api, author, post, mak
     stranger_post = Post.objects.create(user=make_user('stranger'), label='Secret', is_published=True)
     ids = {p['id'] for p in client.get('/api/posts/', {'is_published': 'true', 'user': 'abc'}).data['results']}
     assert stranger_post.id not in ids and not ids
+
+
+# ---------------------------------------------------------------------------
+# Post « rien que pour toi » (pvo1) : son auteur l'ouvre, personne d'autre
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def private_post(author, make_meal_plan, make_user):
+    mp = make_meal_plan(author, day=date(2026, 11, 3), confirmed=True)
+    held = make_user('held')
+    return Post.objects.create(
+        user=author, meal_plan=mp, label='Soupe secrète', is_published=False, held_guests={'guest_ids': [held.id]}
+    )
+
+
+def test_author_opens_own_private_post_and_its_words_and_miams(api, author, private_post):
+    client = api.as_user(author)
+
+    resp = client.get(_url(private_post))
+    assert resp.status_code == 200, resp.data
+    assert resp.data['id'] == private_post.id and resp.data['is_published'] is False
+    assert client.get(_url(private_post, 'comments/')).status_code == 200
+    comment = client.post(_url(private_post, 'comments/'), {'text': 'Note pour moi'}, format='json')
+    assert comment.status_code == 201
+    assert client.post(_url(private_post, f'comments/{comment.data["id"]}/like/')).status_code == 200
+    assert client.get(_url(private_post, 'cookie-users/')).data['count'] == 0
+    # « Me retirer » : l'auteur n'est pas convive de son plat.
+    assert client.post(_url(private_post, 'leave/')).status_code == 404
+    # Toujours hors des listes (fil) : seulement ouvert par son id.
+    feed = client.get('/api/posts/', {'is_published': 'true'})
+    assert private_post.id not in {p['id'] for p in feed.data['results']}
+    assert not Notification.objects.exists()
+
+
+def test_author_edits_own_private_post_without_sharing_it(api, author, private_post):
+    client = api.as_user(author)
+
+    resp = client.patch(
+        _url(private_post, 'update-content/'), {'comment': 'Un peu trop salé', 'is_public': True}, format='json'
+    )
+
+    assert resp.status_code == 200, resp.data
+    private_post.refresh_from_db()
+    assert private_post.comment == 'Un peu trop salé'
+    # « Qui voit ce plat ? » reste le seul chemin pour le partager.
+    assert private_post.is_published is False and private_post.is_public is False
+    assert client.post(_url(private_post, 'audience/'), {'audience': 'friends'}, format='json').status_code == 200
+    private_post.refresh_from_db()
+    assert private_post.is_published is True
+
+
+def test_private_post_stays_404_for_everyone_else(api, author, private_post, make_user, follow):
+    comment = PostComment.objects.create(post=private_post, user=author, text='Le mien')
+    friend, guest, stranger = make_user('friend'), make_user('guest'), make_user('stranger')
+    follow(friend, author)
+    MealInvitation.objects.create(inviter=author, invitee=guest, meal_plan=private_post.meal_plan, status='accepted')
+    held_guest = get_user_model().objects.get(username='held')  # gardé : pas convive avant la publication
+    Post.objects.filter(pk=private_post.pk).update(is_public=True)  # même « communauté » restée en base
+
+    for viewer in (friend, guest, held_guest, stranger):
+        client = api.as_user(viewer)
+        assert _actions(client, private_post, comment) == ALL_404, viewer.username
+        assert client.post(_url(private_post, 'leave/')).status_code == 404
+        _assert_no_trace(viewer, private_post)
+    assert not Notification.objects.filter(user=author).exists()

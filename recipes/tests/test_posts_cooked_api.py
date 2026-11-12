@@ -4,6 +4,7 @@ from datetime import date, time, timedelta
 from unittest import mock
 
 import pytest
+from django.utils import timezone
 
 from accounts.models import PushDevice, UserBlock
 from notifications.models import NotificationPreference
@@ -254,3 +255,77 @@ def test_meal_time_reminder_push_payload(user, make_meal_plan, make_recipe):
     assert message['data']['kind'] == 'meal_time_photo_reminder' and message['data']['meal_plan_id'] == mp.id
     assert message['data']['title'] == 'Quiche' and message['data']['recipe_ids'] == [recipe.id]
     assert message['data']['action'] == 'cooked_prompt'
+
+
+# ---------------------------------------------------------------------------
+# Ancien batch « pas encore partagé » du carnet → lié au post (pvo1)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def legacy_batch(user, make_recipe):
+    from datetime import UTC, datetime
+
+    batch = RecipeBatch.objects.create(recipe=make_recipe(user, 'Gratin'), created_by=user, is_cooked=True)
+    RecipeBatch.objects.filter(pk=batch.pk).update(created_at=datetime(2026, 3, 4, 19, 30, tzinfo=UTC))
+    batch.refresh_from_db()
+    return batch
+
+
+def _carnet_keys(client):
+    return [e['key'] for e in client.get('/api/carnet/me/').data['results']]
+
+
+def test_sharing_a_legacy_batch_links_it_and_keeps_its_date(api, user, legacy_batch):
+    client = api.as_user(user)
+    assert _carnet_keys(client) == [f'batch-{legacy_batch.id}']
+    batches_before = RecipeBatch.objects.count()
+
+    resp = _cooked(client, recipe_id=legacy_batch.recipe_id, recipe_batch_id=legacy_batch.id, publish=True)
+
+    assert resp.status_code == 201, resp.data
+    post = Post.objects.select_related('meal_plan').get(id=resp.data['id'])
+    assert post.recipe_batch_id == legacy_batch.id
+    assert post.is_published and post.meal_plan.confirmed
+    assert post.meal_plan.date == date(2026, 3, 4)  # la date du carnet, pas aujourd'hui
+    assert list(post.meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True)) == [legacy_batch.id]
+    assert RecipeBatch.objects.count() == batches_before  # pas de batch en double
+    # Le plat n'est plus « pas encore partagé » : une seule entrée, le post, à la même date.
+    entries = client.get('/api/carnet/me/').data['results']
+    assert [(e['key'], e['date']) for e in entries] == [(f'post-{post.id}', '2026-03-04')]
+
+    # Annuler : le post part, l'ancien batch reste (et redevient « pas encore partagé »).
+    assert client.delete(f'/api/posts/{post.id}/?undo_cooked=true').status_code == 204
+    assert RecipeBatch.objects.filter(pk=legacy_batch.pk, is_cooked=True).exists()
+    assert _carnet_keys(client) == [f'batch-{legacy_batch.id}']
+
+
+def test_sharing_a_legacy_batch_on_a_chosen_day_still_links_it(api, user, legacy_batch):
+    client = api.as_user(user)
+
+    resp = _cooked(
+        client, recipe_id=legacy_batch.recipe_id, recipe_batch_id=legacy_batch.id, cooked_at=EVENING, publish=False
+    )
+
+    assert resp.status_code == 201, resp.data
+    post = Post.objects.select_related('meal_plan').get(id=resp.data['id'])
+    assert post.recipe_batch_id == legacy_batch.id and post.meal_plan.date == date(2026, 11, 8)
+    assert _carnet_keys(client) == [f'post-{post.id}']
+
+
+def test_recipe_batch_id_is_ignored_for_another_dish_or_someone_elses_batch(
+    api, user, make_user, make_recipe, legacy_batch
+):
+    client = api.as_user(user)
+    other = make_recipe(user, 'Tarte')
+
+    resp = _cooked(client, recipe_id=other.id, recipe_batch_id=legacy_batch.id, cooked_at=EVENING)
+    assert resp.status_code == 201, resp.data
+    assert Post.objects.get(id=resp.data['id']).recipe_batch_id != legacy_batch.id
+    assert f'batch-{legacy_batch.id}' in _carnet_keys(client)
+
+    lea = make_user('lea')
+    resp = _cooked(api.as_user(lea), recipe_id=legacy_batch.recipe_id, recipe_batch_id=legacy_batch.id)
+    assert resp.status_code == 201, resp.data
+    lea_post = Post.objects.get(id=resp.data['id'])
+    assert lea_post.recipe_batch_id != legacy_batch.id and lea_post.meal_plan.date == timezone.localdate()
+    assert not legacy_batch.meal_plan_recipe_batches.exists()
+    assert f'batch-{legacy_batch.id}' in _carnet_keys(api.as_user(user))

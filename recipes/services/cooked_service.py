@@ -228,6 +228,38 @@ def _resolve_local_datetime(cooked_at) -> datetime:
     return parsed if timezone.is_aware(parsed) else timezone.localtime(aware)
 
 
+def unshared_cooked_batch(user: AbstractBaseUser, batch_id) -> RecipeBatch | None:
+    """
+    Ancien batch cuisiné de `user` resté « pas encore partagé » dans son carnet (même règle que
+    `carnet_service._batch_source`) : dans aucun repas cuisiné, rattaché à aucun de ses posts. Sinon None.
+    """
+    if batch_id is None:
+        return None
+    in_cooked_meal = MealPlanRecipeBatch.objects.filter(recipe_batch_id=OuterRef('pk'), meal_plan__confirmed=True)
+    own_post = Post.objects.filter(user_id=user.id).filter(
+        Q(recipe_batch_id=OuterRef('pk')) | Q(meal_plan__meal_plan_recipe_batches__recipe_batch_id=OuterRef('pk'))
+    )
+    return (
+        RecipeBatch.objects.filter(id=batch_id, created_by_id=user.id, is_cooked=True)
+        .exclude(Exists(in_cooked_meal))
+        .exclude(Exists(own_post))
+        .select_related('recipe')
+        .first()
+    )
+
+
+def _batch_cooked_datetime(user: AbstractBaseUser, batch: RecipeBatch) -> datetime:
+    """Moment du plat d'un ancien batch, tel que le carnet le date (dernier repas, sinon sa création)."""
+    local = timezone.localtime(batch.created_at)
+    last_day = (
+        MealPlanRecipeBatch.objects.filter(recipe_batch_id=batch.id, meal_plan__user_id=user.id)
+        .order_by('-meal_plan__date')
+        .values_list('meal_plan__date', flat=True)
+        .first()
+    )
+    return local.replace(year=last_day.year, month=last_day.month, day=last_day.day) if last_day else local
+
+
 def validate_attachable_photos(user: AbstractBaseUser, photo_ids, extra_allowed: Q | None = None) -> list[PostPhoto]:
     """Photos uploadées par l'utilisateur, non brouillon, pas encore rattachées à un post (ordre conservé)."""
     if photo_ids in (None, ''):
@@ -401,6 +433,7 @@ def log_cooked(
     household_guest_ids=None,
     changes=None,
     dishes=None,
+    recipe_batch_id=None,
 ) -> CookedResult:
     """
     « J'ai cuisiné X » en 1 appel : repas (réutilisé ou créé, confirmé), recette liée et batches
@@ -423,6 +456,12 @@ def log_cooked(
     Menu (ckd2 lot 3c) : `dishes` = [{recipe_id | import_url | recipe_text | label, changes}] ; un seul plat
     revient au corps simple (le `label` du plat sert de nom si `label` est vide) ; deux et plus → `_log_menu` :
     un repas, une recette par plat (dans l'ordre), un post dont `label` est le titre du repas.
+
+    Ancien batch du carnet (pvo1) : `recipe_batch_id` d'un batch cuisiné « pas encore partagé »
+    (`unshared_cooked_batch`), sans repas : ce batch entre dans le repas créé et devient celui du post
+    (pas un nouveau batch), donc il ne réapparaît plus dans le carnet ; sans `cooked_at`, le plat garde
+    la date du batch (celle du carnet). Ignoré si le plat choisi est une autre recette, avec un repas,
+    ou si le batch n'est pas éligible (un autre, déjà partagé…).
     """
     from . import cooked_recipe, dish_guests
 
@@ -484,6 +523,16 @@ def log_cooked(
             recipe = basket_item.recipe
             label = '' if recipe else basket_item.label[:LABEL_MAX_LENGTH]
 
+    # ---- Ancien batch du carnet (pvo1) : lié au post plutôt que doublé ----
+    linked_batch = None
+    bid = _parse_int(recipe_batch_id, 'recipe_batch_id')
+    if bid is not None and meal_plan is None:
+        linked_batch = unshared_cooked_batch(user, bid)
+        if linked_batch is not None and recipe is None and not (label or recipe_text or import_url):
+            recipe = linked_batch.recipe
+        if linked_batch is not None and (recipe is None or recipe.id != linked_batch.recipe_id):
+            linked_batch = None  # un autre plat a été choisi dans la feuille
+
     # ---- Recette du plat (ckd2 lot 2) ----
     recipe_text = '' if recipe else cooked_recipe.clean_recipe_text(recipe_text)
     url = '' if recipe else cooked_recipe.clean_import_url(import_url)
@@ -530,7 +579,10 @@ def log_cooked(
         meal_time = str(meal_time).strip().lower()
         if meal_time not in _ALLOWED_MEAL_TIMES:
             raise CookedError(f'meal_time must be one of: {", ".join(_ALLOWED_MEAL_TIMES)}')
-    local_dt = _resolve_local_datetime(cooked_at)
+    if linked_batch is not None and cooked_at in (None, ''):
+        local_dt = _batch_cooked_datetime(user, linked_batch)  # le plat garde sa date du carnet
+    else:
+        local_dt = _resolve_local_datetime(cooked_at)
     if not meal_time:
         meal_time = infer_meal_time_from_hour(local_dt.hour)
 
@@ -607,7 +659,15 @@ def log_cooked(
 
             if attach_batch_to_meal_plan(basket_item, meal_plan):
                 undo['added_recipe_ids'].append(recipe.id)
-        if recipe:
+        if (
+            linked_batch is not None
+            and not MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan, recipe_batch__recipe=recipe).exists()
+        ):
+            # Ancien batch du carnet : il entre dans le repas (Annuler l'en retire sans le supprimer).
+            _attach_existing_batch(meal_plan, linked_batch)
+            undo['added_recipe_ids'].append(recipe.id)
+            undo['kept_batch_ids'] = [linked_batch.id]
+        elif recipe:
             result = add_recipes_to_meal_plan(user, meal_plan.id, [recipe.id])
             undo['added_recipe_ids'] += list(result.added_recipe_ids)
 
@@ -660,6 +720,17 @@ def log_cooked(
 
         notify_inspiration_cooked(post)
     return CookedResult(post, True, recipe_job)
+
+
+def _attach_existing_batch(meal_plan: MealPlan, batch: RecipeBatch) -> None:
+    last = MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).order_by('-order').values_list('order', flat=True)
+    MealPlanRecipeBatch.objects.create(
+        meal_plan=meal_plan,
+        recipe_batch=batch,
+        portions=None,
+        is_portions_overridden=False,
+        order=(last.first() or 0) + 1,
+    )
 
 
 def _parse_dishes(dishes) -> list[dict]:
@@ -944,12 +1015,13 @@ def undo_cooked(post: Post) -> None:
 
             restore_item_after_undo(undo['basket_item'])
 
+        kept = undo.get('kept_batch_ids') or []  # ancien batch du carnet (pvo1) : jamais supprimé
         if undo.get('meal_plan_created'):
             batch_ids = list(meal_plan.meal_plan_recipe_batches.values_list('recipe_batch_id', flat=True))
             meal_plan.delete()
             RecipeBatch.objects.filter(
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
-            ).delete()
+            ).exclude(id__in=kept).delete()
             _delete_created_recipes(user, undo)
             return
 
@@ -961,7 +1033,7 @@ def undo_cooked(post: Post) -> None:
             # Le batch d'une envie du panier reste (liste de courses) : l'envie redevient « à faire ».
             RecipeBatch.objects.filter(
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
-            ).delete()
+            ).exclude(id__in=kept).delete()
 
         for change in reversed(undo.get('changes') or []):  # « Ce que tu as changé » posé sur une recette prévue
             MealPlanRecipeBatch.objects.filter(id=change.get('mprb_id')).update(changes=change.get('previous') or '')

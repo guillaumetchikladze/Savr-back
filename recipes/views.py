@@ -4860,10 +4860,11 @@ class PostViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # retrieve : règle de visibilité unique (`post_visibility.visible_posts`) : soi, suivi approuvé,
-        # partage communauté (`is_public`) ou co-cuisiné, hors blocages et comptes inactifs.
+        # partage communauté (`is_public`) ou co-cuisiné, hors blocages et comptes inactifs. Son propre
+        # post non publié (« rien que pour toi ») s'ouvre aussi, pour soi seulement (pvo1).
         if self.action == 'retrieve':
             queryset = (
-                Post.objects.filter(is_published=True)
+                Post.objects.all()
                 .select_related('user', 'recipe_batch', 'recipe_batch__recipe', 'meal_plan')
                 .prefetch_related(
                     Prefetch(
@@ -4883,7 +4884,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 )
                 .order_by('-created_at')
             )
-            queryset = visible_posts(self.request.user, queryset=queryset)
+            queryset = visible_posts(self.request.user, queryset=queryset, own_unpublished=True)
             return self._annotate_repost_fields(queryset)
 
         if self.action != 'list':
@@ -5048,6 +5049,8 @@ class PostViewSet(viewsets.ModelViewSet):
         `label` = titre du repas ; un seul plat = corps simple) → `recipe_jobs` [{recipe_id, …recipe_job}].
         Au moins recipe_id, label, meal_plan_id, basket_item_id, recipe_text ou import_url.
         Sans recipe_id, le plat devient toujours une recette (`services/cooked_recipe.py`).
+        recipe_batch_id? (pvo1) : ancien batch « pas encore partagé » du carnet, lié au post (pas doublé) ;
+        sans cooked_at, le plat garde la date du batch.
         Header optionnel `Idempotency-Key`.
         Réponse : post au format feed + `created` (201 créé / 200 existant) + `new_badges`
         (badges débloqués par ce log, cf. GET /badges/me/ ; liste vide sinon) + `recipe_job`
@@ -5089,6 +5092,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 household_guest_ids=data.get('household_guest_ids'),
                 changes=data.get('changes'),
                 dishes=data.get('dishes'),
+                recipe_batch_id=data.get('recipe_batch_id'),
             )
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
@@ -6007,14 +6011,12 @@ class PostViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'], url_path='update-content')
     def update_content(self, request, pk=None):
         """Mettre à jour la légende, la sélection de photos et/ou « Ce que tu as changé »
-        (`changes: [{recipe_batch_id, changes}]`, ckd2 lot 3b) d'un post publié."""
+        (`changes: [{recipe_batch_id, changes}]`, ckd2 lot 3b) de son post, publié ou « rien que pour toi »
+        (pvo1 : `is_public` n'y change rien tant qu'il n'est pas publié, cf. « Qui voit ce plat ? »)."""
         post = self.get_object()
 
         if post.user_id != request.user.id:
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-
-        if not post.is_published:
-            return Response({'error': 'Post is not published'}, status=status.HTTP_400_BAD_REQUEST)
 
         changes = request.data.get('changes')
         if changes is not None:
@@ -6027,7 +6029,7 @@ class PostViewSet(viewsets.ModelViewSet):
         if 'comment' in request.data:
             post.comment = str(request.data.get('comment') or '').strip()
             update_fields.extend(['comment', 'updated_at'])
-        if 'is_public' in request.data:  # partage avec la communauté (Suggestions du feed)
+        if 'is_public' in request.data and post.is_published:  # partage avec la communauté (Suggestions du feed)
             post.is_public = _truthy(request.data.get('is_public'))
             update_fields.extend(['is_public', 'updated_at'])
 
@@ -6152,7 +6154,9 @@ class PostViewSet(viewsets.ModelViewSet):
 
         post = (
             visible_posts(
-                request.user, queryset=Post.objects.select_related('user', 'recipe_batch__recipe', 'meal_plan')
+                request.user,
+                queryset=Post.objects.select_related('user', 'recipe_batch__recipe', 'meal_plan'),
+                own_unpublished=True,
             )
             .filter(pk=pk)
             .first()

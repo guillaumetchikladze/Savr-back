@@ -303,6 +303,8 @@ Aucun modèle ni migration.
 
 - Une entrée = un post de l'utilisateur (`post`), un repas cuisiné (`MealPlan.confirmed`) sans post (`meal`) ou un
   ancien batch `is_cooked` sans repas cuisiné ni post (`batch`). Date = date du repas (sinon jour de création).
+  Partager un `batch` (« pas encore partagé ») : `POST /posts/cooked/` avec `recipe_batch_id` (pvo1) → ce batch
+  entre dans le repas créé et devient celui du post (plus listé en `batch`) ; sans `cooked_at`, sa date est gardée.
   Champs : `key`, `kind`, `date`, `meal_time(_display)`, `title`, `dish_key`, `recipe {id, title, image_url}|null`,
   `post_id|null`, `thumbnail {url, width, height}|null` (1re photo, pas de miniature), `photos_count`, `note`,
   `first_time` (instantané de l'ardoise seulement, jamais calculé ici), `is_private` ; soi seulement : `batch_id`,
@@ -369,7 +371,10 @@ Contrat front : `.claude-work/specs/density.md`. Pas d'import de contacts, pas d
   co-cuisiné, `is_public`, ou reposté par un compte suivi ; `FRIENDS` (commentaires : liste, création, likes)
   = idem sans `is_public` ni repost d'ami. Toujours : publié, auteur actif, aucun blocage dans un sens ou l'autre
   (commentaires, miams et co-cuisiniers des comptes bloqués masqués). Écritures (`update`, `destroy`, `publish`,
-  `update-content`, photos) : auteur seulement, quels que soient les paramètres. Tests :
+  `update-content`, photos) : auteur seulement, quels que soient les paramètres. Post « rien que pour toi »
+  (non publié, pvo1) : son **auteur seul** l'ouvre par son id (détail, mots, miams, `update-content` sans
+  `is_public`) ; 404 pour tous les autres, convives compris (`held_guests` ≠ convives avant publication) ;
+  jamais dans les listes (`visible_posts(own_unpublished=False)` par défaut). Tests :
   `recipes/tests/test_posts_visibility_api.py`.
 - Feed réutilisable : `PostViewSet.feed_list_queryset(request, qs)` (préchargements + annotations, pas de N+1).
   État du viewer (relations de suivi auteurs / co-cuisiniers, invitations → `can_repost`, reposts) chargé en lot
