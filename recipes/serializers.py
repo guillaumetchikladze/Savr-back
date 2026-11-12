@@ -365,6 +365,7 @@ class RecipeDetailSerializer(RecipeEquipmentFieldsMixin, serializers.ModelSerial
     # « Ta cuisine » (equipment_service) : requis, ce qui manque au viewer, version adaptée.
     required_equipment = serializers.SerializerMethodField()
     adapted_from = serializers.SerializerMethodField()
+    adaptation_kind = serializers.SerializerMethodField()
     adapted_for_equipment = serializers.SerializerMethodField()
     my_adaptation = serializers.SerializerMethodField()
     # Ne pas inclure steps et recipe_ingredients ici - chargés via endpoints séparés
@@ -404,6 +405,7 @@ class RecipeDetailSerializer(RecipeEquipmentFieldsMixin, serializers.ModelSerial
             'missing_equipment_label',
             'can_adapt_equipment',
             'adapted_from',
+            'adaptation_kind',
             'adapted_for_equipment',
             'my_adaptation',
         ]
@@ -420,8 +422,12 @@ class RecipeDetailSerializer(RecipeEquipmentFieldsMixin, serializers.ModelSerial
         original = obj.adapted_from
         return {'id': original.id, 'title': original.title} if original is not None else None
 
+    def get_adaptation_kind(self, obj):
+        """`equipment` (« Adapter pour chez moi ») ou `post_version` (« Refaire sa version ») ; null sans original."""
+        return (obj.adaptation_kind or Recipe.ADAPTATION_EQUIPMENT) if obj.adapted_from_id else None
+
     def get_adapted_for_equipment(self, obj):
-        if not obj.adapted_from_id:
+        if not obj.adapted_from_id or obj.adaptation_kind == Recipe.ADAPTATION_POST_VERSION:
             return None
         from .services.equipment_catalog import items_payload
 

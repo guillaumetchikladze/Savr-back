@@ -212,6 +212,7 @@ def _create_copy(recipe: Recipe, user, kitchen: catalog.Kitchen, adapted: dict) 
         search_index_status=recipe.search_index_status,
         adapted_from=recipe,
         adapted_for_equipment=catalog.sort_keys(kitchen.keys),
+        adaptation_kind=Recipe.ADAPTATION_EQUIPMENT,
         adaptation_signature=kitchen.signature,
     )
     for line in recipe.recipe_ingredients.order_by('id'):
@@ -254,7 +255,10 @@ def existing_adaptation(recipe_id: int, user, kitchen: catalog.Kitchen | None) -
     if kitchen is None:
         return None
     return Recipe.objects.filter(
-        adapted_from_id=recipe_id, created_by=user, adaptation_signature=kitchen.signature
+        adapted_from_id=recipe_id,
+        created_by=user,
+        adaptation_kind=Recipe.ADAPTATION_EQUIPMENT,
+        adaptation_signature=kitchen.signature,
     ).first()
 
 

@@ -530,6 +530,16 @@ Onboarding « Ta cuisine », badge « Il te manque : un four », « Adapter pour
   une adaptation existante est renvoyée sans LLM ni limite.
   `EQUIPMENT_ADAPT_ENABLED` (défaut True). Agent v2 : contexte « Cuisine… / Tu n'as pas : un four », règle du prompt, tool
   `adapt_recipe_equipment` (carte `recipe_adaptation`).
+- « Refaire sa version » (`recipes/services/post_version.py`, ckd2 lot 3b / fx07) : `POST /api/posts/<id>/redo-version/`
+  (`{recipe_batch_id?}`, défaut : 1er plat changé) depuis un post « D'après Léa · Sa version : … » → MA copie publique de la
+  recette d'origine, même mécanisme (`adapted_from`, contrainte unique) avec `adaptation_kind = post_version` (migration
+  recipes 0089 ; `equipment` pour « Adapter pour chez moi ») et signature = empreinte du texte des changements (`pv…`).
+  IA à la demande : `revise_recipe` borné par `POST_VERSION_LLM_TIMEOUT_SECONDS` (20 s), compte dans le plafond mensuel
+  (`RecipeImportRequest` `job_type: post_version` + `quota`, premium exempté) ; plafond / erreur / révision vide → copie
+  simple. Note « D'après la version de Tom : … » en tête de la description dans tous les cas. Réponse `{created,
+  ai_applied (null si existante), original_recipe_id, recipe}` 201 / 200 ; 404 `not_found` (post invisible, son propre post
+  « rien que pour toi » compris pour soi), 400 `no_changes` / `invalid_dish`. Tests : `test_posts_redo_version_api.py`
+  (mock `post_version._revise_with_ai`).
 - Tests : `recipes/tests/test_recipe_equipment_api.py` (mock LLM : `equipment_adaptation._call_llm`),
   `recipes/tests/test_posts_feed_queries_api.py`, `chat/tests/test_chat_equipment.py`.
 

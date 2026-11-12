@@ -363,13 +363,27 @@ class Recipe(models.Model):
         null=True,
         blank=True,
         related_name='equipment_adaptations',
-        help_text='« Adapter pour chez moi » : recette d’origine de cette copie privée.',
+        help_text='« Adapter pour chez moi » / « Refaire sa version » : recette d’origine de cette copie.',
     )
     adapted_for_equipment = models.JSONField(
         null=True, blank=True, help_text='Équipements de la cuisine pour laquelle la copie a été adaptée.'
     )
     adaptation_signature = models.CharField(
         max_length=32, blank=True, default='', help_text='Empreinte des équipements (idempotence par recette + user).'
+    )
+    ADAPTATION_EQUIPMENT = 'equipment'
+    ADAPTATION_POST_VERSION = 'post_version'
+    ADAPTATION_KIND_CHOICES = [
+        (ADAPTATION_EQUIPMENT, 'Adaptée pour ma cuisine'),
+        (ADAPTATION_POST_VERSION, 'Version refaite d’après un post'),
+    ]
+    adaptation_kind = models.CharField(
+        max_length=20,
+        choices=ADAPTATION_KIND_CHOICES,
+        default=ADAPTATION_EQUIPMENT,
+        blank=True,
+        help_text='Copie liée (`adapted_from`) : « Adapter pour chez moi » (équipement) ou « Refaire sa version » '
+        '(version d’un post, signature = empreinte du texte « Ce que tu as changé »).',
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

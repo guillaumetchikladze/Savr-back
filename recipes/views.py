@@ -5950,6 +5950,29 @@ class PostViewSet(viewsets.ModelViewSet):
             complete_recipe_batch_workflow(user, post.recipe_batch)
             confirm_meal_plan_for_cooked_batch(user, post.recipe_batch)
 
+    @action(detail=True, methods=['post'], url_path='redo-version')
+    def redo_version(self, request, pk=None):
+        """
+        « Refaire sa version » (ckd2 lot 3b, fx07) : depuis un post « D'après Léa · Sa version : … », crée MA
+        recette, copie publique de la recette d'origine (`adapted_from`, `adaptation_kind: post_version`) avec
+        les changements appliqués par l'IA (plafond mensuel ; au-delà, IA en erreur → copie simple, changements
+        en note). Idempotent : retaper renvoie la même copie (200, `created: false`, sans IA).
+
+        Corps : ``{"recipe_batch_id"?: int}`` (le plat d'un menu ; défaut : le premier plat changé).
+        Réponse : ``{created, ai_applied, original_recipe_id, recipe}`` — 201 créée, 200 existante.
+        Erreurs : 404 ``not_found`` (post invisible), 400 ``no_changes`` / ``invalid_dish``.
+        """
+        from .services.post_version import PostVersionError, post_version_payload, redo_post_version
+
+        try:
+            copy, created, ai_applied = redo_post_version(request.user, pk, request.data.get('recipe_batch_id'))
+        except PostVersionError as exc:
+            return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
+        return Response(
+            post_version_payload(copy, created, ai_applied, {'request': request}),
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=['post'], url_path='audience')
     def audience(self, request, pk=None):
         """
