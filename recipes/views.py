@@ -1794,12 +1794,13 @@ class RecipeViewSet(viewsets.ModelViewSet):
         """
         import logging
 
-        from accounts.entitlements import feature_locked_payload, user_has_feature
+        from .services import ai_recipe_quota
 
         logger = logging.getLogger(__name__)
 
-        if not user_has_feature(request.user, 'ai'):
-            return Response(feature_locked_payload('ai'), status=status.HTTP_403_FORBIDDEN)
+        # Ouvert à tous (ckd2 lot 2) : plus de droit `ai`, plafond mensuel par utilisateur.
+        if not ai_recipe_quota.has_quota(request.user):
+            return Response(ai_recipe_quota.quota_exceeded_payload(), status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         process_start = perf_counter()
         logger.info(
@@ -1822,7 +1823,7 @@ class RecipeViewSet(viewsets.ModelViewSet):
         try:
             import_request = RecipeImportRequest.objects.create(
                 user=request.user,
-                payload=data,
+                payload={**data, 'quota': ai_recipe_quota.QUOTA_KEY},
                 status=RecipeImportRequest.STATUS_PENDING,
             )
             if not publish(process_recipe_import, args=[str(import_request.id)]):
@@ -5002,10 +5003,14 @@ class PostViewSet(viewsets.ModelViewSet):
 
         Body : recipe_id?, label?, meal_plan_id?, basket_item_id? (envie du panier « Cette semaine »),
         cooked_at? (ISO, défaut maintenant), meal_time?, comment?, photo_ids?, cooking_time_minutes?,
-        publish (défaut true). Au moins recipe_id, label, meal_plan_id ou basket_item_id.
+        publish (défaut true), recipe_text? (« Ta recette » écrite, 5000 car.), import_url? (lien collé).
+        Au moins recipe_id, label, meal_plan_id, basket_item_id, recipe_text ou import_url.
+        Sans recipe_id, le plat devient toujours une recette (`services/cooked_recipe.py`).
         Header optionnel `Idempotency-Key`.
         Réponse : post au format feed + `created` (201 créé / 200 existant) + `new_badges`
-        (badges débloqués par ce log, cf. GET /badges/me/ ; liste vide sinon).
+        (badges débloqués par ce log, cf. GET /badges/me/ ; liste vide sinon) + `recipe_job`
+        (null, ou {request_id, kind: format|import, status} à suivre par GET /recipes/formalize/status/<id>/ ;
+        status `skipped` + code `ai_quota_exceeded` au-delà du plafond mensuel : recette gardée telle quelle).
         """
         from django.core.cache import cache
 
@@ -5036,6 +5041,8 @@ class PostViewSet(viewsets.ModelViewSet):
                 cooking_time_minutes=data.get('cooking_time_minutes'),
                 publish=bool(publish),
                 basket_item_id=data.get('basket_item_id'),
+                recipe_text=data.get('recipe_text'),
+                import_url=data.get('import_url'),
             )
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
@@ -5055,6 +5062,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 **self._cooked_post_payload(request, result.post.id),
                 'created': result.created,
                 'new_badges': new_badges,
+                'recipe_job': result.recipe_job,
             },
             status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK,
         )

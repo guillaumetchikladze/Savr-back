@@ -279,6 +279,9 @@ AUTH_USER_MODEL = 'accounts.User'
 
 # Paywall / entitlements — when True, AI features require plan=premium
 AI_PAYWALL_ENABLED = config('AI_PAYWALL_ENABLED', default=False, cast=bool)
+# Mise en forme IA d'une recette (POST /recipes/formalize/, « Ta recette » écrite et lien collé de
+# « J'ai cuisiné ») : ouverte à tous, plafonnée par utilisateur et par mois calendaire (0 = sans plafond).
+AI_RECIPE_MONTHLY_CAP = config('AI_RECIPE_MONTHLY_CAP', default=30, cast=int)
 
 # Modèle du chat agent (endpoint OpenAI-compatible Gemini). Dédié : `AI_MODEL` pilote le pipeline
 # recettes (formalisation, génération) et peut pointer vers un modèle dont le tool calling multi-tour

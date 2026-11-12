@@ -383,3 +383,132 @@ def fill_post_photo_dimensions(photo_ids: list[int]):
     filled = sum(1 for photo in photos if fill_photo_dimensions(photo))
     logger.info('[photo_dimensions] %d/%d photos dimensionnées', filled, len(photo_ids))
     return filled
+
+
+# ---------------------------------------------------------------------------
+# « J'ai cuisiné » : recette posée tout de suite, complétée ici (ckd2 lot 2, services/cooked_recipe.py)
+# ---------------------------------------------------------------------------
+COOKED_TEXT_FAILED = 'On n’a pas pu mettre ta recette en forme : elle reste telle que tu l’as écrite.'
+COOKED_IMPORT_FAILED = 'On n’a pas pu récupérer la recette de ce lien : le lien reste sur ta recette.'
+
+
+def _set_cooked_job(request_id: str, status: str, error_message: str = '') -> None:
+    """Mise à jour sans `save()` : la demande a pu partir avec sa recette (Annuler) pendant la tâche."""
+    from django.utils import timezone
+
+    RecipeImportRequest.objects.filter(id=request_id).update(
+        status=status, error_message=error_message, updated_at=timezone.now()
+    )
+
+
+def _start_cooked_job(request_id: str, tag: str):
+    """(demande, recette cible) à traiter, ou (None, None) si rien à faire."""
+    from .models import Recipe
+
+    import_request = RecipeImportRequest.objects.select_related('user').filter(id=request_id).first()
+    if import_request is None:
+        logger.info('%s Request %s gone (post annulé ?)', tag, request_id)
+        return None, None
+    if import_request.status not in (RecipeImportRequest.STATUS_PENDING, RecipeImportRequest.STATUS_PROCESSING):
+        logger.info('%s Request %s already processed (%s)', tag, request_id, import_request.status)
+        return None, None
+    recipe = Recipe.objects.filter(id=(import_request.payload or {}).get('target_recipe_id')).first()
+    if recipe is None:
+        _set_cooked_job(request_id, RecipeImportRequest.STATUS_ERROR, 'Recette supprimée')
+        return None, None
+    _set_cooked_job(request_id, RecipeImportRequest.STATUS_PROCESSING)
+    return import_request, recipe
+
+
+def _has_content(formalized) -> bool:
+    return bool(getattr(formalized, 'steps', None) or getattr(formalized, 'recipe_ingredients', None))
+
+
+@shared_task(bind=True)
+def process_cooked_recipe_text(self, request_id: str):
+    """« Ta recette » écrite : mise en forme IA de la recette posée par « J'ai cuisiné ».
+
+    Échec (pas de clé, modèle en erreur, réponse vide) : le texte brut reste l'unique étape.
+    Le titre n'est remplacé que si l'utilisateur n'a pas nommé le plat (`keep_title`).
+    """
+    tag = '[CookedRecipeText]'
+    import_request, recipe = _start_cooked_job(request_id, tag)
+    if import_request is None:
+        return
+    payload = import_request.payload or {}
+    keep_title = bool(payload.get('keep_title'))
+    try:
+        formalized = asyncio.run(
+            formalize_recipe(
+                recipe.title if keep_title else '',
+                '',
+                '',
+                '',
+                raw_text=payload.get('raw_text') or '',
+            )
+        )
+        if not _has_content(formalized):
+            raise ValueError('empty formalized recipe')
+        create_recipe_from_formalized(
+            formalized, {'source_type': 'user_created'}, import_request.user, target=recipe, keep_title=keep_title
+        )
+    except Exception as exc:
+        logger.warning('%s Request %s failed, raw text kept: %s', tag, request_id, exc)
+        _set_cooked_job(request_id, RecipeImportRequest.STATUS_ERROR, COOKED_TEXT_FAILED)
+        return
+    _set_cooked_job(request_id, RecipeImportRequest.STATUS_SUCCESS)
+    logger.info('%s Request %s done - recipe_id=%s', tag, request_id, recipe.id)
+
+
+@shared_task(bind=True)
+def process_cooked_recipe_import(self, request_id: str):
+    """Lien collé dans « J'ai cuisiné » : import (extraction + mise en forme IA) dans la recette posée.
+
+    Ne demande pas le droit `ai` (plafond mensuel vérifié à la création). Échec : la recette garde son
+    nom (« Recette de marmiton.org » ou celui de l'utilisateur) et le lien.
+    """
+    tag = '[CookedRecipeImport]'
+    import_request, recipe = _start_cooked_job(request_id, tag)
+    if import_request is None:
+        return
+    payload = import_request.payload or {}
+    url = payload.get('url') or ''
+    keep_title = bool(payload.get('keep_title'))
+    try:
+        raw, _used_source = import_recipe_from_url(url)
+        if not raw:
+            raise ValueError('nothing extracted')
+        suspicious, reason = is_ingredients_suspicious(raw.get('ingredients_text', ''))
+        if suspicious:
+            raise ValueError(f'suspicious ingredients: {reason}')
+        formalized = asyncio.run(
+            formalize_recipe(
+                raw['title'],
+                raw.get('description', ''),
+                raw['ingredients_text'],
+                raw['instructions_text'],
+                raw.get('servings'),
+                raw.get('prep_time'),
+                raw.get('cook_time'),
+            )
+        )
+        if not _has_content(formalized):
+            raise ValueError('empty formalized recipe')
+        recipe = create_recipe_from_formalized(
+            formalized, {'source_type': 'imported'}, import_request.user, target=recipe, keep_title=keep_title
+        )
+    except Exception as exc:  # InstagramImportError compris
+        logger.warning('%s Request %s failed, default recipe kept: %s', tag, request_id, exc)
+        _set_cooked_job(request_id, RecipeImportRequest.STATUS_ERROR, COOKED_IMPORT_FAILED)
+        return
+
+    image_url = raw.get('image_path') or ''
+    if image_url.startswith('http'):
+        try:
+            s3_path = download_and_upload_image(image_url, import_request.user.id, recipe.id)
+            if s3_path:
+                type(recipe).objects.filter(id=recipe.id).update(image_path=s3_path)
+        except Exception as exc:  # l'image ne fait jamais échouer l'import
+            logger.warning('%s Request %s image upload failed: %s', tag, request_id, exc)
+    _set_cooked_job(request_id, RecipeImportRequest.STATUS_SUCCESS)
+    logger.info('%s Request %s done - recipe_id=%s', tag, request_id, recipe.id)

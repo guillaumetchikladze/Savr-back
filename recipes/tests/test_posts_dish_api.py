@@ -226,7 +226,8 @@ def test_feed_and_cooked_response_carry_dish_without_extra_queries(user, make_us
     keys = [p['dish']['key'] for p in results]
     assert keys.count('l-pate-au-pesto') == 3 and sum(k.startswith('r-') for k in keys) == 3
 
+    # ckd2 lot 2 : un plat nommé devient toujours une recette (clé r-), les anciens posts gardent leur clé l-.
     resp = client.post('/api/posts/cooked/', {'label': 'Pâtes au pesto'}, format='json')
-    assert resp.status_code == 201 and resp.json()['dish']['key'] == 'l-pate-au-pesto'
+    assert resp.status_code == 201 and resp.json()['dish']['key'] == f'r-{resp.json()["recipe"]["id"]}'
     preview = client.post('/api/posts/cooked/preview/', {'label': 'pâte au pesto'}, format='json').json()
     assert preview['dish']['key'] == 'l-pate-au-pesto'

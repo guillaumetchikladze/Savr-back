@@ -189,6 +189,8 @@ class CookedError(Exception):
 class CookedResult:
     post: Post
     created: bool
+    # Mise en forme / import de la recette en arrière-plan (ckd2 lot 2) : {request_id, kind, status[, code]}.
+    recipe_job: dict | None = None
 
 
 def _parse_int(value, field: str) -> int | None:
@@ -360,12 +362,20 @@ def log_cooked(
     cooking_time_minutes=None,
     publish: bool = True,
     basket_item_id=None,
+    recipe_text: str | None = None,
+    import_url: str | None = None,
 ) -> CookedResult:
     """
     « J'ai cuisiné X » en 1 appel : repas (réutilisé ou créé, confirmé), recette liée et batches
     cuisinés, Post (publié si `publish`). Idempotent par repas et par (jour, plat).
     Valide tout avant d'écrire ; les écritures sont atomiques.
+
+    Toujours une recette (ckd2 lot 2, `cooked_recipe`) : sans `recipe_id`, le plat devient une recette
+    (sa propre recette du même nom, une recette déjà importée depuis `import_url`, sinon une nouvelle
+    recette au nom du plat) ; `recipe_text` / `import_url` la complètent en arrière-plan.
     """
+    from . import cooked_recipe
+
     # ---- Validation (aucune écriture) ----
     label = (label or '').strip()[:LABEL_MAX_LENGTH]
     comment = (comment or '').strip()
@@ -398,8 +408,35 @@ def log_cooked(
             recipe = basket_item.recipe
             label = '' if recipe else basket_item.label[:LABEL_MAX_LENGTH]
 
-    if not (recipe or label or meal_plan):
+    # ---- Recette du plat (ckd2 lot 2) ----
+    recipe_text = '' if recipe else cooked_recipe.clean_recipe_text(recipe_text)
+    url = '' if recipe else cooked_recipe.clean_import_url(import_url)
+    if url is None:
+        raise CookedError('import_url must be a valid http(s) URL', 400, 'invalid_import_url')
+    host = cooked_recipe.link_host(url) if url else ''
+    if url:
+        recipe_text = ''  # le lien prime : une seule recette par plat
+        if cooked_recipe.is_default_link_label(label, host):
+            label = ''  # « Recette de marmiton.org » posé par l'app : pas un nom choisi
+        recipe = cooked_recipe.find_imported_recipe(user, url)  # déjà importée : liée tout de suite
+        if recipe:
+            url = ''
+
+    if not (recipe or label or meal_plan or recipe_text or url):
         raise CookedError('recipe_id, label or meal_plan_id is required', 400, 'missing_dish')
+
+    new_recipe = None  # (titre, plan, nom choisi ?) de la recette à créer dans la transaction
+    meal_has_recipes = bool(meal_plan) and MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).exists()
+    if recipe is None and not meal_has_recipes:
+        dish_name = label or (meal_plan.custom_label.strip() if meal_plan else '')
+        plan = cooked_recipe.CookedRecipePlan(recipe_text=recipe_text, import_url=url, host=host)
+        if not (recipe_text or url):
+            recipe = cooked_recipe.find_own_recipe_named(user, dish_name)  # un plat refait = même recette
+        if recipe is None and (dish_name or recipe_text or url):
+            title = dish_name or (
+                cooked_recipe.default_link_title(host) if url else cooked_recipe.WRITTEN_RECIPE_DEFAULT_TITLE
+            )
+            new_recipe = (title, plan, bool(dish_name))
 
     if meal_time not in (None, ''):
         meal_time = str(meal_time).strip().lower()
@@ -427,7 +464,7 @@ def log_cooked(
         if existing:
             _link_basket_item_to_existing(basket_item, existing)
             return CookedResult(_publish_if_requested(existing, publish), False)
-        has_dish = bool(recipe or label or meal_plan.custom_label.strip())
+        has_dish = bool(recipe or label or new_recipe or meal_plan.custom_label.strip())
         if not has_dish and not MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).exists():
             raise CookedError('label or recipe_id is required for an empty meal', 400, 'missing_dish')
     else:
@@ -437,7 +474,13 @@ def log_cooked(
             return CookedResult(_publish_if_requested(existing, publish), False)
 
     # ---- Écritures ----
+    recipe_job = None
+    created_recipe = None
     with transaction.atomic():
+        if new_recipe is not None:
+            title, plan, named = new_recipe
+            recipe = created_recipe = cooked_recipe.create_cooked_recipe(user, title=title, plan=plan)
+            recipe_job = cooked_recipe.enqueue_cooked_recipe_job(user, recipe, plan=plan, keep_title=named)
         if meal_plan:
             meal_plan_created = False
         else:
@@ -452,6 +495,8 @@ def log_cooked(
             'added_recipe_ids': [],
             'uncooked_batch_ids': [],
         }
+        if created_recipe is not None:
+            undo['created_recipe_id'] = created_recipe.id
 
         if recipe and basket_item and basket_item.recipe_id == recipe.id:
             # Envie du panier : sa recette entre dans le repas avec son batch (liste de courses conservée).
@@ -504,7 +549,7 @@ def log_cooked(
         from recipes.services.basket_service import notify_inspiration_cooked
 
         notify_inspiration_cooked(post)
-    return CookedResult(post, True)
+    return CookedResult(post, True, recipe_job)
 
 
 def _basket_item_or_error(user, basket_item_id, **match):
@@ -554,6 +599,7 @@ def undo_cooked(post: Post) -> None:
             RecipeBatch.objects.filter(
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
+            _delete_created_recipe(user, undo.get('created_recipe_id'))
             return
 
         added = undo.get('added_recipe_ids') or []
@@ -577,3 +623,14 @@ def undo_cooked(post: Post) -> None:
         meal_plan.meal_type = undo.get('meal_type') or meal_plan.meal_type
         meal_plan.custom_label = undo.get('custom_label', meal_plan.custom_label) or ''
         meal_plan.save(update_fields=['confirmed', 'meal_type', 'custom_label', 'updated_at'])
+        _delete_created_recipe(user, undo.get('created_recipe_id'))
+
+
+def _delete_created_recipe(user, recipe_id) -> None:
+    """Recette posée par ce log (ckd2 lot 2) : supprimée à l'annulation si plus rien ne l'utilise
+    (sa mise en forme / son import en cours s'arrête : la demande part avec elle)."""
+    if not recipe_id:
+        return
+    Recipe.objects.filter(id=recipe_id, created_by=user).exclude(
+        Exists(RecipeBatch.objects.filter(recipe_id=OuterRef('pk')))
+    ).delete()

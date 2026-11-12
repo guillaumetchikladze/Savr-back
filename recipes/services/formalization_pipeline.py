@@ -44,10 +44,14 @@ def persistable_recipe_image_path(path: Any) -> str:
     return value
 
 
-def create_recipe_from_formalized(formalized_recipe, data: dict[str, Any], user):
+def create_recipe_from_formalized(formalized_recipe, data: dict[str, Any], user, *, target=None, keep_title=False):
     """
     Reprend l'ancienne logique synchronisée pour créer la recette
     à partir du résultat formalisé.
+
+    `target` : recette existante à remplir au lieu d'en créer une (recette posée tout de suite par
+    « J'ai cuisiné », ckd2 lot 2) ; ses ingrédients et étapes sont remplacés, son titre gardé si
+    `keep_title` (nom donné par l'utilisateur), sa visibilité et son auteur inchangés.
     """
     inconsistencies = verify_quantity_consistency(formalized_recipe)
     if inconsistencies:
@@ -81,22 +85,34 @@ def create_recipe_from_formalized(formalized_recipe, data: dict[str, Any], user)
             created_count,
         )
 
-        recipe = Recipe.objects.create(
-            title=formalized_recipe.title,
-            description=formalized_recipe.description or '',
-            steps_summary=formalized_recipe.steps_summary,
-            meal_type=formalized_recipe.meal_type,
-            difficulty=formalized_recipe.difficulty,
-            prep_time=formalized_recipe.prep_time,
-            cook_time=formalized_recipe.cook_time,
-            servings=formalized_recipe.servings,
-            image_path=persistable_recipe_image_path(data.get('image_path')),
-            created_by=user,
-            is_public=True,
-            source_type=data.get('source_type', 'user_created'),
-            import_source_url=data.get('import_source_url') or None,
-            search_index_status=Recipe.SearchIndexStatus.PENDING,
-        )
+        fields = {
+            'title': formalized_recipe.title,
+            'description': formalized_recipe.description or '',
+            'steps_summary': formalized_recipe.steps_summary,
+            'meal_type': formalized_recipe.meal_type,
+            'difficulty': formalized_recipe.difficulty,
+            'prep_time': formalized_recipe.prep_time,
+            'cook_time': formalized_recipe.cook_time,
+            'servings': formalized_recipe.servings,
+            'image_path': persistable_recipe_image_path(data.get('image_path')),
+            'source_type': data.get('source_type', 'user_created'),
+            'import_source_url': data.get('import_source_url') or None,
+            'search_index_status': Recipe.SearchIndexStatus.PENDING,
+        }
+        if target is None:
+            recipe = Recipe.objects.create(**fields, created_by=user, is_public=True)
+        else:
+            recipe = target
+            if keep_title or not fields['title']:
+                fields.pop('title')
+            for key in ('image_path', 'import_source_url'):
+                if not fields[key]:
+                    fields.pop(key)  # on ne vide jamais ce que la recette avait déjà
+            for key, value in fields.items():
+                setattr(recipe, key, value)
+            recipe.save(force_update=True)  # recette supprimée entre-temps (Annuler) : erreur, jamais recréée
+            RecipeIngredient.objects.filter(recipe=recipe).delete()
+            Step.objects.filter(recipe=recipe).delete()
 
         # Utiliser un set pour éviter les doublons d'ingrédients
         added_ingredients = set()

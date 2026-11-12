@@ -88,6 +88,14 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   fin du mode cuisine (`complete_cooking`, `cooking-progress/{id}/complete/`), `POST /meal-plans/{id}/confirm/`.
   `unmark_cooking` et `DELETE /posts/{id}/?undo_cooked=true` défont la trace.
 - Ne jamais copier `confirmed` lors d'une duplication de repas (planifier ≠ cuisiner).
+- Poster crée toujours une recette (ckd2 lot 2, `recipes/services/cooked_recipe.py`) : sans `recipe_id`, sa propre
+  recette du même nom, sinon une recette au nom du plat ; `recipe_text` → texte brut en 1 étape puis mise en forme IA
+  (`process_cooked_recipe_text`) ; `import_url` → recette déjà importée réutilisée, sinon « Recette de <domaine> »
+  (ou le nom donné) gardant le lien, puis import (`process_cooked_recipe_import`, sans droit `ai`), renommée seulement
+  sans nom choisi. Réponse : `recipe_job` (suivi par `GET /recipes/formalize/status/<id>/`). Annuler supprime la recette créée.
+- Mise en forme IA (`POST /recipes/formalize/` + les deux tâches ci-dessus) : ouverte à tous, plafond
+  `AI_RECIPE_MONTHLY_CAP` (30) par utilisateur et mois calendaire (`ai_recipe_quota`) ; au-delà, formalize → 429
+  `ai_quota_exceeded`, « J'ai cuisiné » garde la recette brute (`recipe_job.status = skipped`).
 
 ## Stats, badges et Récap (app `stats`)
 
