@@ -4,7 +4,8 @@
 Stocké dans le contexte du serializer (`context[CONTEXT_KEY]`) :
 - relations de suivi viewer ↔ auteurs et co-cuisiniers (`follow_service.get_follow_relations`) ;
 - repas où le viewer est invité (invitation en attente ou acceptée) → `can_repost` ;
-- posts déjà repostés par le viewer (si l'annotation `_has_reposted_by_me` manque).
+- posts déjà repostés par le viewer (si l'annotation `_has_reposted_by_me` manque) ;
+- convives des repas (invitations acceptées, ckd2 lot 3) → `guests` (« avec Léa », liens @).
 
 `prime(context, posts)` précharge toute une page (appelé par `PostPageListSerializer`) ; les accès
 unitaires complètent le cache pour les ids manquants (détail d'un post : requêtes constantes, quel que
@@ -27,6 +28,7 @@ class PostViewerState:
     checked_meal_plan_ids: set[int] = field(default_factory=set)
     reposted_post_ids: set[int] = field(default_factory=set)
     checked_post_ids: set[int] = field(default_factory=set)
+    guests_by_meal_plan: dict[int, list] = field(default_factory=dict)
 
     @property
     def authenticated(self) -> bool:
@@ -57,6 +59,39 @@ class PostViewerState:
             ).values_list('meal_plan_id', flat=True)
         )
         self.checked_meal_plan_ids |= missing
+
+    # -- convives des repas (ckd2 lot 3) ---------------------------------------
+    def load_guests(self, meal_plan_ids) -> None:
+        missing = {i for i in meal_plan_ids if i and i not in self.guests_by_meal_plan}
+        if not missing:
+            return
+        from recipes.models import MealInvitation
+
+        for mp_id in missing:
+            self.guests_by_meal_plan[mp_id] = []
+        rows = (
+            MealInvitation.objects.filter(meal_plan_id__in=missing, status='accepted', invitee__is_active=True)
+            .select_related('invitee')
+            .only(
+                'id',
+                'meal_plan_id',
+                'source',
+                'invitee__id',
+                'invitee__username',
+                'invitee__first_name',
+                'invitee__email',
+                'invitee__avatar_url',
+            )
+            .order_by('created_at', 'id')
+        )
+        for inv in rows:
+            self.guests_by_meal_plan[inv.meal_plan_id].append(inv)
+
+    def guests(self, post) -> list:
+        if not post.meal_plan_id:
+            return []
+        self.load_guests([post.meal_plan_id])
+        return [inv for inv in self.guests_by_meal_plan.get(post.meal_plan_id, []) if inv.invitee_id != post.user_id]
 
     # -- reposts du viewer ---------------------------------------------------
     def load_reposts(self, post_ids) -> None:
@@ -116,10 +151,12 @@ def prime(context: dict, posts) -> None:
     state = viewer_state(context)
     if not posts or not state.authenticated:
         return
+    state.load_guests([p.meal_plan_id for p in posts if p.meal_plan_id])
     without_prefetched_reposts = [p.id for p in posts if 'reposts' not in getattr(p, '_prefetched_objects_cache', {})]
     user_ids = set()
     for post in posts:
         user_ids.update(_co_cooked_user_ids(post))
+        user_ids.update(inv.invitee_id for inv in state.guests(post))
     if without_prefetched_reposts:
         from recipes.models import PostRepost
 

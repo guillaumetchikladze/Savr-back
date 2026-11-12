@@ -353,6 +353,18 @@ _TYPES = (
         legacy_kind='post_repost',
     ),
     NotificationType(
+        # ckd2 lot 3 : convive direct (« Avec qui » / @Léa) ; jamais pour le foyer préajouté.
+        'post_guest',
+        'social',
+        title='{actor} t’a mis dans son plat',
+        body='{dish}, cuisiné ensemble. Tu peux le republier, ou te retirer.',
+        inbox_type='post_guest',
+        data_fields=_POST,
+        url='post/{post_id}',
+        legacy_source='social',
+        legacy_kind='post_guest',
+    ),
+    NotificationType(
         'follow_new',
         'social',
         title='{actor} te suit',
@@ -650,6 +662,7 @@ REGISTRY: dict[str, NotificationType] = {t.key: t for t in _TYPES}
 LEGACY_PREFERENCE_KEYS: dict[str, tuple[str, ...]] = {
     'post_miam': ('post_miam',),
     'post_repost': ('post_repost',),
+    'post_guest': ('post_guest',),
     'post_comment': ('post_comment',),
     'post_comment_mention': ('post_comment_mention',),
     'follow': ('follow_new', 'follow_request', 'follow_accepted'),

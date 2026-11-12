@@ -2577,6 +2577,43 @@ class RepostFieldsMixin(serializers.Serializer):
         return data
 
 
+class GuestsFieldMixin(serializers.Serializer):
+    """
+    Convives du plat (ckd2 lot 3) : `guests` = [{id, username, display_name, avatar_url, first_name,
+    can_view_profile}] (invitations acceptées du repas, ajout direct « Avec qui » / @Léa compris), dans
+    l'ordre d'ajout ; comptes bloqués masqués. `can_view_profile` : le nom n'est un lien que si le lecteur
+    peut ouvrir ce profil (soi, ou suivi approuvé). Chargés en lot par page (`post_viewer_context`).
+    """
+
+    guests = serializers.SerializerMethodField()
+
+    def get_guests(self, obj):
+        from .services.post_viewer_context import viewer_state
+        from .services.post_visibility import request_blocked_user_ids
+
+        if not obj.meal_plan_id:
+            return []
+        request = self.context.get('request')
+        state = viewer_state(self.context)
+        blocked = request_blocked_user_ids(request)
+        invitations = [inv for inv in state.guests(obj) if inv.invitee_id not in blocked]
+        if not invitations:
+            return []
+        viewer_id = state.viewer.id if state.authenticated else None
+        if viewer_id is not None:
+            state.load_relations(inv.invitee_id for inv in invitations)
+        out = []
+        for inv in invitations:
+            user = inv.invitee
+            item = dict(UserLightSerializer(user, context=self.context).data)
+            item['first_name'] = (user.first_name or '').strip() or user.username
+            item['can_view_profile'] = bool(
+                viewer_id is not None and (user.id == viewer_id or state.relations.get(user.id, {}).get('is_following'))
+            )
+            out.append(item)
+        return out
+
+
 class PostPageListSerializer(serializers.ListSerializer):
     """Liste de posts : état du viewer (suivis, invitations, reposts) préchargé pour toute la page."""
 
@@ -2685,6 +2722,7 @@ class CaptionLinksFieldMixin(serializers.Serializer):
 
 
 class PostSerializer(
+    GuestsFieldMixin,
     CaptionLinksFieldMixin,
     PostEquipmentFieldsMixin,
     DishFieldMixin,
@@ -2745,6 +2783,7 @@ class PostSerializer(
             'can_repost',
             'reposts_count',
             'co_cooked_users',
+            'guests',
             'created_at',
             'updated_at',
         ]
@@ -2964,6 +3003,7 @@ class PostCommentCreateSerializer(serializers.ModelSerializer):
 
 
 class PostListSerializer(
+    GuestsFieldMixin,
     CaptionLinksFieldMixin,
     PostEquipmentFieldsMixin,
     DishFieldMixin,
@@ -3020,6 +3060,7 @@ class PostListSerializer(
             'can_repost',
             'reposts_count',
             'co_cooked_users',
+            'guests',
             'created_at',
         ]
         read_only_fields = ['user', 'label', 'created_at']

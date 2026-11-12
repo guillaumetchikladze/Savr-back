@@ -3471,6 +3471,9 @@ class MealPlanViewSet(viewsets.ModelViewSet):
                 post.save(
                     update_fields=['recipe_batch', 'comment', 'cooking_time_minutes', 'is_published', 'updated_at']
                 )
+                from .services.dish_guests import apply_held_guests
+
+                apply_held_guests(post)  # convives d'un plat resté « rien que pour toi » (ckd2 lot 3)
                 # Les photos sélectionnées remplacent celles du brouillon.
                 PostPhoto.objects.filter(post=post).exclude(id__in=photo_ids).update(post=None, order=0)
             else:
@@ -5037,7 +5040,9 @@ class PostViewSet(viewsets.ModelViewSet):
 
         Body : recipe_id?, label?, meal_plan_id?, basket_item_id? (envie du panier « Cette semaine »),
         cooked_at? (ISO, défaut maintenant), meal_time?, comment?, photo_ids?, cooking_time_minutes?,
-        publish (défaut true), recipe_text? (« Ta recette » écrite, 5000 car.), import_url? (lien collé).
+        publish (défaut true), recipe_text? (« Ta recette » écrite, 5000 car.), import_url? (lien collé),
+        guest_ids? (convives directs : amis / tablées, notifiés), household_guest_ids? (foyer préajouté d'un
+        plat du planning `meal_plan_id`, jamais notifié) — ckd2 lot 3, `services/dish_guests.py`.
         Au moins recipe_id, label, meal_plan_id, basket_item_id, recipe_text ou import_url.
         Sans recipe_id, le plat devient toujours une recette (`services/cooked_recipe.py`).
         Header optionnel `Idempotency-Key`.
@@ -5077,6 +5082,8 @@ class PostViewSet(viewsets.ModelViewSet):
                 basket_item_id=data.get('basket_item_id'),
                 recipe_text=data.get('recipe_text'),
                 import_url=data.get('import_url'),
+                guest_ids=data.get('guest_ids'),
+                household_guest_ids=data.get('household_guest_ids'),
             )
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
@@ -5239,6 +5246,31 @@ class PostViewSet(viewsets.ModelViewSet):
             )
         serializer = PostSerializer(post, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='leave')
+    def leave(self, request, pk=None):
+        """
+        « Me retirer » (ckd2 lot 3) : le convive quitte le plat (invitation refusée, son repost retiré).
+        204 ; 404 si le post est invisible ou si le viewer n'en est pas convive.
+        """
+        from .services.dish_guests import leave_dish
+
+        post = get_visible_post_or_404(request.user, pk)
+        if post.user_id == request.user.id or not leave_dish(request.user, post):
+            return Response({'detail': 'Tu n’es pas dans ce plat.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=['get'], url_path='guest-candidates')
+    def guest_candidates(self, request):
+        """
+        Qui mettre dans son plat (« Avec qui » / @ dans « Pour tes amis », ckd2 lot 3), dans l'ordre :
+        amis mutuels, foyer, autres amis, membres de ses tablées. Chaque entrée : UserLight +
+        `first_name` (prénom, sinon pseudo), `kind` (mutual|household|friend|table), `is_household`.
+        """
+        from .services.dish_guests import candidate_payload, guest_candidates
+
+        context = self.get_serializer_context()
+        return Response({'results': [candidate_payload(c, context) for c in guest_candidates(request.user)]})
 
     @action(detail=False, methods=['post'])
     def get_upload_presigned_url(self, request):
@@ -5840,8 +5872,13 @@ class PostViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
         with transaction.atomic():
+            was_published = post.is_published
             post.is_published = True
             post.save()
+            if not was_published:
+                from .services.dish_guests import apply_held_guests
+
+                apply_held_guests(post)  # convives d'un plat resté « rien que pour toi » (ckd2 lot 3)
 
             if post.meal_plan_id:
                 complete_meal_plan_batches_for_publish(request.user, post.meal_plan)

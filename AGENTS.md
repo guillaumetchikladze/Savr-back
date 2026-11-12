@@ -109,6 +109,18 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   `AI_RECIPE_MONTHLY_CAP` (30) par utilisateur et mois calendaire (`ai_recipe_quota`), aucun plafond pour les premium
   (`User.plan == 'premium'`, `accounts.entitlements.is_premium`) ; au-delà, formalize → 429
   `ai_quota_exceeded`, « J'ai cuisiné » garde la recette brute (`recipe_job.status = skipped`).
+- Convives directs (lot 3, `recipes/services/dish_guests.py`) : `guest_ids` (« Avec qui » / @Léa) = `MealInvitation`
+  du repas **déjà acceptée** (`source='direct'`), notif `post_guest` (« Tom t’a mis dans son plat », ouvre le post) ;
+  `household_guest_ids` = foyer préajouté d'un plat du planning (`meal_plan_id` seulement, compte du foyer accepté) →
+  `source='household'`, jamais notifié (hors planning : convive ordinaire). Ajoutables = `guest_candidates` (amis dans
+  un sens ou l'autre, foyer, membres acceptés de ses tablées, hors blocages / inactifs) ; un autre id est ignoré,
+  une forme invalide → 400 `invalid_guest_ids`. `GET /posts/guest-candidates/` (ordre : mutuels, foyer, amis,
+  tablées ; `first_name`, `kind`, `is_household`). Post non publié : rien d'ajouté ni notifié, choix gardé sur
+  `Post.held_guests` et appliqué à la publication (`publish`, `publish-post`, re-log publié). Annuler retire les
+  convives du log (`cooked_undo.guests`) et leurs notifs in-app. `POST /posts/{id}/leave/` (« Me retirer ») :
+  invitation refusée + repost retiré (204, 404 sinon). Posts : `guests` [{UserLight, first_name, can_view_profile}]
+  (invitations acceptées, chargées en lot ; lien seulement si le lecteur suit le convive ou est le convive).
+  Tests : `recipes/tests/test_posts_cooked_guests_api.py`.
 
 ## Stats, badges et Récap (app `stats`)
 

@@ -833,6 +833,13 @@ class MealInvitation(models.Model):
         MealPlan, on_delete=models.CASCADE, related_name='invitations', verbose_name='Repas planifié'
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='Statut')
+    SOURCE_CHOICES = [
+        ('invite', 'Invitation à accepter'),
+        ('direct', 'Convive ajouté au plat (« Avec qui » / @)'),
+        ('household', 'Foyer préajouté depuis le planning partagé'),
+    ]
+    # ckd2 lot 3 : un convive direct est une invitation déjà acceptée (`direct` notifié, `household` muet).
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='invite', verbose_name='Origine')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Créé le')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Mis à jour le')
 
@@ -979,6 +986,12 @@ class Post(models.Model):
         null=True,
         blank=True,
         help_text='Temps de cuisine saisi ou dérivé de la recette (minutes)',
+    )
+    held_guests = models.JSONField(
+        null=True,
+        blank=True,
+        help_text='Convives choisis pour un plat « rien que pour toi » ({guest_ids, household_guest_ids}) : '
+        'ajoutés (et notifiés) seulement quand le post est publié (ckd2 lot 3).',
     )
     is_published = models.BooleanField(default=False, help_text='Le post est publié')
     is_public = models.BooleanField(

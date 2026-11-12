@@ -344,8 +344,12 @@ def _resolve_or_create_meal_plan(user, target_date, meal_time: str, local_dt: da
 
 def _publish_if_requested(post: Post, publish: bool) -> Post:
     if publish and not post.is_published:
-        post.is_published = True
-        post.save(update_fields=['is_published', 'updated_at'])
+        from .dish_guests import apply_held_guests
+
+        with transaction.atomic():
+            post.is_published = True
+            post.save(update_fields=['is_published', 'updated_at'])
+            apply_held_guests(post)  # convives d'un plat resté « rien que pour toi » (ckd2 lot 3)
     return post
 
 
@@ -364,6 +368,8 @@ def log_cooked(
     basket_item_id=None,
     recipe_text: str | None = None,
     import_url: str | None = None,
+    guest_ids=None,
+    household_guest_ids=None,
 ) -> CookedResult:
     """
     « J'ai cuisiné X » en 1 appel : repas (réutilisé ou créé, confirmé), recette liée et batches
@@ -374,8 +380,12 @@ def log_cooked(
     (sa propre recette du même nom, une recette déjà importée depuis `import_url`, sinon une nouvelle
     recette au nom du plat) ; `recipe_text` / `import_url` la complètent en arrière-plan, le nom seul
     aussi (ingrédients et étapes proposés par l'IA à partir du nom, lot 2 ter).
+
+    Convives (ckd2 lot 3, `dish_guests`) : `guest_ids` (amis, « Avec qui » / @Léa) ajoutés directement,
+    notifiés ; `household_guest_ids` (foyer préajouté d'un plat du planning, `meal_plan_id`) muets.
+    Plat non publié : gardés sur `Post.held_guests`, ajoutés à la publication.
     """
-    from . import cooked_recipe
+    from . import cooked_recipe, dish_guests
 
     # ---- Validation (aucune écriture) ----
     label = (label or '').strip()[:LABEL_MAX_LENGTH]
@@ -459,6 +469,13 @@ def log_cooked(
 
     extra_photos = Q(meal_plan_id=meal_plan.id) if meal_plan else None
     photos = validate_attachable_photos(user, photo_ids, extra_allowed=extra_photos)
+
+    try:
+        guest_plan = dish_guests.plan_guests(
+            user, guest_ids, household_guest_ids, from_planning=mid is not None and meal_plan is not None
+        )
+    except dish_guests.GuestError as exc:
+        raise CookedError(exc.message, 400, exc.code) from exc
 
     cooking_time = _parse_int(cooking_time_minutes, 'cooking_time_minutes')
     if cooking_time is not None:
@@ -561,8 +578,13 @@ def log_cooked(
             is_published=bool(publish),
             cooked_undo=undo,
             inspired_by_post=inspired_by,
+            held_guests=None if publish else dish_guests.hold_guests(guest_plan),
         )
         attach_photos(post, photos)
+        if publish and guest_plan:
+            undo['guests'] = dish_guests.add_guests(user, post, guest_plan)
+            if undo['guests']:
+                Post.objects.filter(pk=post.pk).update(cooked_undo=undo)
 
     if inspired_by is not None:
         from recipes.services.basket_service import notify_inspiration_cooked
@@ -603,6 +625,10 @@ def undo_cooked(post: Post) -> None:
     meal_plan = post.meal_plan
     user = post.user
     with transaction.atomic():
+        if undo.get('guests'):
+            from .dish_guests import undo_guests
+
+            undo_guests(post, undo['guests'])  # convives ajoutés par ce log (ckd2 lot 3)
         post.delete()
         if not undo or not meal_plan or Post.objects.filter(meal_plan=meal_plan).exists():
             return

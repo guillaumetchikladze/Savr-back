@@ -221,6 +221,7 @@ class Notification(models.Model):
         ('household_accepted', 'Foyer : demande acceptée'),
         ('table_invitation', 'Invitation à une tablée'),
         ('table_joined', 'Tablée : nouveau membre'),
+        ('post_guest', 'Ajouté·e comme convive d’un plat'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', verbose_name='Utilisateur')
