@@ -128,6 +128,13 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   dans les API du planning, jamais de profilage ni de classement. Annuler le retire (`cooked_undo.changes`) ;
   `PATCH /posts/{id}/update-content/` accepte `changes: [{recipe_batch_id, changes}]`. Tests :
   `recipes/tests/test_posts_cooked_changes_api.py`.
+- Menu (lot 3c, ~1 % des posts) : `dishes` = [{recipe_id | import_url | recipe_text | label, changes}] (8 au plus,
+  400 `invalid_dishes` / `too_many_dishes`) ; un seul plat = corps simple (son `label` sert de nom si `label` est vide) ;
+  2 et plus (`_log_menu`) : un repas (planifié via `meal_plan_id` ou créé), une recette par plat dans l'ordre (mêmes
+  règles que le lot 2 : trouvée, lien, écrite, nom seul), `changes` sur le `MealPlanRecipeBatch` de chaque plat, un
+  post dont `label` = « Le repas » (vide → titres joints). Réponse : `recipe_job` (1er) + `recipe_jobs`
+  [{recipe_id, …}]. Annuler défait tout (`created_recipe_ids`, `link_recipe_ids`). Tests :
+  `recipes/tests/test_posts_cooked_menu_api.py`.
 
 ## Stats, badges et Récap (app `stats`)
 

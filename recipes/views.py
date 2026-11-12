@@ -5043,7 +5043,9 @@ class PostViewSet(viewsets.ModelViewSet):
         publish (défaut true), recipe_text? (« Ta recette » écrite, 5000 car.), import_url? (lien collé),
         guest_ids? (convives directs : amis / tablées, notifiés), household_guest_ids? (foyer préajouté d'un
         plat du planning `meal_plan_id`, jamais notifié) — ckd2 lot 3, `services/dish_guests.py`,
-        changes? (« Ce que tu as changé », 500 car., sur la recette suivie du plat — ckd2 lot 3b).
+        changes? (« Ce que tu as changé », 500 car., sur la recette suivie du plat — ckd2 lot 3b),
+        dishes? (menu, ckd2 lot 3c : [{recipe_id | import_url | recipe_text | label, changes}], 8 au plus ;
+        `label` = titre du repas ; un seul plat = corps simple) → `recipe_jobs` [{recipe_id, …recipe_job}].
         Au moins recipe_id, label, meal_plan_id, basket_item_id, recipe_text ou import_url.
         Sans recipe_id, le plat devient toujours une recette (`services/cooked_recipe.py`).
         Header optionnel `Idempotency-Key`.
@@ -5086,6 +5088,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 guest_ids=data.get('guest_ids'),
                 household_guest_ids=data.get('household_guest_ids'),
                 changes=data.get('changes'),
+                dishes=data.get('dishes'),
             )
         except CookedError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=exc.status_code)
@@ -5106,6 +5109,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 'created': result.created,
                 'new_badges': new_badges,
                 'recipe_job': result.recipe_job,
+                'recipe_jobs': result.recipe_jobs,
             },
             status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK,
         )

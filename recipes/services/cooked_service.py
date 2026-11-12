@@ -56,6 +56,9 @@ MAX_POST_PHOTOS = 20
 LABEL_MAX_LENGTH = 120
 # « Ce que tu as changé » (ckd2 lot 3b), par recette du repas (`MealPlanRecipeBatch.changes`).
 CHANGES_MAX_LENGTH = 500
+# Un menu (ckd2 lot 3c) : entrée, plat, dessert… plusieurs recettes dans un seul repas, un seul post.
+MAX_DISHES = 8
+_DISH_KEYS = ('recipe_id', 'import_url', 'recipe_text', 'label', 'changes')
 _STANDARD_SLOTS = ('breakfast', 'lunch', 'dinner')
 _ALLOWED_MEAL_TIMES = (*_STANDARD_SLOTS, 'other')
 
@@ -193,6 +196,8 @@ class CookedResult:
     created: bool
     # Mise en forme / import de la recette en arrière-plan (ckd2 lot 2) : {request_id, kind, status[, code]}.
     recipe_job: dict | None = None
+    # Menu (ckd2 lot 3c) : un suivi par plat qui en a un, {recipe_id, request_id, kind, status[, code]}.
+    recipe_jobs: list | None = None
 
 
 def _parse_int(value, field: str) -> int | None:
@@ -395,6 +400,7 @@ def log_cooked(
     guest_ids=None,
     household_guest_ids=None,
     changes=None,
+    dishes=None,
 ) -> CookedResult:
     """
     « J'ai cuisiné X » en 1 appel : repas (réutilisé ou créé, confirmé), recette liée et batches
@@ -413,8 +419,37 @@ def log_cooked(
     « Ce que tu as changé » (ckd2 lot 3b) : `changes` va sur la recette du plat dans le repas
     (`MealPlanRecipeBatch.changes`), seulement pour une recette suivie (trouvée, prévue, lien) — jamais
     pour une recette écrite ou un nom seul (c'est sa recette). Annuler le retire avec le log.
+
+    Menu (ckd2 lot 3c) : `dishes` = [{recipe_id | import_url | recipe_text | label, changes}] ; un seul plat
+    revient au corps simple (le `label` du plat sert de nom si `label` est vide) ; deux et plus → `_log_menu` :
+    un repas, une recette par plat (dans l'ordre), un post dont `label` est le titre du repas.
     """
     from . import cooked_recipe, dish_guests
+
+    parsed_dishes = _parse_dishes(dishes)
+    if len(parsed_dishes) == 1:
+        dish = parsed_dishes[0]
+        recipe_id = dish.get('recipe_id')
+        import_url = dish.get('import_url')
+        recipe_text = dish.get('recipe_text')
+        changes = dish.get('changes')
+        label = label if (label or '').strip() else dish.get('label')
+    elif len(parsed_dishes) > 1:
+        return _log_menu(
+            user,
+            dishes=parsed_dishes,
+            label=label,
+            meal_plan_id=meal_plan_id,
+            cooked_at=cooked_at,
+            meal_time=meal_time,
+            comment=comment,
+            photo_ids=photo_ids,
+            cooking_time_minutes=cooking_time_minutes,
+            publish=publish,
+            basket_item_id=basket_item_id,
+            guest_ids=guest_ids,
+            household_guest_ids=household_guest_ids,
+        )
 
     # ---- Validation (aucune écriture) ----
     label = (label or '').strip()[:LABEL_MAX_LENGTH]
@@ -627,6 +662,243 @@ def log_cooked(
     return CookedResult(post, True, recipe_job)
 
 
+def _parse_dishes(dishes) -> list[dict]:
+    """`dishes` du corps (ckd2 lot 3c) : liste de plats non vides, 8 au plus ; [] si absent."""
+    if dishes in (None, '', []):
+        return []
+    if not isinstance(dishes, list) or not all(isinstance(d, dict) for d in dishes):
+        raise CookedError('dishes must be a list of objects', 400, 'invalid_dishes')
+    if len(dishes) > MAX_DISHES:
+        raise CookedError(f'A meal has at most {MAX_DISHES} dishes', 400, 'too_many_dishes')
+    out = []
+    for dish in dishes:
+        clean = {k: dish.get(k) for k in _DISH_KEYS if dish.get(k) not in (None, '')}
+        if any(k in clean for k in ('recipe_id', 'import_url', 'recipe_text', 'label')):
+            out.append(clean)
+    return out
+
+
+@dataclass
+class _DishPlan:
+    """Un plat du menu, validé sans rien écrire ; matérialisé dans la transaction (`_materialize_dish`)."""
+
+    recipe: Recipe | None = None
+    new_recipe: tuple | None = None  # (titre, CookedRecipePlan, nom choisi ?)
+    link_recipe: Recipe | None = None  # posée au collage, publiée avec le post
+    job: dict | None = None  # import au collage encore en cours
+    complete_named: bool = False  # sa recette du même nom restée vide : complétée
+    changes: str = ''
+
+
+def _plan_dish(user, dish: dict) -> _DishPlan:
+    """Même règles qu'un plat seul (ckd2 lot 2) : recette trouvée, lien, recette écrite, nom seul."""
+    from . import cooked_recipe
+    from .recipe_access import usable_recipe
+
+    plan = _DishPlan(changes=clean_changes(dish.get('changes')))
+    name = str(dish.get('label') or '').strip()[:LABEL_MAX_LENGTH]
+    rid = _parse_int(dish.get('recipe_id'), 'recipe_id')
+    if rid is not None:
+        plan.recipe = usable_recipe(user, rid)
+        if plan.recipe is None:
+            raise CookedError(f'Recipe {rid} not found', 404, 'recipe_not_found')
+        if cooked_recipe.is_unposted_link_recipe(user, plan.recipe):
+            plan.link_recipe = plan.recipe
+        plan.job = cooked_recipe.running_link_job(user, plan.recipe)
+        return plan
+    url = cooked_recipe.clean_import_url(dish.get('import_url'))
+    if url is None:
+        raise CookedError('import_url must be a valid http(s) URL', 400, 'invalid_import_url')
+    if url:
+        host = cooked_recipe.link_host(url)
+        plan.recipe = cooked_recipe.find_imported_recipe(user, url)
+        if plan.recipe is None:
+            if cooked_recipe.is_default_link_label(name, host):
+                name = ''
+            title = name or cooked_recipe.default_link_title(host)
+            plan.new_recipe = (title, cooked_recipe.CookedRecipePlan(import_url=url, host=host), bool(name))
+        return plan
+    text = cooked_recipe.clean_recipe_text(dish.get('recipe_text'))
+    plan.changes = ''  # sa propre recette (écrite ou au nom du plat) : rien à « changer »
+    if text:
+        title = name or cooked_recipe.WRITTEN_RECIPE_DEFAULT_TITLE
+        plan.new_recipe = (title, cooked_recipe.CookedRecipePlan(recipe_text=text), bool(name))
+        return plan
+    plan.recipe = cooked_recipe.find_own_recipe_named(user, name)
+    if plan.recipe is not None:
+        plan.complete_named = True
+    else:
+        plan.new_recipe = (name, cooked_recipe.CookedRecipePlan(), True)
+    return plan
+
+
+def _materialize_dish(user, plan: _DishPlan, undo: dict) -> tuple[Recipe, dict | None]:
+    """Écritures d'un plat du menu (dans la transaction) : recette créée / publiée, suivi éventuel."""
+    from . import cooked_recipe
+
+    job = plan.job
+    if plan.link_recipe is not None:
+        cooked_recipe.publish_link_recipe(plan.link_recipe)
+        undo.setdefault('link_recipe_ids', []).append(plan.link_recipe.id)
+    if plan.new_recipe is not None:
+        title, recipe_plan, named = plan.new_recipe
+        recipe = cooked_recipe.create_cooked_recipe(user, title=title, plan=recipe_plan)
+        undo.setdefault('created_recipe_ids', []).append(recipe.id)
+        job = cooked_recipe.enqueue_cooked_recipe_job(user, recipe, plan=recipe_plan, keep_title=named)
+        if job is None and named:
+            job = cooked_recipe.enqueue_recipe_completion(user, recipe)  # nom seul (lot 2 ter)
+        return recipe, job
+    if plan.complete_named:
+        job = cooked_recipe.enqueue_recipe_completion(user, plan.recipe)
+    return plan.recipe, job
+
+
+def _log_menu(
+    user,
+    *,
+    dishes: list[dict],
+    label,
+    meal_plan_id,
+    cooked_at,
+    meal_time,
+    comment,
+    photo_ids,
+    cooking_time_minutes,
+    publish,
+    basket_item_id,
+    guest_ids,
+    household_guest_ids,
+) -> CookedResult:
+    """
+    Un menu (ckd2 lot 3c, ~1 % des posts) : plusieurs plats, un repas, un post. Chaque plat devient une
+    recette du repas (dans l'ordre), avec son « Ce que tu as changé » sur son `MealPlanRecipeBatch`.
+    `label` = « Le repas » (titre libre) ; vide, le post s'appelle « Pâtes au canard et tarte aux pommes ».
+    Annuler défait tout (recettes créées comprises), comme un plat seul.
+    """
+    from . import dish_guests
+
+    # ---- Validation (aucune écriture) ----
+    label = (label or '').strip()[:LABEL_MAX_LENGTH]
+    comment = (comment or '').strip()
+    plans = [_plan_dish(user, d) for d in dishes]
+
+    meal_plan = None
+    mid = _parse_int(meal_plan_id, 'meal_plan_id')
+    if mid is not None:
+        meal_plan = MealPlan.objects.filter(get_accessible_meal_plan_filter(user), id=mid).first()
+        if not meal_plan:
+            raise CookedError('Meal plan not found', 404, 'meal_plan_not_found')
+        if meal_plan.user_id != user.id:
+            raise CookedError('Only the meal plan owner can log it as cooked', 403, 'not_meal_plan_owner')
+
+    if meal_time not in (None, ''):
+        meal_time = str(meal_time).strip().lower()
+        if meal_time not in _ALLOWED_MEAL_TIMES:
+            raise CookedError(f'meal_time must be one of: {", ".join(_ALLOWED_MEAL_TIMES)}')
+    local_dt = _resolve_local_datetime(cooked_at)
+    if not meal_time:
+        meal_time = infer_meal_time_from_hour(local_dt.hour)
+
+    extra_photos = Q(meal_plan_id=meal_plan.id) if meal_plan else None
+    photos = validate_attachable_photos(user, photo_ids, extra_allowed=extra_photos)
+    try:
+        guest_plan = dish_guests.plan_guests(user, guest_ids, household_guest_ids, from_planning=meal_plan is not None)
+    except dish_guests.GuestError as exc:
+        raise CookedError(exc.message, 400, exc.code) from exc
+    cooking_time = _parse_int(cooking_time_minutes, 'cooking_time_minutes')
+    if cooking_time is not None:
+        cooking_time = max(0, cooking_time)
+
+    first_recipe = next((p.recipe for p in plans if p.recipe is not None), None)
+    basket_item = _basket_item_or_error(user, basket_item_id) if basket_item_id not in (None, '') else None
+    if basket_item is None:
+        basket_item = _basket_item_or_error(
+            user, None, meal_plan=meal_plan, cooked_on=local_dt.date(), recipe=first_recipe, label=label
+        )
+
+    # ---- Idempotence (le reste : Idempotency-Key) ----
+    if meal_plan:
+        existing = Post.objects.filter(meal_plan=meal_plan).order_by('-is_published', 'id').first()
+        if existing:
+            _link_basket_item_to_existing(basket_item, existing)
+            return CookedResult(_publish_if_requested(existing, publish), False)
+
+    # ---- Écritures ----
+    undo: dict = {'added_recipe_ids': [], 'uncooked_batch_ids': []}
+    recipe_jobs: list[dict] = []
+    with transaction.atomic():
+        recipes: list[tuple[Recipe, str]] = []
+        for plan in plans:
+            recipe, job = _materialize_dish(user, plan, undo)
+            recipes.append((recipe, plan.changes))
+            if job:
+                recipe_jobs.append({'recipe_id': recipe.id, **job})
+        if meal_plan:
+            meal_plan_created = False
+        else:
+            meal_plan, meal_plan_created = _resolve_or_create_meal_plan(
+                user, local_dt.date(), meal_time, local_dt, recipes[0][0], label
+            )
+        undo.update(
+            {
+                'meal_plan_created': meal_plan_created,
+                'meal_plan_was_confirmed': False if meal_plan_created else meal_plan.confirmed,
+                'meal_type': meal_plan.meal_type,
+                'custom_label': meal_plan.custom_label,
+            }
+        )
+        recipe_ids = list(dict.fromkeys(r.id for r, _ in recipes))
+        result = add_recipes_to_meal_plan(user, meal_plan.id, recipe_ids)
+        undo['added_recipe_ids'] = list(result.added_recipe_ids)
+
+        batches = _meal_plan_batches(meal_plan)
+        undo['uncooked_batch_ids'] = [b.id for b in batches if not b.is_cooked]
+        for batch in batches:
+            complete_recipe_batch_workflow(user, batch)
+        batch_of = {}
+        for batch in batches:
+            batch_of.setdefault(batch.recipe_id, batch)
+        for recipe, changes in recipes:
+            if recipe.id in batch_of:
+                set_batch_changes(meal_plan, batch_of[recipe.id].id, changes, undo)
+
+        meal_plan.confirmed = True
+        meal_plan.meal_type = 'recipe'
+        meal_plan.save(update_fields=['confirmed', 'meal_type', 'updated_at'])
+
+        inspired_by = None
+        if basket_item is not None:
+            from recipes.services.basket_service import mark_item_cooked
+
+            undo['basket_item'] = mark_item_cooked(basket_item, meal_plan, meal_plan_created=meal_plan_created)
+            inspired_by = basket_item.inspired_by_post if basket_item.inspired_by_post_id else None
+
+        post = Post.objects.create(
+            user=user,
+            meal_plan=meal_plan,
+            recipe_batch=batch_of.get(recipes[0][0].id),
+            label=label,
+            comment=comment,
+            cooking_time_minutes=cooking_time,
+            is_published=bool(publish),
+            cooked_undo=undo,
+            inspired_by_post=inspired_by,
+            held_guests=None if publish else dish_guests.hold_guests(guest_plan),
+        )
+        attach_photos(post, photos)
+        if publish and guest_plan:
+            undo['guests'] = dish_guests.add_guests(user, post, guest_plan)
+            if undo['guests']:
+                Post.objects.filter(pk=post.pk).update(cooked_undo=undo)
+
+    if inspired_by is not None:
+        from recipes.services.basket_service import notify_inspiration_cooked
+
+        notify_inspiration_cooked(post)
+    first_job = {k: v for k, v in recipe_jobs[0].items() if k != 'recipe_id'} if recipe_jobs else None
+    return CookedResult(post, True, first_job, recipe_jobs)
+
+
 def _basket_item_or_error(user, basket_item_id, **match):
     from recipes.services.basket_service import BasketError, resolve_basket_item_for_cooked
 
@@ -678,8 +950,7 @@ def undo_cooked(post: Post) -> None:
             RecipeBatch.objects.filter(
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
-            _delete_created_recipe(user, undo.get('created_recipe_id'))
-            _delete_created_recipe(user, undo.get('link_recipe_id'))  # recette du collage (lot 2 bis)
+            _delete_created_recipes(user, undo)
             return
 
         added = undo.get('added_recipe_ids') or []
@@ -692,7 +963,7 @@ def undo_cooked(post: Post) -> None:
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
 
-        for change in undo.get('changes') or []:  # « Ce que tu as changé » posé sur une recette prévue
+        for change in reversed(undo.get('changes') or []):  # « Ce que tu as changé » posé sur une recette prévue
             MealPlanRecipeBatch.objects.filter(id=change.get('mprb_id')).update(changes=change.get('previous') or '')
 
         uncooked = undo.get('uncooked_batch_ids') or []
@@ -706,8 +977,15 @@ def undo_cooked(post: Post) -> None:
         meal_plan.meal_type = undo.get('meal_type') or meal_plan.meal_type
         meal_plan.custom_label = undo.get('custom_label', meal_plan.custom_label) or ''
         meal_plan.save(update_fields=['confirmed', 'meal_type', 'custom_label', 'updated_at'])
-        _delete_created_recipe(user, undo.get('created_recipe_id'))
-        _delete_created_recipe(user, undo.get('link_recipe_id'))  # recette du collage (lot 2 bis)
+        _delete_created_recipes(user, undo)
+
+
+def _delete_created_recipes(user, undo: dict) -> None:
+    """Recettes posées par le log (plat seul, recette du collage, plats d'un menu — lot 3c)."""
+    ids = [undo.get('created_recipe_id'), undo.get('link_recipe_id')]  # recette du collage (lot 2 bis)
+    ids += list(undo.get('created_recipe_ids') or []) + list(undo.get('link_recipe_ids') or [])
+    for recipe_id in ids:
+        _delete_created_recipe(user, recipe_id)
 
 
 def _delete_created_recipe(user, recipe_id) -> None:
