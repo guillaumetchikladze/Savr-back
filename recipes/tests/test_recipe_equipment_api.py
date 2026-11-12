@@ -213,7 +213,7 @@ def _llm_answer(**extra):
     return json.dumps(payload, ensure_ascii=False)
 
 
-def test_adapt_endpoint_is_idempotent_linked_private_and_handles_llm_failure(api, user, make_user, recipe_with_steps):
+def test_adapt_endpoint_is_idempotent_linked_public_and_handles_llm_failure(api, user, make_user, recipe_with_steps):
     chef = make_user('chef')
     cake = recipe_with_steps(chef, 'Gâteau fondant', CAKE, servings=2)
     client = api.as_user(user)
@@ -240,16 +240,15 @@ def test_adapt_endpoint_is_idempotent_linked_private_and_handles_llm_failure(api
     copy = Recipe.objects.get(adapted_from=cake)
     assert first.data['recipe']['id'] == second.data['recipe']['id'] == copy.id
     assert first.data['created'] is True and second.data['created'] is False
-    assert copy.created_by_id == user.id and copy.is_public is False
+    assert copy.created_by_id == user.id and copy.is_public is True  # prv1 : publique par défaut
     assert copy.adapted_for_equipment == ['plaques', 'airfryer'] and copy.required_equipment == ['airfryer']
     assert copy.title == "Gâteau fondant à l'airfryer" and copy.steps.count() == 3
     assert sorted(copy.recipe_ingredients.values_list('ingredient__name', flat=True)) == ['farine', 'oeuf']
     assert first.data['recipe']['adapted_from'] == {'id': cake.id, 'title': 'Gâteau fondant'}
     assert first.data['recipe']['missing_equipment'] == []
     assert client.get(f'/api/recipes/{cake.id}/').data['my_adaptation'] == {'id': copy.id, 'title': copy.title}
-    # Le chef ne voit pas la copie privée ; rien à adapter pour une recette déjà faisable.
-    assert api.as_user(chef).get(f'/api/recipes/{copy.id}/').status_code == 404
-    assert api.as_user(chef).post(f'/api/recipes/{copy.id}/adapt-equipment/').status_code == 404
+    # prv1 : la copie est publique comme toute recette (le chef l'ouvre) ; rien à adapter pour une recette déjà faisable.
+    assert api.as_user(chef).get(f'/api/recipes/{copy.id}/').status_code == 200
     client = api.as_user(user)
     assert client.post(f'/api/recipes/{copy.id}/adapt-equipment/').data['code'] == 'nothing_to_adapt'
 

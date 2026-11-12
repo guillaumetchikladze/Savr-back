@@ -4,7 +4,7 @@
     GET  /api/equipment/                       cuisine effective (la mienne, sinon celle du foyer, sinon le classique)
     PUT  /api/equipment/                       {equipment: [{key, burners?, induction?, count?}]} | {keys: [...], burners?, induction?, ovens?}
     GET  /api/equipment/catalog/               catalogue (clés, libellés, icônes Ionicons, durs / mous, alternatives)
-    POST /api/recipes/<id>/adapt-equipment/    copie privée adaptée (201 créée, 200 existante) ; LLM synchrone ≤ ~8 s
+    POST /api/recipes/<id>/adapt-equipment/    copie adaptée, publique (201 créée, 200 existante) ; LLM synchrone ≤ ~8 s
 """
 
 from __future__ import annotations

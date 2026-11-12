@@ -1876,13 +1876,16 @@ class RecipeViewSet(viewsets.ModelViewSet):
         already_imported, recipe: {id, title, image_url}[, code]}. `status` : pending | processing
         (suivre GET /recipes/formalize/status/<request_id>/), success (déjà importée, request_id null),
         skipped + code ai_quota_exceeded (au-delà du plafond : « Recette de <domaine> » + lien gardés).
-        La recette créée est privée jusqu'au post (`POST /posts/cooked/` avec `recipe_id`).
+        Sans `keep` : brouillon privé jusqu'au post (`POST /posts/cooked/` avec `recipe_id`), supprimable
+        par `DELETE import-link/<id>/`. `keep: true` (« Garder la recette » du partage, prv1) : publique
+        tout de suite et jamais supprimée par ce DELETE (un brouillon du même lien est gardé de même).
         400 `invalid_import_url`.
         """
         from .services.cooked_recipe import LinkImportError, start_link_import
 
         try:
-            data, created = start_link_import(request.user, request.data.get('url'))
+            keep = _truthy(request.data.get('keep', False))
+            data, created = start_link_import(request.user, request.data.get('url'), keep=keep)
         except LinkImportError as exc:
             return Response({'error': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
         return Response(data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)

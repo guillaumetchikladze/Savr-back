@@ -507,7 +507,7 @@ def execute_basket_to_shopping_list(
 # « Adapter pour chez moi » : recette qui demande un équipement absent
 # ---------------------------------------------------------------------------
 def adapt_recipe_equipment_for_chat(user: AbstractBaseUser, *, recipe_id: int) -> EquipmentAdaptationResult:
-    """Copie privée adaptée à la cuisine de l'utilisateur (même service que POST /api/recipes/<id>/adapt-equipment/)."""
+    """Copie (publique, prv1) adaptée à la cuisine de l'utilisateur (même service que POST /api/recipes/<id>/adapt-equipment/)."""
     from recipes.services import equipment_catalog as catalog
     from recipes.services.equipment_adaptation import AdaptationError, adapt_recipe_for_user
 

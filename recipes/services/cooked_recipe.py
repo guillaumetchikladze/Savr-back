@@ -291,15 +291,21 @@ def _link_response(recipe: Recipe, host: str, job: dict | None, *, already_impor
     return out
 
 
-def start_link_import(user, raw_url) -> tuple[dict, bool]:
+def start_link_import(user, raw_url, *, keep: bool = False) -> tuple[dict, bool]:
     """
-    Lien collé dans « La recette » : recette posée tout de suite et import lancé (sans droit `ai`,
-    compté dans le plafond sauf premium). Renvoie (réponse, créée ?).
+    Lien collé dans « La recette » (ou gardé depuis le partage, `keep`) : recette posée tout de suite
+    et import lancé (sans droit `ai`, compté dans le plafond sauf premium). Renvoie (réponse, créée ?).
 
     - lien déjà importé (recette publique ou à soi) : réutilisée, son import en cours renvoyé s'il y
       en a un ; sa propre recette restée vide (import raté, plafond) est réimportée ;
-    - sinon recette privée « Recette de <domaine> » qui garde le lien ; au-delà du plafond : gardée
-      telle quelle, `status = skipped`, `code = ai_quota_exceeded`.
+    - sinon « Recette de <domaine> » qui garde le lien ; au-delà du plafond : gardée telle quelle,
+      `status = skipped`, `code = ai_quota_exceeded`.
+
+    Collage dans « J'ai cuisiné » : brouillon privé jusqu'au post (publié par `log_cooked`, supprimé
+    par ✕ / Annuler), pour qu'un collage abandonné une fois importé n'arrive pas dans la recherche.
+    `keep` (« Garder la recette » du partage, prv1) : publique tout de suite comme toute recette de
+    l'app, sans marque « du collage », donc jamais supprimée par ✕ / Annuler ; un brouillon de
+    collage du même lien déjà là est gardé (publié) de même.
     """
     url = clean_import_url(raw_url)
     if not url:
@@ -309,19 +315,21 @@ def start_link_import(user, raw_url) -> tuple[dict, bool]:
 
     existing = find_imported_recipe(user, url)
     if existing is not None:
+        if keep and is_unposted_link_recipe(user, existing):
+            publish_link_recipe(existing)
         job = running_link_job(user, existing)
         if job is None and existing.created_by_id == user.id and not _has_content(existing):
             with transaction.atomic():
                 job = enqueue_cooked_recipe_job(user, existing, plan=plan, keep_title=False, job_type=JOB_LINK)
         return _link_response(existing, host, job, already_imported=job is None), False
 
-    marker = {'created_by_link': True}
+    marker = {'kept_by_link': True} if keep else {'created_by_link': True}
     with transaction.atomic():
-        recipe = create_cooked_recipe(user, title=default_link_title(host), plan=plan, is_public=False)
+        recipe = create_cooked_recipe(user, title=default_link_title(host), plan=plan, is_public=keep)
         job = enqueue_cooked_recipe_job(
             user, recipe, plan=plan, keep_title=False, job_type=JOB_LINK, extra_payload=marker
         )
-        if job and job['status'] == 'skipped':
+        if not keep and job and job['status'] == 'skipped':
             # Au-delà du plafond : rien ne part vers le modèle, mais la recette reste reconnue comme
             # « du collage » (publiée au post, supprimable au ✕). Pas de clé `quota` : non décomptée.
             RecipeImportRequest.objects.create(

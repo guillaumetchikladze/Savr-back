@@ -1,5 +1,5 @@
 """
-« Adapter pour chez moi » : copie privée d'une recette réécrite par le LLM pour la cuisine de l'utilisateur
+« Adapter pour chez moi » : copie d'une recette réécrite par le LLM pour la cuisine de l'utilisateur
 (airfryer au lieu du four, cocotte au lieu du Cookeo…). Contrat front : `.claude-work/specs/equipment.md`.
 
 - **Synchrone, borné** : un seul appel chat.completions (endpoint OpenAI-compatible, `CHAT_AI_MODEL`), délai
@@ -10,7 +10,7 @@
 - Le LLM ne réécrit que les étapes, temps, températures (titre + note) ; les ingrédients sont copiés tels quels
   (un changement indispensable est expliqué dans la note). Réponse invalide, erreur ou délai → `adaptation_failed`,
   rien n'est créé.
-- Copie : `is_public=False`, `created_by` = l'utilisateur, `adapted_from`, `adapted_for_equipment`, index de
+- Copie : publique comme toute recette de l'app (prv1), `created_by` = l'utilisateur, `adapted_from`, `adapted_for_equipment`, index de
   recherche repris de l'original. Ses équipements requis = ceux que la cuisine possède (`required_equipment_override`).
 - Activation : `EQUIPMENT_ADAPT_ENABLED` (défaut True). Tests : mocker `equipment_adaptation._call_llm`.
 """
@@ -201,7 +201,7 @@ def _create_copy(recipe: Recipe, user, kitchen: catalog.Kitchen, adapted: dict) 
         image_path=recipe.image_path,
         cuisine=recipe.cuisine,
         created_by=user,
-        is_public=False,
+        is_public=True,  # prv1 : toutes les recettes sont publiques par défaut
         source_type='user_created',
         # Même plat : l'index de recherche de l'original reste valable (pas de réindexation réseau ici).
         embedding=recipe.embedding,

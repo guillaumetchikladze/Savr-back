@@ -214,7 +214,7 @@ class UndoCookedResult(BaseModel):
 
 
 class EquipmentAdaptationResult(BaseModel):
-    """« Adapter pour chez moi » : copie privée de la recette, réécrite pour les équipements de l'utilisateur."""
+    """« Adapter pour chez moi » : copie de la recette, réécrite pour les équipements de l'utilisateur."""
 
     card_type: str = 'recipe_adaptation'
     recipe_id: int

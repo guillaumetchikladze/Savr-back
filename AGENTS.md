@@ -105,6 +105,14 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   importé réutilisé (sa propre recette vide réimportée). `log_cooked` avec ce `recipe_id` la rend publique, renvoie l'import
   en cours en `recipe_job`, ignore le label « Recette de <domaine> » ; Annuler la supprime ;
   `DELETE /recipes/import-link/<recipe_id>/` (✕ / autre lien) la supprime si jamais postée (204 toujours).
+  `keep: true` (« Garder la recette » du partage, shr1/prv1) : publique tout de suite, sans marque « du collage »
+  (`payload.kept_by_link`), donc jamais supprimée par ce DELETE ni par Annuler ; un brouillon du même lien est publié.
+  Le collage dans « J'ai cuisiné » reste un brouillon privé : une fois importé il aurait du contenu, donc
+  `discoverable_recipes_q` ne le cacherait plus, et un collage abandonné arriverait dans la recherche.
+- Recettes publiques par défaut (prv1, décision du 12/11) : tout chemin de création pose `is_public=True` (création,
+  éditeur `edit`, imports, génération / mise en forme IA, « J'ai cuisiné », chat, « Adapter pour chez moi »), seul le
+  brouillon du collage ci-dessus est privé. L'app ne propose plus de rendre une recette privée ; les recettes déjà
+  privées le restent (pas de migration de données). Imports publics : décision de Guillaume (droits d'auteur assumés).
 - Mise en forme IA (`POST /recipes/formalize/` + les tâches ci-dessus + import au collage) : ouverte à tous, plafond
   `AI_RECIPE_MONTHLY_CAP` (30) par utilisateur et mois calendaire (`ai_recipe_quota`), aucun plafond pour les premium
   (`User.plan == 'premium'`, `accounts.entitlements.is_premium`) ; au-delà, formalize → 429
@@ -515,7 +523,7 @@ Onboarding « Ta cuisine », badge « Il te manque : un four », « Adapter pour
   payload `kitchen`, `equipment_warnings`. Cuisine inconnue = comportement historique (un four, feux sans limite).
 - « Adapter pour chez moi » (`equipment_adaptation.py`) : `POST /api/recipes/<id>/adapt-equipment/` **synchrone** (un appel
   OpenAI-compatible `CHAT_AI_MODEL`, `EQUIPMENT_ADAPT_LLM_TIMEOUT_SECONDS` 8 s, sans nouvel essai → jamais > ~10 s), copie
-  privée liée (`adapted_from`, `adapted_for_equipment`), ingrédients copiés, étapes / temps réécrits, index de recherche repris
+  liée, publique (prv1) (`adapted_from`, `adapted_for_equipment`), ingrédients copiés, étapes / temps réécrits, index de recherche repris
   de l'original ; idempotente par (recette, user, empreinte des équipements) = contrainte unique
   `recipe_unique_equipment_adaptation`. Réponse invalide / erreur / délai → 502 `adaptation_failed`, rien de créé.
   Appels LLM limités par utilisateur (`EQUIPMENT_ADAPTATIONS_PER_USER_HOUR`, défaut 10) → 429 `rate_limited` ;

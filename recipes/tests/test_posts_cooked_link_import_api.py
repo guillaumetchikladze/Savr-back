@@ -1,5 +1,6 @@
 """ckd2 lot 2 bis : import du lien dès le collage (`POST /recipes/import-link/`), recette privée jusqu'au
-post, ✕ / Annuler, et abonnés premium sans plafond de mise en forme IA (scraper et LLM mockés)."""
+post, ✕ / Annuler, « Garder la recette » (`keep`, prv1 : publique, protégée), et abonnés premium sans plafond de
+mise en forme IA (scraper et LLM mockés)."""
 
 from decimal import Decimal
 from unittest import mock
@@ -182,6 +183,79 @@ def test_over_the_cap_the_recipe_is_kept_with_its_default_name_and_link(paste, u
     from recipes.services.ai_recipe_quota import used_this_month
 
     assert used_this_month(user) == 1  # la recette gardée telle quelle n'est pas décomptée
+
+
+# ---------------------------------------------------------------------------
+# « Garder la recette » (partage, prv1) : `keep` → publique tout de suite, jamais supprimée par ✕ / Annuler
+# ---------------------------------------------------------------------------
+def _keep(api, user, url=LINK):
+    return api.as_user(user).post(IMPORT_LINK_URL, {'url': url, 'keep': True}, format='json')
+
+
+def test_kept_recipe_is_public_at_once_and_never_discarded(api, user, celery_delay, django_capture_on_commit_callbacks):
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = _keep(api, user)
+
+    assert resp.status_code == 201, resp.data
+    recipe = Recipe.objects.get(id=resp.data['recipe_id'])
+    assert recipe.is_public and recipe.title == 'Recette de marmiton.org' and recipe.import_source_url == LINK
+    assert resp.data['status'] == 'pending'
+    assert _recipe_tasks(celery_delay) == [(IMPORT_TASK, (resp.data['request_id'],), {})]
+
+    assert api.as_user(user).delete(f'{IMPORT_LINK_URL}{recipe.id}/').status_code == 204
+    assert Recipe.objects.filter(id=recipe.id).exists()
+    _run_import(resp.data['request_id'])
+    assert Recipe.objects.get(id=recipe.id).title == 'Pâtes au canard'
+
+
+def test_kept_recipe_pasted_then_posted_and_undone_is_never_deleted(api, paste, cooked, user):
+    kept = _keep(api, user).data['recipe_id']
+
+    again = paste(user)  # le même lien collé dans « J'ai cuisiné » : la recette gardée, réutilisée
+    assert again.status_code == 200 and again.data['recipe_id'] == kept
+    assert api.as_user(user).delete(f'{IMPORT_LINK_URL}{kept}/').status_code == 204  # ✕
+    resp = cooked(user, recipe_id=kept)
+    api.as_user(user).delete(f'/api/posts/{resp.data["id"]}/?undo_cooked=true')  # Annuler
+
+    assert Recipe.objects.filter(id=kept, is_public=True).exists()
+
+
+def test_keep_publishes_a_pasted_draft_of_the_same_link(api, paste, user):
+    draft = paste(user).data['recipe_id']
+    assert not Recipe.objects.get(id=draft).is_public
+
+    resp = _keep(api, user)
+
+    assert resp.status_code == 200 and resp.data['recipe_id'] == draft
+    assert Recipe.objects.get(id=draft).is_public
+    api.as_user(user).delete(f'{IMPORT_LINK_URL}{draft}/')
+    assert Recipe.objects.filter(id=draft).exists()
+
+
+def test_kept_over_the_cap_is_public_empty_hidden_from_search_and_kept(api, user, make_user, settings):
+    settings.AI_RECIPE_MONTHLY_CAP = 1
+    _keep(api, user, OTHER_LINK)
+
+    resp = _keep(api, user)
+
+    assert resp.data['status'] == 'skipped' and resp.data['code'] == 'ai_quota_exceeded'
+    recipe = Recipe.objects.get(id=resp.data['recipe_id'])
+    assert recipe.is_public
+    api.as_user(user).delete(f'{IMPORT_LINK_URL}{recipe.id}/')
+    assert Recipe.objects.filter(id=recipe.id).exists()
+    # vide : s'ouvre par son id mais n'est listée chez personne (discoverable_recipes_q)
+    found = api.as_user(make_user()).get('/api/recipes/', {'search': 'Recette de marmiton'}).data
+    rows = found.get('results', found) if isinstance(found, dict) else found
+    assert recipe.id not in [r['id'] for r in rows]
+
+
+def test_sheet_paste_stays_a_private_draft_even_once_imported(paste, api, user, make_user):
+    data = paste(user).data
+    _run_import(data['request_id'])
+
+    recipe = Recipe.objects.get(id=data['recipe_id'])
+    assert not recipe.is_public and recipe.steps.exists()  # importée mais jamais postée : privée
+    assert api.as_user(make_user()).get(f'/api/recipes/{recipe.id}/').status_code == 404
 
 
 # ---------------------------------------------------------------------------

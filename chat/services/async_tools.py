@@ -401,7 +401,7 @@ async def adapt_recipe_equipment(
     ctx: RunContextWrapper[AgentContext],
     recipe_id: int,
 ) -> EquipmentAdaptationResult:
-    """« Adapter pour chez moi » : version privée d'une recette réécrite pour les équipements de l'utilisateur
+    """« Adapter pour chez moi » : version d’une recette réécrite pour les équipements de l'utilisateur
     (airfryer au lieu du four, casserole au lieu du Cookeo…). Exécution immédiate, renvoie une carte.
 
     À utiliser quand une recette (search_recipes → missing_equipment, recette d'un ami) demande un équipement
