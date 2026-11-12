@@ -1861,6 +1861,35 @@ class RecipeViewSet(viewsets.ModelViewSet):
         serializer = RecipeImportRequestSerializer(import_request, context={'request': request})
         return Response(serializer.data)
 
+    @action(detail=False, methods=['post'], url_path='import-link')
+    def import_link(self, request):
+        """
+        Lien collé dans « La recette » de « J'ai cuisiné » (ckd2 lot 2 bis) : l'import part tout de suite.
+
+        Body : {url}. Pas de droit `ai` ; compté dans `AI_RECIPE_MONTHLY_CAP` sauf premium.
+        Réponse (201 recette créée / 200 réutilisée) : {recipe_id, request_id, status, host,
+        already_imported, recipe: {id, title, image_url}[, code]}. `status` : pending | processing
+        (suivre GET /recipes/formalize/status/<request_id>/), success (déjà importée, request_id null),
+        skipped + code ai_quota_exceeded (au-delà du plafond : « Recette de <domaine> » + lien gardés).
+        La recette créée est privée jusqu'au post (`POST /posts/cooked/` avec `recipe_id`).
+        400 `invalid_import_url`.
+        """
+        from .services.cooked_recipe import LinkImportError, start_link_import
+
+        try:
+            data, created = start_link_import(request.user, request.data.get('url'))
+        except LinkImportError as exc:
+            return Response({'error': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=False, methods=['delete'], url_path=r'import-link/(?P<link_recipe_id>\d+)')
+    def discard_link_recipe(self, request, link_recipe_id=None):
+        """✕ / autre lien : supprime la recette du collage si elle n'a jamais été postée (204 sinon rien)."""
+        from .services.cooked_recipe import discard_link_recipe
+
+        discard_link_recipe(request.user, int(link_recipe_id))
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['get'], url_path='formalize/requests')
     def formalize_requests(self, request):
         qs = RecipeImportRequest.objects.filter(user=request.user).order_by('-created_at')[:20]

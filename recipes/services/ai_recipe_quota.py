@@ -4,6 +4,8 @@ Plafond mensuel de mise en forme IA d'une recette (décision ckd2 lot 2, 12/11/2
 `POST /recipes/formalize/` et la mise en forme / l'import lancés par `POST /posts/cooked/`
 (`recipe_text`, `import_url`) sont ouverts à tous (plus de droit `ai`), avec au plus
 `settings.AI_RECIPE_MONTHLY_CAP` demandes par utilisateur et par mois calendaire (fuseau du projet).
+Les abonnés premium (`User.plan == 'premium'`, `accounts.entitlements.is_premium`) n'ont aucun plafond
+(décision Guillaume 12/11/2026, ckd2 lot 2 bis).
 
 Une demande compte dès qu'elle est créée (`RecipeImportRequest` marquée `payload.quota`), qu'elle
 réussisse ou non : c'est l'appel au modèle qui coûte (sauf file de tâches injoignable). Au-delà : `formalize` répond 429 ; « J'ai cuisiné »
@@ -44,6 +46,11 @@ def used_this_month(user, now=None) -> int:
 
 
 def has_quota(user, now=None) -> bool:
+    """Seul point de contrôle du plafond (formalize, « J'ai cuisiné », import au collage)."""
+    from accounts.entitlements import is_premium
+
+    if is_premium(user):
+        return True
     cap = monthly_cap()
     return cap == 0 or used_this_month(user, now) < cap
 

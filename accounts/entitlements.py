@@ -17,6 +17,13 @@ def user_has_feature(user, feature_name: str) -> bool:
     return False
 
 
+def is_premium(user) -> bool:
+    """Abonné premium (`User.plan`, posé par `billing.activate_premium_license`)."""
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    return getattr(user, 'plan', None) == getattr(user, 'PLAN_PREMIUM', 'premium')
+
+
 def feature_locked_payload(feature_name: str = 'ai') -> dict:
     return {
         'error': 'Fonctionnalité premium requise.',

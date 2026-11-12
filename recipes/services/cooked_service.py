@@ -422,6 +422,14 @@ def log_cooked(
         if recipe:
             url = ''
 
+    # Recette posée au collage (lot 2 bis, `POST /recipes/import-link/`) : publiée avec le post ; son
+    # import encore en cours est renvoyé en `recipe_job` (le fil prendra le titre importé).
+    link_recipe = recipe if cooked_recipe.is_unposted_link_recipe(user, recipe) else None
+    link_job = cooked_recipe.running_link_job(user, recipe)
+    if recipe is not None and recipe.import_source_url and label:
+        if cooked_recipe.is_default_link_label(label, cooked_recipe.link_host(recipe.import_source_url)):
+            label = ''  # « Recette de marmiton.org » : pas un nom choisi, le titre importé prime
+
     if not (recipe or label or meal_plan or recipe_text or url):
         raise CookedError('recipe_id, label or meal_plan_id is required', 400, 'missing_dish')
 
@@ -474,9 +482,11 @@ def log_cooked(
             return CookedResult(_publish_if_requested(existing, publish), False)
 
     # ---- Écritures ----
-    recipe_job = None
+    recipe_job = link_job
     created_recipe = None
     with transaction.atomic():
+        if link_recipe is not None:
+            cooked_recipe.publish_link_recipe(link_recipe)
         if new_recipe is not None:
             title, plan, named = new_recipe
             recipe = created_recipe = cooked_recipe.create_cooked_recipe(user, title=title, plan=plan)
@@ -497,6 +507,8 @@ def log_cooked(
         }
         if created_recipe is not None:
             undo['created_recipe_id'] = created_recipe.id
+        if link_recipe is not None:
+            undo['link_recipe_id'] = link_recipe.id
 
         if recipe and basket_item and basket_item.recipe_id == recipe.id:
             # Envie du panier : sa recette entre dans le repas avec son batch (liste de courses conservée).
@@ -580,6 +592,8 @@ def undo_cooked(post: Post) -> None:
     `cooked_undo` (repas créé → supprimé ; repas existant → confirmé/recettes/batches restaurés).
     Sans `cooked_undo` (autres flux) : suppression simple du post.
     """
+    from . import cooked_recipe
+
     undo = post.cooked_undo or {}
     meal_plan = post.meal_plan
     user = post.user
@@ -600,6 +614,7 @@ def undo_cooked(post: Post) -> None:
                 id__in=batch_ids, created_by=user, meal_plan_recipe_batches__isnull=True, basket_items__isnull=True
             ).delete()
             _delete_created_recipe(user, undo.get('created_recipe_id'))
+            cooked_recipe.unpublish_link_recipe(user, undo.get('link_recipe_id'))
             return
 
         added = undo.get('added_recipe_ids') or []
@@ -624,6 +639,7 @@ def undo_cooked(post: Post) -> None:
         meal_plan.custom_label = undo.get('custom_label', meal_plan.custom_label) or ''
         meal_plan.save(update_fields=['confirmed', 'meal_type', 'custom_label', 'updated_at'])
         _delete_created_recipe(user, undo.get('created_recipe_id'))
+        cooked_recipe.unpublish_link_recipe(user, undo.get('link_recipe_id'))
 
 
 def _delete_created_recipe(user, recipe_id) -> None:

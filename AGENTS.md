@@ -93,8 +93,15 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   (`process_cooked_recipe_text`) ; `import_url` → recette déjà importée réutilisée, sinon « Recette de <domaine> »
   (ou le nom donné) gardant le lien, puis import (`process_cooked_recipe_import`, sans droit `ai`), renommée seulement
   sans nom choisi. Réponse : `recipe_job` (suivi par `GET /recipes/formalize/status/<id>/`). Annuler supprime la recette créée.
-- Mise en forme IA (`POST /recipes/formalize/` + les deux tâches ci-dessus) : ouverte à tous, plafond
-  `AI_RECIPE_MONTHLY_CAP` (30) par utilisateur et mois calendaire (`ai_recipe_quota`) ; au-delà, formalize → 429
+- Import au collage (lot 2 bis) : `POST /recipes/import-link/ {url}` → `{recipe_id, request_id, status, host,
+  already_imported, recipe{id,title,image_url}[, code]}` (201 créée / 200 réutilisée ; status pending|processing|success|
+  skipped). Recette privée « Recette de <domaine> » jusqu'au post, import `cooked_link` sans droit `ai` ; lien déjà
+  importé réutilisé (sa propre recette vide réimportée). `log_cooked` avec ce `recipe_id` la rend publique, renvoie l'import
+  en cours en `recipe_job`, ignore le label « Recette de <domaine> » ; Annuler la rend privée ;
+  `DELETE /recipes/import-link/<recipe_id>/` (✕ / autre lien) la supprime si jamais postée (204 toujours).
+- Mise en forme IA (`POST /recipes/formalize/` + les tâches ci-dessus + import au collage) : ouverte à tous, plafond
+  `AI_RECIPE_MONTHLY_CAP` (30) par utilisateur et mois calendaire (`ai_recipe_quota`), aucun plafond pour les premium
+  (`User.plan == 'premium'`, `accounts.entitlements.is_premium`) ; au-delà, formalize → 429
   `ai_quota_exceeded`, « J'ai cuisiné » garde la recette brute (`recipe_job.status = skipped`).
 
 ## Stats, badges et Récap (app `stats`)
