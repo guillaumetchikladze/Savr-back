@@ -149,6 +149,15 @@ def _render_miam(ctx: dict) -> tuple[str, str]:
     return plural(n, 'Nouveau miam', 'Nouveaux miams'), f'{people(names, n)} {verb} {ctx["dish"]}.'
 
 
+def _render_post_guest(ctx: dict) -> tuple[str, str]:
+    dish = ctx.get('dish') or ''
+    together = f'{dish}, cuisiné ensemble.' if dish.startswith('«') else 'Cuisiné ensemble.'
+    return (
+        f'{ctx.get("actor") or "Quelqu’un"} t’a mis dans son plat',
+        f'{together} Ce n’est pas toi ? Tu peux te retirer.',
+    )
+
+
 def _render_my_turn(ctx: dict) -> tuple[str, str]:
     names, n = _actors(ctx)
     verb = 'veut refaire' if n == 1 else 'veulent refaire'
@@ -356,8 +365,8 @@ _TYPES = (
         # ckd2 lot 3 : convive direct (« Avec qui » / @Léa) ; jamais pour le foyer préajouté.
         'post_guest',
         'social',
-        title='{actor} t’a mis dans son plat',
-        body='{dish}, cuisiné ensemble. Tu peux le republier, ou te retirer.',
+        # Aucune validation demandée : la notif informe, et propose seulement de se retirer.
+        renderer=_render_post_guest,
         inbox_type='post_guest',
         data_fields=_POST,
         url='post/{post_id}',

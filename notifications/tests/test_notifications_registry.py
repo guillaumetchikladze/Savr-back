@@ -95,3 +95,13 @@ def test_a_mon_tour_renders_single_and_aggregated():
     assert cooked.render({'actors': ['Léa', 'Tom'], 'dish': '« Quiche »'})[1] == 'Léa et Tom ont refait « Quiche ».'
     data = cooked.build_data({'post_id': 4, 'cooked_post_id': 9}, notification_id=1)
     assert data['url'] == 'tchikook://post/4' and data['cooked_post_id'] == 9
+
+
+def test_post_guest_only_informs_and_offers_to_leave():
+    """Être mis dans un plat ne demande aucune validation : pas de « republier », seulement « te retirer »."""
+    spec = get_type('post_guest')
+    title, body = spec.render({'actor': 'Tom', 'dish': '« Gnocchis au pesto »'})
+    assert title == 'Tom t’a mis dans son plat'
+    assert body == '« Gnocchis au pesto », cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer.'
+    _, untitled = spec.render({'actor': 'Tom', 'dish': 'ton plat'})
+    assert untitled == 'Cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer.'

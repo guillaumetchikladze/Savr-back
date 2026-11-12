@@ -75,7 +75,9 @@ def test_guest_added_directly_notified_and_shown_on_post(
     notif = Notification.objects.get(user=lea, notification_type='post_guest')
     assert notif.related_post_id == resp.data['id']
     assert notif.title == 'tom t’a mis dans son plat'
-    assert 'Pâtes au canard' in notif.message and 'te retirer' in notif.message
+    # Aucune validation demandée : la notif informe, propose seulement de se retirer.
+    assert notif.message == '«\u00a0Pâtes au canard\u00a0», cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer.'
+    assert 'republier' not in notif.message
     (guest,) = resp.data['guests']
     assert guest['id'] == lea.id and guest['first_name'] == 'Léa' and guest['can_view_profile'] is True
 

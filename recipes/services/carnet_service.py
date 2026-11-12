@@ -16,6 +16,14 @@ Visibilité :
   (`post_visibility.visible_posts`). Jamais ses repas sans post, ses posts privés, ses batches, ni le
   nombre de convives (foyer). Les posts co-cuisinés (reposts) ne sont pas ses plats : absents.
 
+Filtre « Avec moi » (`filter=with_me`, ckd2 lot 3 suite) : les plats **des autres** où le propriétaire du
+carnet a été mis (invitation acceptée au repas du post : convive direct, foyer, invité d'avant ; « Me
+retirer » = refusée → absent). Ce ne sont **pas** ses plats : jamais comptés dans `count` du carnet, les stats
+ni les badges. Seulement des posts publiés, visibles par le lecteur (`visible_posts`), hôte actif, sans blocage
+entre l'hôte et le lecteur ni (carnet d'un autre) entre l'hôte et le propriétaire. Un post y figure une fois
+(un repost n'est pas un post). Chaque entrée porte `host`. `with_me_available` (une requête `exists`) dit si
+le filtre a quelque chose à montrer : l'app ne l'affiche qu'alors.
+
 Pagination par curseur (clé : date du plat, heure de saisie, type, id) : stable quand un plat est ajouté
 pendant le défilement. `count` est exact (une requête). Nombre de requêtes constant par page.
 """
@@ -53,6 +61,14 @@ MAX_PAGE_SIZE = 50
 # Rang du type dans la clé de tri (départage à date et heure égales, puis id).
 _RANK = {'post': 3, 'meal': 2, 'batch': 1}
 _KIND_BY_RANK = {v: k for k, v in _RANK.items()}
+
+
+FILTER_WITH_ME = 'with_me'
+FILTERS = (FILTER_WITH_ME,)
+
+
+class InvalidFilter(ValueError):
+    pass
 
 
 class CarnetNotVisible(Exception):
@@ -146,7 +162,36 @@ def _batch_source(owner_id: int) -> QuerySet:
     )
 
 
-def _sources(owner_id: int, viewer) -> list[QuerySet]:
+def _with_me_posts(owner_id: int, viewer) -> QuerySet:
+    """Posts publiés des autres où `owner_id` est convive (invitation acceptée), visibles par `viewer`."""
+    from accounts.blocks import blocked_user_ids_for
+
+    my_meals = MealInvitation.objects.filter(invitee_id=owner_id, status='accepted').values('meal_plan_id')
+    qs = Post.objects.filter(is_published=True, meal_plan_id__in=my_meals).exclude(user_id=owner_id)
+    qs = visible_posts(viewer, queryset=qs)
+    if viewer.id != owner_id:
+        owner_blocks = blocked_user_ids_for(get_user_model()(pk=owner_id))
+        if owner_blocks:
+            qs = qs.exclude(user_id__in=owner_blocks)
+    return qs
+
+
+def _with_me_source(owner_id: int, viewer) -> QuerySet:
+    return _keys(
+        _with_me_posts(owner_id, viewer),
+        day=Coalesce(F('meal_plan__date'), TruncDate('created_at'), output_field=DateField()),
+        ts=F('created_at'),
+        kind='post',
+    )
+
+
+def with_me_available(viewer, owner_id: int) -> bool:
+    return _with_me_posts(owner_id, viewer).exists()
+
+
+def _sources(owner_id: int, viewer, filter_: str | None = None) -> list[QuerySet]:
+    if filter_ == FILTER_WITH_ME:
+        return [_with_me_source(owner_id, viewer)]
     sources = [_post_source(owner_id, viewer)]
     if viewer.id == owner_id:
         sources += [_meal_source(owner_id), _batch_source(owner_id)]
@@ -205,11 +250,13 @@ def _invitations_prefetch(attr: str = 'invitations') -> Prefetch:
     return Prefetch(attr, queryset=qs)
 
 
-def _load(kind: str, ids: list[int], *, is_self: bool) -> dict:
+def _load(kind: str, ids: list[int], *, is_self: bool, with_host: bool = False) -> dict:
     if not ids:
         return {}
     if kind == 'post':
         qs = Post.objects.filter(id__in=ids).select_related('recipe_batch__recipe', 'meal_plan')
+        if with_host:
+            qs = qs.select_related('user')
         prefetch = [
             _photos_prefetch(),
             Prefetch('meal_plan__meal_plan_recipe_batches', queryset=_batches_prefetch().queryset),
@@ -446,12 +493,35 @@ def cooked_total(owner) -> int:
     return carnet_count(owner, owner.id)
 
 
-def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: int = DEFAULT_PAGE_SIZE) -> dict:
-    """`{count, next_cursor, results}` ; `InvalidCursor` si le curseur est illisible."""
+def _host_payload(user) -> dict:
+    return {
+        'id': user.id,
+        'username': user.username,
+        'first_name': user.first_name or user.username,
+        'avatar_url': user.avatar_url or None,
+    }
+
+
+def build_carnet_page(
+    viewer,
+    owner,
+    *,
+    cursor: str | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    filter_: str | None = None,
+) -> dict:
+    """
+    `{count, next_cursor, results, filter, with_me_available}` ; `InvalidCursor` si le curseur est illisible,
+    `InvalidFilter` si le filtre est inconnu. `filter_='with_me'` : les plats des autres où `owner` est convive.
+    """
+    if filter_ and filter_ not in FILTERS:
+        raise InvalidFilter(filter_)
+    with_me = filter_ == FILTER_WITH_ME
     page_size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     after = Cursor.decode(cursor) if cursor else None
-    is_self = viewer.id == owner.id
-    sources = _sources(owner.id, viewer)
+    # Le plat d'un autre : jamais ses batches, repas ni portions, même sur mon carnet.
+    is_self = viewer.id == owner.id and not with_me
+    sources = _sources(owner.id, viewer, filter_)
 
     count = _union(sources).count()
     rows = list(
@@ -463,7 +533,7 @@ def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: in
     ids: dict[str, list[int]] = {'post': [], 'meal': [], 'batch': []}
     for row in rows:
         ids[_KIND_BY_RANK[row['k_rank']]].append(row['k_id'])
-    loaded = {kind: _load(kind, kind_ids, is_self=is_self) for kind, kind_ids in ids.items()}
+    loaded = {kind: _load(kind, kind_ids, is_self=is_self, with_host=with_me) for kind, kind_ids in ids.items()}
 
     visible_user_ids: set[int] | None = None
     if not is_self:
@@ -483,6 +553,8 @@ def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: in
             continue
         if kind == 'post':
             entry = _post_entry(obj, is_self=is_self, cache=cache, visible_user_ids=visible_user_ids)
+            if with_me:
+                entry['host'] = _host_payload(obj.user)
         elif kind == 'meal':
             entry = _meal_entry(obj, cache, is_self=is_self, visible_user_ids=visible_user_ids)
         else:
@@ -494,4 +566,17 @@ def build_carnet_page(viewer, owner, *, cursor: str | None = None, page_size: in
     if has_more and rows:
         last = rows[-1]
         next_cursor = Cursor(last['k_day'], last['k_ts'], last['k_rank'], last['k_id']).encode()
-    return {'count': count, 'next_cursor': next_cursor, 'results': results}
+    # Le filtre n'apparaît que s'il a quelque chose à montrer (une requête `exists`, 1re page seulement).
+    if with_me:
+        available = count > 0
+    elif after is None:
+        available = with_me_available(viewer, owner.id)
+    else:
+        available = None
+    return {
+        'count': count,
+        'next_cursor': next_cursor,
+        'results': results,
+        'filter': filter_ or None,
+        'with_me_available': available,
+    }

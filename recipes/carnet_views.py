@@ -6,10 +6,14 @@ Carnet d'un profil (`recipes/services/carnet_service.py`) : plats cuisinés, ave
   visibles seulement. Profil non visible (pas abonné, blocage) → 403 `profile_not_visible` ; inconnu ou
   inactif → 404.
 - `?cursor=` (renvoyé par `next_cursor`), `?page_size=` (défaut 20, ≤ 50).
+- `?filter=with_me` : les plats **des autres** où le profil a été mis (convive), visibles par le lecteur ;
+  chaque entrée porte `host {id, username, first_name, avatar_url}`. Filtre inconnu → 400 `invalid_filter`.
+  `with_me_available` (1re page) : le filtre a au moins un plat à montrer (sinon l'app le cache).
 
 Réponse : `{count, next_cursor, results: [{key, kind, date, meal_time, meal_time_display, title, dish_key,
 recipe {id, title, image_url} | null, post_id | null, thumbnail {url, width, height} | null, photos_count,
-note, first_time, is_private, [soi : batch_id, meal_plan_id, servings]}]}`.
+note, first_time, is_private, guests, guests_count, [soi : batch_id, meal_plan_id, servings],
+[with_me : host]}], filter, with_me_available}`.
 """
 
 from __future__ import annotations
@@ -38,8 +42,14 @@ def _carnet(request, owner_id: int) -> Response:
         return Response({'error': 'Profil non visible.', 'code': 'profile_not_visible'}, status=403)
     try:
         data = carnet_service.build_carnet_page(
-            request.user, owner, cursor=request.query_params.get('cursor') or None, page_size=_page_size(request)
+            request.user,
+            owner,
+            cursor=request.query_params.get('cursor') or None,
+            page_size=_page_size(request),
+            filter_=request.query_params.get('filter') or None,
         )
+    except carnet_service.InvalidFilter:
+        return Response({'error': 'Filtre inconnu.', 'code': 'invalid_filter'}, status=400)
     except carnet_service.InvalidCursor:
         return Response({'error': 'Curseur invalide.', 'code': 'invalid_cursor'}, status=400)
     return Response({'user_id': owner.id, **data})

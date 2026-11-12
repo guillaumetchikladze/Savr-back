@@ -110,7 +110,7 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   (`User.plan == 'premium'`, `accounts.entitlements.is_premium`) ; au-delà, formalize → 429
   `ai_quota_exceeded`, « J'ai cuisiné » garde la recette brute (`recipe_job.status = skipped`).
 - Convives directs (lot 3, `recipes/services/dish_guests.py`) : `guest_ids` (« Avec qui » / @Léa) = `MealInvitation`
-  du repas **déjà acceptée** (`source='direct'`), notif `post_guest` (« Tom t’a mis dans son plat », ouvre le post) ;
+  du repas **déjà acceptée** (`source='direct'`), notif `post_guest` (« Tom t’a mis dans son plat » / « « Gnocchis », cuisiné ensemble. Ce n’est pas toi ? Tu peux te retirer. » : informe seulement, **aucune validation** demandée, ouvre le post) ;
   `household_guest_ids` = foyer préajouté d'un plat du planning (`meal_plan_id` seulement, compte du foyer accepté) →
   `source='household'`, jamais notifié (hors planning : convive ordinaire). Ajoutables = `guest_candidates` (amis dans
   un sens ou l'autre, foyer, membres acceptés de ses tablées, hors blocages / inactifs) ; un autre id est ignoré,
@@ -298,6 +298,12 @@ Aucun modèle ni migration.
   posts « rien que pour moi », batches ni convives ; les reposts (co-cuisinés) ne sont pas ses plats.
 - Curseur = (date, `created_at`, type, id) sur une `UNION ALL` des sources ; 2 requêtes de clés + chargement en lot
   par type : nombre de requêtes constant (test). Tests : `recipes/tests/test_posts_carnet_api.py`.
+- Filtre « Avec moi » (`?filter=with_me`, sur `me/` et `users/<id>/`) : les plats **des autres** où le profil est
+  convive (invitation acceptée ; « Me retirer » → absent), posts publiés visibles par le lecteur (`visible_posts`),
+  sans blocage hôte ↔ lecteur ni hôte ↔ propriétaire ; entrée + `host {id, username, first_name, avatar_url}`, sans
+  champs « soi ». Jamais dans `count` du carnet, `cooked_count`, stats ni badges. `with_me_available` (1re page,
+  une requête `exists`) : l'app n'affiche le filtre que s'il est vrai. Filtre inconnu → 400 `invalid_filter`.
+  Tests : `recipes/tests/test_posts_carnet_with_me_api.py`.
 - Profil unifié (prf3) : `GET /api/auth/users/<id>/` ajoute `cooked_count` (`carnet_service.cooked_total` = le
   `count` de son propre carnet, privé compris : **un nombre seulement**, visible de tous sauf blocage) et
   `shared_tables` (`tables.services.shared_tables` : `[{id, name, emoji, color}]`, tablées où lecteur et profil
