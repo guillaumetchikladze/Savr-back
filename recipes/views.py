@@ -5872,21 +5872,64 @@ class PostViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
         with transaction.atomic():
-            was_published = post.is_published
-            post.is_published = True
-            post.save()
-            if not was_published:
-                from .services.dish_guests import apply_held_guests
+            self._publish_own_post(request.user, post)
 
-                apply_held_guests(post)  # convives d'un plat resté « rien que pour toi » (ckd2 lot 3)
+        serializer = self.get_serializer(post)
+        return Response(serializer.data)
 
-            if post.meal_plan_id:
-                complete_meal_plan_batches_for_publish(request.user, post.meal_plan)
-                if post.meal_plan.user_id == request.user.id and not post.meal_plan.confirmed:
-                    MealPlan.objects.filter(pk=post.meal_plan_id).update(confirmed=True)
-            elif post.recipe_batch_id:
-                complete_recipe_batch_workflow(request.user, post.recipe_batch)
-                confirm_meal_plan_for_cooked_batch(request.user, post.recipe_batch)
+    @staticmethod
+    def _publish_own_post(user, post) -> None:
+        """Publie `post` (à `user`) : convives gardés appliqués, batches / repas complétés. Dans une transaction."""
+        was_published = post.is_published
+        post.is_published = True
+        post.save()
+        if not was_published:
+            from .services.dish_guests import apply_held_guests
+
+            apply_held_guests(post)  # convives d'un plat resté « rien que pour toi » (ckd2 lot 3)
+
+        if post.meal_plan_id:
+            complete_meal_plan_batches_for_publish(user, post.meal_plan)
+            if post.meal_plan.user_id == user.id and not post.meal_plan.confirmed:
+                MealPlan.objects.filter(pk=post.meal_plan_id).update(confirmed=True)
+        elif post.recipe_batch_id:
+            complete_recipe_batch_workflow(user, post.recipe_batch)
+            confirm_meal_plan_for_cooked_batch(user, post.recipe_batch)
+
+    @action(detail=True, methods=['post'], url_path='audience')
+    def audience(self, request, pk=None):
+        """
+        « Qui voit ce plat ? » (ckd2 lot 4), menu « … » de son post : les 3 choix de « J'ai cuisiné ».
+
+        Corps : ``{"audience": "friends" | "public" | "private"}``.
+        - ``friends`` : publié, pas partagé avec la communauté ;
+        - ``public`` : publié + ``is_public`` (suggestions chez d'autres cuisiniers) ;
+        - ``private`` (« toi seulement ») : dépublié et ``is_public`` retiré, donc invisible pour tous les
+          autres (``post_visibility`` exige un post publié : fil, profil, détail, « Avec moi », reposts).
+        Passer d'un plat privé à un plat partagé = la publication (``publish``) : les convives gardés
+        (``held_guests``, lot 3) sont ajoutés et prévenus à ce moment-là. Réponse : le post sérialisé.
+        """
+        post = self.get_object()
+        if post.user_id != request.user.id:
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        audience = str(request.data.get('audience') or '').strip().lower()
+        if audience not in ('friends', 'public', 'private'):
+            return Response(
+                {'error': 'audience must be friends, public or private', 'code': 'invalid_audience'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            if audience == 'private':
+                Post.objects.filter(pk=post.pk).update(is_published=False, is_public=False, updated_at=timezone.now())
+                post.is_published = False
+                post.is_public = False
+            else:
+                self._publish_own_post(request.user, post)
+                wanted_public = audience == 'public'
+                if post.is_public != wanted_public:
+                    Post.objects.filter(pk=post.pk).update(is_public=wanted_public, updated_at=timezone.now())
+                    post.is_public = wanted_public
 
         serializer = self.get_serializer(post)
         return Response(serializer.data)
