@@ -93,6 +93,12 @@ Source unique : `recipes/services/cooked_service.py` → `cooked_meal_plans(user
   (`process_cooked_recipe_text`) ; `import_url` → recette déjà importée réutilisée, sinon « Recette de <domaine> »
   (ou le nom donné) gardant le lien, puis import (`process_cooked_recipe_import`, sans droit `ai`), renommée seulement
   sans nom choisi. Réponse : `recipe_job` (suivi par `GET /recipes/formalize/status/<id>/`). Annuler supprime la recette créée.
+- Nom seul (lot 2 ter) : la recette créée (ou sa propre recette du même nom restée vide, sans lien) est complétée par
+  l'IA à partir du nom (`process_cooked_recipe_generate`, même génération que `generate_from_idea`, sans droit `ai`,
+  plafond mensuel sauf premium) → `recipe_job.kind = generate` ; titre gardé, `source_type = generated` (« Proposée par
+  Tchikook »), jamais d'écrasement d'une recette remplie entre-temps. Recherche / découverte (`/recipes/` list & search*,
+  `/auth/search/`, recherche du chat, suggestions de collection) : `recipe_access.discoverable_recipes_q` = ses recettes +
+  les publiques **avec contenu** (étape ou ingrédient) ; une publique vide s'ouvre par son id mais n'est listée chez personne.
 - Import au collage (lot 2 bis) : `POST /recipes/import-link/ {url}` → `{recipe_id, request_id, status, host,
   already_imported, recipe{id,title,image_url}[, code]}` (201 créée / 200 réutilisée ; status pending|processing|success|
   skipped). Recette privée « Recette de <domaine> » jusqu'au post, import `cooked_link` sans droit `ai` ; lien déjà

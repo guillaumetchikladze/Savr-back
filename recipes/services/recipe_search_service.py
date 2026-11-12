@@ -3,13 +3,13 @@
 import logging
 
 from django.contrib.auth.models import AbstractBaseUser
-from django.db.models import Q
 
 from chat.services.tool_schemas import RecipeSummary, SearchRecipesResult
 from recipes.dietary_filters import conflict_reasons_by_recipe_id
 from recipes.models import Recipe
 from recipes.services.equipment_service import effective_kitchen, exclude_unfeasible, rank_penalty, recipe_missing
 from recipes.services.ingredient_matcher import get_batch_embeddings
+from recipes.services.recipe_access import discoverable_recipes_q
 from recipes.services.recipe_search import hybrid_recipe_queryset
 from recipes.services.sub_recipe_service import sub_recipe_hints
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def _recipe_base_queryset(user: AbstractBaseUser):
     return (
-        Recipe.objects.filter(Q(is_public=True) | Q(created_by=user))
+        Recipe.objects.filter(discoverable_recipes_q(user))
         .defer(
             'description',
             'created_at',

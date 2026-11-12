@@ -1042,8 +1042,13 @@ class RecipeViewSet(viewsets.ModelViewSet):
         user = self.request.user
         list_actions = ['list', 'search', 'search_fuzzy', 'search_semantic', 'my_imports', 'my_favorites', 'my_recipes']
 
-        # Recherche / listes : publiques + propres recettes uniquement
-        if user.is_authenticated:
+        # Recherche / listes : publiques + propres recettes uniquement ; recherche et découverte : sans les
+        # recettes publiques vides des autres (nom seul en cours de complétion, ckd2 lot 2 ter).
+        if self.action in ('list', 'search', 'search_fuzzy', 'search_semantic'):
+            from .services.recipe_access import discoverable_recipes_q
+
+            queryset = Recipe.objects.filter(discoverable_recipes_q(user))
+        elif user.is_authenticated:
             if self.action in list_actions:
                 queryset = Recipe.objects.filter(Q(is_public=True) | Q(created_by=user))
             else:
@@ -5038,7 +5043,7 @@ class PostViewSet(viewsets.ModelViewSet):
         Header optionnel `Idempotency-Key`.
         Réponse : post au format feed + `created` (201 créé / 200 existant) + `new_badges`
         (badges débloqués par ce log, cf. GET /badges/me/ ; liste vide sinon) + `recipe_job`
-        (null, ou {request_id, kind: format|import, status} à suivre par GET /recipes/formalize/status/<id>/ ;
+        (null, ou {request_id, kind: format|import|generate, status} à suivre par GET /recipes/formalize/status/<id>/ ;
         status `skipped` + code `ai_quota_exceeded` au-delà du plafond mensuel : recette gardée telle quelle).
         """
         from django.core.cache import cache
@@ -7812,8 +7817,10 @@ class CollectionViewSet(viewsets.ModelViewSet):
         collection = self.get_object()
         existing_ids = collection.collection_recipes.values_list('recipe_id', flat=True)
 
+        from .services.recipe_access import discoverable_recipes_q
+
         queryset = (
-            Recipe.objects.filter(Q(is_public=True) | Q(created_by=request.user))
+            Recipe.objects.filter(discoverable_recipes_q(request.user))
             .exclude(id__in=existing_ids)
             .order_by('-created_at')
         )

@@ -335,6 +335,7 @@ class Recipe(models.Model):
         choices=[
             ('user_created', "Créée par l'utilisateur"),
             ('imported', 'Importée'),
+            ('generated', 'Proposée par Tchikook'),  # nom seul complété par l'IA (ckd2 lot 2 ter)
             ('system', 'Système'),
         ],
         default='user_created',

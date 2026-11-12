@@ -4,8 +4,12 @@
 `POST /posts/cooked/` sans `recipe_id` : la recette du plat est posée tout de suite, puis complétée
 en arrière-plan si besoin.
 
-- nom seul → recette « coquille » au nom du plat (réutilise sa propre recette du même nom : un plat
-  cuisiné deux fois reste une seule recette) ;
+- nom seul → recette au nom du plat (réutilise sa propre recette du même nom : un plat cuisiné deux
+  fois reste une seule recette), complétée par l'IA à partir du nom (ckd2 lot 2 ter, tâche
+  `process_cooked_recipe_generate`, `recipe_job.kind = generate`) : ingrédients et étapes proposés,
+  titre de l'utilisateur gardé, `source_type = generated` (« proposée par Tchikook »). Tant qu'elle est
+  vide (en cours, échec, plafond), elle s'ouvre depuis le post mais n'apparaît pas dans la recherche
+  publique (`recipe_access.discoverable_recipes_q`) ;
 - `recipe_text` (« Ta recette » écrite) → recette au nom du plat dont le texte brut est l'unique étape,
   puis mise en forme IA (tâche `process_cooked_recipe_text`) ; échec ou plafond : le texte reste ;
 - `import_url` (lien collé) → recette déjà importée depuis ce lien réutilisée, sinon recette
@@ -45,7 +49,8 @@ WRITTEN_RECIPE_DEFAULT_TITLE = 'Ta recette'
 JOB_FORMAT = 'cooked_format'
 JOB_IMPORT = 'cooked_import'
 JOB_LINK = 'cooked_link'  # import lancé au collage, avant le post (lot 2 bis)
-_JOB_KIND = {JOB_FORMAT: 'format', JOB_IMPORT: 'import', JOB_LINK: 'import'}
+JOB_GENERATE = 'cooked_generate'  # nom seul : recette complétée par l'IA (lot 2 ter)
+_JOB_KIND = {JOB_FORMAT: 'format', JOB_IMPORT: 'import', JOB_LINK: 'import', JOB_GENERATE: 'generate'}
 _RUNNING = ('pending', 'processing')
 
 
@@ -150,9 +155,10 @@ def enqueue_cooked_recipe_job(
     Renvoie le résumé `recipe_job` de la réponse (None si rien à faire).
     Doit être appelé dans la transaction : la tâche part au commit.
     """
-    if not (plan.recipe_text or plan.import_url):
-        return None
-    job_type = job_type or (JOB_IMPORT if plan.import_url else JOB_FORMAT)
+    if job_type is None:
+        if not (plan.recipe_text or plan.import_url):
+            return None
+        job_type = JOB_IMPORT if plan.import_url else JOB_FORMAT
     kind = _JOB_KIND[job_type]
     if not ai_recipe_quota.has_quota(user):
         return {
@@ -163,7 +169,11 @@ def enqueue_cooked_recipe_job(
         }
 
     from core.celery_dispatch import publish
-    from recipes.tasks import process_cooked_recipe_import, process_cooked_recipe_text
+    from recipes.tasks import (
+        process_cooked_recipe_generate,
+        process_cooked_recipe_import,
+        process_cooked_recipe_text,
+    )
 
     payload = {
         'quota': ai_recipe_quota.QUOTA_KEY,
@@ -173,14 +183,18 @@ def enqueue_cooked_recipe_job(
         'title': recipe.title,
         **(extra_payload or {}),
     }
-    if plan.import_url:
+    if job_type == JOB_GENERATE:
+        payload.update({'idea_text': recipe.title, 'source_type': 'generated'})
+        task = process_cooked_recipe_generate
+    elif plan.import_url:
         payload.update({'url': plan.import_url, 'source_type': 'imported'})
+        task = process_cooked_recipe_import
     else:
         payload.update({'raw_text': plan.recipe_text, 'source_type': 'user_created'})
+        task = process_cooked_recipe_text
     import_request = RecipeImportRequest.objects.create(
         user=user, payload=payload, recipe=recipe, status=RecipeImportRequest.STATUS_PENDING
     )
-    task = process_cooked_recipe_import if plan.import_url else process_cooked_recipe_text
     request_id = str(import_request.id)
 
     def dispatch():
@@ -192,6 +206,29 @@ def enqueue_cooked_recipe_job(
 
     transaction.on_commit(dispatch)
     return {'request_id': str(import_request.id), 'kind': kind, 'status': import_request.status}
+
+
+def enqueue_recipe_completion(user, recipe: Recipe | None) -> dict | None:
+    """
+    Nom seul (lot 2 ter) : sa recette vide est complétée par l'IA à partir de son nom (titre gardé).
+    Rien si elle a déjà du contenu, n'est pas à soi ou garde un lien (import raté : ne pas inventer
+    une autre recette sous ce lien). Une complétion déjà en cours est renvoyée telle quelle.
+    Plafond mensuel sauf premium (`skipped` au-delà : la recette reste vide, hors recherche).
+    Doit être appelé dans la transaction : la tâche part au commit.
+    """
+    if recipe is None or recipe.created_by_id != getattr(user, 'id', None) or recipe.import_source_url:
+        return None
+    if _has_content(recipe):
+        return None
+    running = (
+        RecipeImportRequest.objects.filter(payload__target_recipe_id=recipe.id, status__in=_RUNNING)
+        .order_by('-created_at')
+        .first()
+    )
+    if running is not None:
+        kind = _JOB_KIND.get((running.payload or {}).get('job_type'), 'generate')
+        return {'request_id': str(running.id), 'kind': kind, 'status': running.status}
+    return enqueue_cooked_recipe_job(user, recipe, plan=CookedRecipePlan(), keep_title=True, job_type=JOB_GENERATE)
 
 
 # ---------------------------------------------------------------------------

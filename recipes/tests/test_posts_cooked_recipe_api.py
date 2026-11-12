@@ -78,10 +78,10 @@ def test_label_only_creates_a_recipe_named_like_the_dish(cooked, user, celery_de
     recipe = _recipe_of(resp)
     assert recipe.title == 'Pâtes au pesto' and recipe.created_by == user and recipe.is_public
     assert recipe.source_type == 'user_created' and not recipe.steps.exists()
-    assert resp.data['display_title'] == 'Pâtes au pesto' and resp.data['recipe_job'] is None
+    assert resp.data['display_title'] == 'Pâtes au pesto'
+    assert resp.data['recipe_job']['kind'] == 'generate'  # complétée par l'IA (lot 2 ter)
     post = Post.objects.get(id=resp.data['id'])
     assert post.recipe_batch.recipe_id == recipe.id and post.recipe_batch.is_cooked
-    assert _recipe_tasks(celery_delay) == [] and not RecipeImportRequest.objects.exists()
 
 
 def test_same_dish_cooked_again_reuses_own_recipe_not_someone_elses(cooked, user, make_user, make_recipe):
@@ -108,7 +108,7 @@ def test_existing_meal_plan_without_recipe_gets_one_from_its_dish(cooked, user, 
 
 
 def test_undo_removes_the_recipe_created_by_the_log_only(cooked, api, user, make_recipe):
-    kept = make_recipe(user, 'Quiche')
+    kept = make_recipe(user, 'Quiche', ingredients=['œufs'])
     created = cooked(user, label='Soupe de potiron', recipe_text=WRITTEN)
     reused = cooked(user, label='Quiche')
     client = api.as_user(user)

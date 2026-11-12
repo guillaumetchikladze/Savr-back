@@ -390,6 +390,7 @@ def fill_post_photo_dimensions(photo_ids: list[int]):
 # ---------------------------------------------------------------------------
 COOKED_TEXT_FAILED = 'On n’a pas pu mettre ta recette en forme : elle reste telle que tu l’as écrite.'
 COOKED_IMPORT_FAILED = 'On n’a pas pu récupérer la recette de ce lien : le lien reste sur ta recette.'
+COOKED_GENERATE_FAILED = 'On n’a pas pu proposer de recette pour ce plat : tu peux l’écrire toi-même.'
 
 
 def _set_cooked_job(request_id: str, status: str, error_message: str = '') -> None:
@@ -455,6 +456,44 @@ def process_cooked_recipe_text(self, request_id: str):
     except Exception as exc:
         logger.warning('%s Request %s failed, raw text kept: %s', tag, request_id, exc)
         _set_cooked_job(request_id, RecipeImportRequest.STATUS_ERROR, COOKED_TEXT_FAILED)
+        return
+    _set_cooked_job(request_id, RecipeImportRequest.STATUS_SUCCESS)
+    logger.info('%s Request %s done - recipe_id=%s', tag, request_id, recipe.id)
+
+
+@shared_task(bind=True)
+def process_cooked_recipe_generate(self, request_id: str):
+    """Nom seul posté par « J'ai cuisiné » : ingrédients et étapes proposés par l'IA à partir du nom
+    (même génération que `generate_from_idea`), dans la recette posée, titre de l'utilisateur gardé,
+    `source_type = generated` (l'app dit « proposée par Tchikook »).
+
+    Échec (pas de clé, nom trop court, réponse vide) : la recette reste vide (hors recherche publique).
+    Recette remplie entre-temps par l'utilisateur : rien n'est écrasé. Annulée : rien n'est recréé.
+    """
+    from .models import RecipeIngredient, Step
+
+    tag = '[CookedRecipeGenerate]'
+    import_request, recipe = _start_cooked_job(request_id, tag)
+    if import_request is None:
+        return
+    payload = import_request.payload or {}
+    try:
+        formalized = asyncio.run(generate_recipe_from_idea(payload.get('idea_text') or recipe.title))
+        if not _has_content(formalized):
+            raise ValueError('empty generated recipe')
+        if (
+            Step.objects.filter(recipe_id=recipe.id).exists()
+            or RecipeIngredient.objects.filter(recipe_id=recipe.id).exists()
+        ):
+            logger.info('%s Request %s: recipe %s already filled, kept as is', tag, request_id, recipe.id)
+            _set_cooked_job(request_id, RecipeImportRequest.STATUS_SUCCESS)
+            return
+        create_recipe_from_formalized(
+            formalized, {'source_type': 'generated'}, import_request.user, target=recipe, keep_title=True
+        )
+    except Exception as exc:
+        logger.warning('%s Request %s failed, recipe left empty: %s', tag, request_id, exc)
+        _set_cooked_job(request_id, RecipeImportRequest.STATUS_ERROR, COOKED_GENERATE_FAILED)
         return
     _set_cooked_job(request_id, RecipeImportRequest.STATUS_SUCCESS)
     logger.info('%s Request %s done - recipe_id=%s', tag, request_id, recipe.id)

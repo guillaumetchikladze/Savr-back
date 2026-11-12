@@ -276,8 +276,15 @@ def user_detail_view(request, user_id):
 @api_view(['GET'])
 @permission_classes([IsValidated])
 def search_view(request):
-    """Recherche intelligente d'utilisateurs et de recettes"""
+    """Recherche intelligente d'utilisateurs et de recettes.
+
+    Recettes : les siennes et les publiques qui ont du contenu (`discoverable_recipes_q`, ckd2 lot 2 ter) ;
+    jamais la recette privée d'un autre.
+    """
+    from recipes.services.recipe_access import discoverable_recipes_q
+
     query = request.query_params.get('q', '').strip()
+    discoverable = discoverable_recipes_q(request.user)
     user_id = request.query_params.get('id')
 
     # Si un ID est fourni, retourner directement l'utilisateur
@@ -316,7 +323,8 @@ def search_view(request):
             request.user,
         )[:10]
         recipes = (
-            Recipe.objects.select_related('created_by')
+            Recipe.objects.filter(discoverable)
+            .select_related('created_by')
             .prefetch_related('steps', 'recipe_ingredients__ingredient')
             .order_by('-created_at')[:10]
         )
@@ -359,7 +367,8 @@ def search_view(request):
         # Fallback si l'extension pg_trgm n'est pas disponible
         try:
             recipes = (
-                Recipe.objects.select_related('created_by')
+                Recipe.objects.filter(discoverable)
+                .select_related('created_by')
                 .prefetch_related('steps', 'recipe_ingredients__ingredient')
                 .annotate(
                     similarity=TrigramSimilarity('title', query) + TrigramSimilarity('description', query),
@@ -371,7 +380,8 @@ def search_view(request):
         except Exception:
             # Fallback sans trigram similarity
             recipes = (
-                Recipe.objects.select_related('created_by')
+                Recipe.objects.filter(discoverable)
+                .select_related('created_by')
                 .prefetch_related('steps', 'recipe_ingredients__ingredient')
                 .annotate(search_rank=SearchRank(search_vector, search_query))
                 .filter(search_rank__gt=0)
@@ -385,7 +395,8 @@ def search_view(request):
         for word in query_words:
             recipes_query |= Q(title__icontains=word) | Q(description__icontains=word)
         recipes = (
-            Recipe.objects.select_related('created_by')
+            Recipe.objects.filter(discoverable)
+            .select_related('created_by')
             .prefetch_related('steps', 'recipe_ingredients__ingredient')
             .filter(recipes_query)
             .distinct()[:20]

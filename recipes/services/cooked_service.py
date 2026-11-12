@@ -372,7 +372,8 @@ def log_cooked(
 
     Toujours une recette (ckd2 lot 2, `cooked_recipe`) : sans `recipe_id`, le plat devient une recette
     (sa propre recette du même nom, une recette déjà importée depuis `import_url`, sinon une nouvelle
-    recette au nom du plat) ; `recipe_text` / `import_url` la complètent en arrière-plan.
+    recette au nom du plat) ; `recipe_text` / `import_url` la complètent en arrière-plan, le nom seul
+    aussi (ingrédients et étapes proposés par l'IA à partir du nom, lot 2 ter).
     """
     from . import cooked_recipe
 
@@ -434,12 +435,14 @@ def log_cooked(
         raise CookedError('recipe_id, label or meal_plan_id is required', 400, 'missing_dish')
 
     new_recipe = None  # (titre, plan, nom choisi ?) de la recette à créer dans la transaction
+    reused_named_recipe = False  # sa recette du même nom (nom seul) : complétée si restée vide
     meal_has_recipes = bool(meal_plan) and MealPlanRecipeBatch.objects.filter(meal_plan=meal_plan).exists()
     if recipe is None and not meal_has_recipes:
         dish_name = label or (meal_plan.custom_label.strip() if meal_plan else '')
         plan = cooked_recipe.CookedRecipePlan(recipe_text=recipe_text, import_url=url, host=host)
         if not (recipe_text or url):
             recipe = cooked_recipe.find_own_recipe_named(user, dish_name)  # un plat refait = même recette
+            reused_named_recipe = recipe is not None
         if recipe is None and (dish_name or recipe_text or url):
             title = dish_name or (
                 cooked_recipe.default_link_title(host) if url else cooked_recipe.WRITTEN_RECIPE_DEFAULT_TITLE
@@ -491,6 +494,10 @@ def log_cooked(
             title, plan, named = new_recipe
             recipe = created_recipe = cooked_recipe.create_cooked_recipe(user, title=title, plan=plan)
             recipe_job = cooked_recipe.enqueue_cooked_recipe_job(user, recipe, plan=plan, keep_title=named)
+            if recipe_job is None and named:
+                recipe_job = cooked_recipe.enqueue_recipe_completion(user, recipe)  # nom seul (lot 2 ter)
+        elif reused_named_recipe:
+            recipe_job = cooked_recipe.enqueue_recipe_completion(user, recipe)  # sa recette restée vide
         if meal_plan:
             meal_plan_created = False
         else:

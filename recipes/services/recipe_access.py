@@ -15,9 +15,29 @@ Sinon : même réponse qu'un id inexistant (pas d'oracle d'existence).
 from __future__ import annotations
 
 from django.contrib.auth.models import AbstractBaseUser
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
-from recipes.models import BasketItem, MealPlanRecipeBatch, Recipe
+from recipes.models import BasketItem, MealPlanRecipeBatch, Recipe, RecipeIngredient, Step
+
+
+def has_content_q() -> Q:
+    """Recette avec au moins une étape ou un ingrédient."""
+    return Q(Exists(Step.objects.filter(recipe_id=OuterRef('pk')))) | Q(
+        Exists(RecipeIngredient.objects.filter(recipe_id=OuterRef('pk')))
+    )
+
+
+def discoverable_recipes_q(user: AbstractBaseUser | None) -> Q:
+    """
+    Recherche et découverte (ckd2 lot 2 ter) : ses propres recettes, et les recettes publiques **qui ont
+    du contenu**. Une recette publique vide (nom seul posté par « J'ai cuisiné » dont la complétion IA est
+    en cours, a échoué ou a été sautée au-delà du plafond) reste publique et s'ouvre depuis le post
+    (`GET /recipes/<id>/`, `usable_recipe`), mais n'apparaît dans aucune liste de recherche des autres.
+    """
+    public = Q(is_public=True) & has_content_q()
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return public
+    return public | Q(created_by=user)
 
 
 def usable_recipe(user: AbstractBaseUser, recipe_id: int, *, only: tuple[str, ...] = ()) -> Recipe | None:
