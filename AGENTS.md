@@ -398,6 +398,9 @@ Contrat front : `.claude-work/specs/tables.md`. Jamais de classement ni de compt
   portant une tablée : non fait (V1).
 - API `/api/tables/` (liste + invitations), `{id}/` (GET semaine `?week=`, PATCH, DELETE), `invite/`, `accept/`,
   `decline/`, `leave/`, `members/{user_id}/` (DELETE), `me/` (`share_basket`). Non membre → 404.
+- Fil d'une tablée (hom1) : `GET /api/posts/?table=<id>` = posts publiés des membres acceptés **visibles par le
+  viewer** (`visible_posts`, blocages compris ; ignore `?user=`), membre accepté seulement, sinon 404
+  `table_not_found` (`PostViewSet._table_filter_member_ids`). L'accueil s'en sert pour la puce « Les colocs ».
 - Semaine (`tables.services.table_detail_payload`) : `cooked_members` / `member_count` / `headline`
   (`cooked_meal_plans_of_users`), plats (`dish_key`) et cuisines distincts **collectifs**, `latest_post` par
   membre = dernier post **visible par le viewer** (`post_visibility.visible_posts`, DISTINCT ON), rituel

@@ -4907,6 +4907,14 @@ class PostViewSet(viewsets.ModelViewSet):
             )
             return self._annotate_repost_fields(queryset)
 
+        # Fil d'une tablée (hom1, `?table=<id>`) : posts publiés des membres acceptés que le viewer a le droit de
+        # voir (même règle que le dernier post de la tablée : `visible_posts`, blocages compris). Membre accepté
+        # seulement (sinon 404 `table_not_found` dans `list`) ; ignore `?user=` et `?is_published=`.
+        table_member_ids = self._table_filter_member_ids()
+        if table_member_ids is not None:
+            queryset = visible_posts(self.request.user).filter(user_id__in=table_member_ids)
+            return self._optimize_list_queryset(queryset)
+
         # Posts publiés : feed social (abonnements approuvés + soi) sauf profil explicite (?user=)
         is_published = self.request.query_params.get('is_published')
         profile_user_id = self.request.query_params.get('user')
@@ -4956,8 +4964,41 @@ class PostViewSet(viewsets.ModelViewSet):
         # Optimisation : pour les listes, limiter les champs chargés
         return self._optimize_list_queryset(queryset)
 
+    def _table_filter_member_ids(self):
+        """
+        `?table=<id>` : ids des membres acceptés de la tablée si le viewer en est membre accepté, `[]` si la tablée
+        est inconnue ou fermée au viewer, `None` sans paramètre (mis en cache pour la requête).
+        """
+        if hasattr(self, '_table_member_ids_cache'):
+            return self._table_member_ids_cache
+        raw = self.request.query_params.get('table')
+        result = None
+        if raw not in (None, ''):
+            from tables.models import TableMember
+
+            try:
+                table_id = int(raw)
+            except (TypeError, ValueError):
+                table_id = None
+            result = []
+            if (
+                table_id is not None
+                and TableMember.objects.filter(
+                    table_id=table_id, user_id=self.request.user.id, status=TableMember.STATUS_ACCEPTED
+                ).exists()
+            ):
+                result = list(
+                    TableMember.objects.filter(table_id=table_id, status=TableMember.STATUS_ACCEPTED).values_list(
+                        'user_id', flat=True
+                    )
+                )
+        self._table_member_ids_cache = result
+        return result
+
     def list(self, request, *args, **kwargs):
         """Liste optimisée des posts avec pagination"""
+        if self._table_filter_member_ids() == []:
+            return Response({'error': 'Table not found', 'code': 'table_not_found'}, status=404)
         logger = logging.getLogger(__name__)
         t0 = perf_counter()
         queryset = self.filter_queryset(self.get_queryset())

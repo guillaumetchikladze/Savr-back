@@ -172,3 +172,42 @@ def test_sunday_ritual_shares_basket_only_on_opt_in(api, crew, make_meal_plan):
     ritual = api.as_user(alice).get(_detail(table_id)).json()['ritual']
     (entry,) = ritual['entries']
     assert entry['user']['id'] == lea.id and [i['title'] for i in entry['items']] == ['Pâtes au pesto']
+
+
+def test_feed_filtered_by_table_respects_membership_and_visibility(api, crew, make_user, follow, make_meal_plan):
+    """hom1 : `GET /api/posts/?table=<id>` = posts publiés des membres que le viewer peut voir, membres seulement."""
+    alice, lea, tom = crew
+    zoe, outsider = make_user('zoe'), make_user('outsider')
+    follow(alice, zoe)
+    follow(alice, outsider)
+    table_id = _table(api, alice, lea, tom)
+    # zoe invitée, pas encore membre : ses posts ne font pas partie du fil de la tablée.
+    api.as_user(alice).post(f'{_detail(table_id)}invite/', {'user_ids': [zoe.id]}, format='json')
+
+    mine = Post.objects.create(user=alice, label='Gratin', is_published=True)
+    lea_post = Post.objects.create(user=lea, label='Dahl', is_published=True)
+    Post.objects.create(user=lea, label='Brouillon', is_published=False)
+    Post.objects.create(user=tom, label='Le dahl', is_published=True)  # alice ne suit pas tom, pas public
+    tom_public = Post.objects.create(user=tom, label='Tarte', is_published=True, is_public=True)
+    Post.objects.create(user=zoe, label='Soupe', is_published=True)
+    Post.objects.create(user=outsider, label='Pizza', is_published=True)
+
+    client = api.as_user(alice)
+    res = client.get('/api/posts/', {'table': table_id, 'is_published': 'true', 'page_size': 20})
+    assert res.status_code == 200, res.content
+    ids = {p['id'] for p in res.json()['results']}
+    assert ids == {mine.id, lea_post.id, tom_public.id}
+
+    # `?user=` ne contourne pas le filtre de la tablée.
+    res = client.get('/api/posts/', {'table': table_id, 'user': outsider.id})
+    assert {p['id'] for p in res.json()['results']} == {mine.id, lea_post.id, tom_public.id}
+
+    # Blocage : le post de lea disparaît du fil de la tablée d'alice.
+    UserBlock.objects.create(blocker=lea, blocked=alice)
+    res = client.get('/api/posts/', {'table': table_id})
+    assert {p['id'] for p in res.json()['results']} == {mine.id, tom_public.id}
+
+    # Invitée (pas acceptée), inconnue, id invalide, autre tablée : 404 `table_not_found`.
+    for viewer, value in ((zoe, table_id), (outsider, table_id), (alice, 999999), (alice, 'abc')):
+        res = api.as_user(viewer).get('/api/posts/', {'table': value})
+        assert res.status_code == 404 and res.json()['code'] == 'table_not_found'
